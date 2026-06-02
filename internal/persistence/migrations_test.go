@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenWorkspaceCreatesDatabaseAndRecordsMigrations(t *testing.T) {
@@ -33,6 +35,36 @@ func TestOpenWorkspaceCreatesDatabaseAndRecordsMigrations(t *testing.T) {
 	}
 	defer db.Close()
 	assertMigrationState(t, db)
+}
+
+func TestOpenWorkspaceConfiguresSQLiteConcurrencyPragmas(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspacePath := filepath.Join(t.TempDir(), "workspace with spaces")
+
+	db, err := OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	defer db.Close()
+
+	var journalMode string
+	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if strings.ToLower(journalMode) != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+
+	var busyTimeoutMS int
+	if err := db.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeoutMS); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	wantBusyTimeoutMS := int(workspaceBusyTimeout / time.Millisecond)
+	if busyTimeoutMS != wantBusyTimeoutMS {
+		t.Fatalf("busy_timeout = %d, want %d", busyTimeoutMS, wantBusyTimeoutMS)
+	}
 }
 
 func TestApplyMigrationsRejectsChangedHistory(t *testing.T) {

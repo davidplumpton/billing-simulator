@@ -4,16 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 const (
-	sqliteDriver    = "sqlite"
-	workspaceDBFile = "simulator.db"
+	sqliteDriver         = "sqlite"
+	workspaceDBFile      = "simulator.db"
+	workspaceBusyTimeout = 5 * time.Second
 )
 
 // WorkspaceDBPath returns the SQLite database path inside a workspace.
@@ -30,7 +33,11 @@ func OpenWorkspace(ctx context.Context, workspacePath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("create workspace directory: %w", err)
 	}
 
-	db, err := sql.Open(sqliteDriver, WorkspaceDBPath(workspacePath))
+	dsn, err := workspaceDSN(WorkspaceDBPath(workspacePath))
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open(sqliteDriver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open workspace database: %w", err)
 	}
@@ -43,4 +50,23 @@ func OpenWorkspace(ctx context.Context, workspacePath string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+// workspaceDSN builds a SQLite URI that applies connection-local pragmas.
+func workspaceDSN(dbPath string) (string, error) {
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace database path: %w", err)
+	}
+
+	query := url.Values{}
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", int(workspaceBusyTimeout/time.Millisecond)))
+	query.Add("_pragma", "journal_mode(WAL)")
+
+	uri := url.URL{
+		Scheme:   "file",
+		Path:     absPath,
+		RawQuery: query.Encode(),
+	}
+	return uri.String(), nil
 }

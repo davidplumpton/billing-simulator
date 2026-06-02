@@ -14,6 +14,10 @@ func TestPriceCatalogSeededForMVPServices(t *testing.T) {
 	db := openTestWorkspace(t)
 	repo := NewPriceCatalogRepository(db)
 
+	if err := repo.Validate(ctx); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
 	items, err := repo.List(ctx)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
@@ -68,6 +72,92 @@ func TestPriceCatalogSeededForMVPServices(t *testing.T) {
 	}
 }
 
+func TestPriceCatalogValidateRejectsWorkspaceInconsistency(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewPriceCatalogRepository(db)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO price_catalog_items (
+		sku,
+		service_code,
+		service_name,
+		product_family,
+		usage_type,
+		operation,
+		region_code,
+		unit,
+		rate_micros,
+		currency_code,
+		effective_date,
+		price_source,
+		pricing_formula,
+		notes
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"SIM-BAD-CATALOG",
+		"AmazonS3",
+		"Amazon S3",
+		"Object Storage",
+		"storage:bad-gb-month",
+		"StandardStorage",
+		"eu-west-1",
+		"",
+		int64(1000),
+		"EUR",
+		"2026-01-01",
+		"synthetic",
+		"mystery_quantity * rate",
+		"Invalid row used to verify catalog validation.",
+	)
+	if err != nil {
+		t.Fatalf("insert invalid catalog row: %v", err)
+	}
+
+	err = repo.Validate(ctx)
+	if err == nil {
+		t.Fatal("Validate() error = nil, want catalog validation error")
+	}
+	for _, want := range []string{
+		`SKU "SIM-BAD-CATALOG" uses unsupported region "eu-west-1"`,
+		`SKU "SIM-BAD-CATALOG" unit is required`,
+		`SKU "SIM-BAD-CATALOG" currency = "EUR", want USD`,
+		`SKU "SIM-BAD-CATALOG" uses unsupported pricing formula "mystery_quantity * rate"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %q, want to contain %q", err.Error(), want)
+		}
+	}
+}
+
+func TestValidatePriceCatalogItemsRejectsDuplicateSKUVersion(t *testing.T) {
+	t.Parallel()
+
+	item := validPriceCatalogTestItem()
+	err := validatePriceCatalogItems([]PriceCatalogItem{item, item})
+	if err == nil {
+		t.Fatal("validatePriceCatalogItems() error = nil, want duplicate SKU error")
+	}
+	if want := `duplicate SKU "SIM-TEST-CATALOG" at effective_date "2026-01-01"`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("validatePriceCatalogItems() error = %q, want to contain %q", err.Error(), want)
+	}
+}
+
+func TestValidatePriceCatalogItemsRejectsFormulaUnitMismatch(t *testing.T) {
+	t.Parallel()
+
+	item := validPriceCatalogTestItem()
+	item.SKU = "SIM-BAD-FORMULA-UNIT"
+	item.Unit = "GB"
+	err := validatePriceCatalogItems([]PriceCatalogItem{item})
+	if err == nil {
+		t.Fatal("validatePriceCatalogItems() error = nil, want formula coverage error")
+	}
+	if want := `pricing formula "usage_quantity * rate" does not cover unit "GB"`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("validatePriceCatalogItems() error = %q, want to contain %q", err.Error(), want)
+	}
+}
+
 func TestPriceCatalogLookupMapsMeteringRecordToCatalogItem(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +189,25 @@ func TestPriceCatalogLookupMapsMeteringRecordToCatalogItem(t *testing.T) {
 	}
 	if result.CostMicros != 7_500 {
 		t.Fatalf("Lookup() cost micros = %d, want 7500", result.CostMicros)
+	}
+}
+
+func validPriceCatalogTestItem() PriceCatalogItem {
+	return PriceCatalogItem{
+		SKU:            "SIM-TEST-CATALOG",
+		ServiceCode:    "AmazonEC2",
+		ServiceName:    "Amazon EC2",
+		ProductFamily:  "Compute Instance",
+		UsageType:      "instance-hours:t3.medium",
+		Operation:      "RunInstances",
+		RegionCode:     "us-east-1",
+		Unit:           "InstanceHour",
+		RateMicros:     41600,
+		CurrencyCode:   "USD",
+		EffectiveDate:  "2026-01-01",
+		PriceSource:    "synthetic",
+		PricingFormula: "usage_quantity * rate",
+		Notes:          "Synthetic row used to verify catalog validation.",
 	}
 }
 

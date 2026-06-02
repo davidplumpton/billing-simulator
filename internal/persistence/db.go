@@ -48,6 +48,13 @@ func OpenWorkspace(ctx context.Context, workspacePath string) (*sql.DB, error) {
 		}
 		return nil, fmt.Errorf("apply migrations: %w", err)
 	}
+	if err := NewPriceCatalogRepository(db).Validate(ctx); err != nil {
+		closeErr := db.Close()
+		if closeErr != nil {
+			return nil, fmt.Errorf("validate price catalog: %w; close database: %v", err, closeErr)
+		}
+		return nil, fmt.Errorf("validate price catalog: %w", err)
+	}
 
 	return db, nil
 }

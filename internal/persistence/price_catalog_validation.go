@@ -90,6 +90,7 @@ func validatePriceCatalogItems(items []PriceCatalogItem) error {
 	}
 
 	seenVersions := map[string]struct{}{}
+	seenLookupIdentities := map[priceCatalogLookupIdentity]string{}
 	var problems []string
 	for _, item := range items {
 		item = trimPriceCatalogItem(item)
@@ -100,6 +101,18 @@ func validatePriceCatalogItems(items []PriceCatalogItem) error {
 				problems = append(problems, fmt.Sprintf("duplicate SKU %q at effective_date %q", item.SKU, item.EffectiveDate))
 			}
 			seenVersions[versionKey] = struct{}{}
+		}
+		if identity, ok := priceCatalogLookupIdentityFor(item); ok {
+			if previousSKU, ok := seenLookupIdentities[identity]; ok && previousSKU != item.SKU {
+				problems = append(problems, fmt.Sprintf(
+					"ambiguous lookup identity %s is shared by SKUs %q and %q",
+					formatPriceCatalogLookupIdentity(identity),
+					previousSKU,
+					item.SKU,
+				))
+			} else {
+				seenLookupIdentities[identity] = item.SKU
+			}
 		}
 
 		if item.SKU == "" {
@@ -176,4 +189,38 @@ func priceCatalogItemLabel(item PriceCatalogItem) string {
 		return "<blank SKU>"
 	}
 	return fmt.Sprintf("SKU %q", item.SKU)
+}
+
+type priceCatalogLookupIdentity struct {
+	serviceCode   string
+	usageType     string
+	operation     string
+	regionCode    string
+	effectiveDate string
+}
+
+// priceCatalogLookupIdentityFor returns the exact catalog dimensions Lookup can select before fallback ordering.
+func priceCatalogLookupIdentityFor(item PriceCatalogItem) (priceCatalogLookupIdentity, bool) {
+	if item.ServiceCode == "" || item.UsageType == "" || item.Operation == "" || item.RegionCode == "" || item.EffectiveDate == "" {
+		return priceCatalogLookupIdentity{}, false
+	}
+	return priceCatalogLookupIdentity{
+		serviceCode:   item.ServiceCode,
+		usageType:     item.UsageType,
+		operation:     item.Operation,
+		regionCode:    item.RegionCode,
+		effectiveDate: item.EffectiveDate,
+	}, true
+}
+
+// formatPriceCatalogLookupIdentity formats duplicate lookup dimensions for validation errors.
+func formatPriceCatalogLookupIdentity(identity priceCatalogLookupIdentity) string {
+	return fmt.Sprintf(
+		`service_code=%q usage_type=%q operation=%q region_code=%q effective_date=%q`,
+		identity.serviceCode,
+		identity.usageType,
+		identity.operation,
+		identity.regionCode,
+		identity.effectiveDate,
+	)
 }

@@ -144,6 +144,34 @@ func TestValidatePriceCatalogItemsRejectsDuplicateSKUVersion(t *testing.T) {
 	}
 }
 
+func TestValidatePriceCatalogItemsRejectsAmbiguousLookupIdentity(t *testing.T) {
+	t.Parallel()
+
+	item := validPriceCatalogTestItem()
+	ambiguous := item
+	ambiguous.SKU = "SIM-TEST-CATALOG-ALT"
+	ambiguous.RateMicros = item.RateMicros + 1
+	ambiguous.Notes = "Synthetic row that collides with another catalog lookup identity."
+
+	err := validatePriceCatalogItems([]PriceCatalogItem{item, ambiguous})
+	if err == nil {
+		t.Fatal("validatePriceCatalogItems() error = nil, want ambiguous lookup identity error")
+	}
+	for _, want := range []string{
+		"ambiguous lookup identity",
+		`service_code="AmazonEC2"`,
+		`usage_type="instance-hours:t3.medium"`,
+		`operation="RunInstances"`,
+		`region_code="us-east-1"`,
+		`effective_date="2026-01-01"`,
+		`SKUs "SIM-TEST-CATALOG" and "SIM-TEST-CATALOG-ALT"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("validatePriceCatalogItems() error = %q, want to contain %q", err.Error(), want)
+		}
+	}
+}
+
 func TestValidatePriceCatalogItemsRejectsFormulaUnitMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -250,39 +278,33 @@ func TestPriceCatalogSupportsVersionedRatesForSameSKU(t *testing.T) {
 		t.Fatalf("Lookup() current rate = %+v cost %d, want 2026-03-01 at 7000 micros", current.Item, current.CostMicros)
 	}
 
-	_, err = db.ExecContext(ctx, `INSERT INTO price_catalog_items (
-		sku,
-		service_code,
-		service_name,
-		product_family,
-		usage_type,
-		operation,
-		region_code,
-		unit,
-		rate_micros,
-		currency_code,
-		effective_date,
-		price_source,
-		pricing_formula,
-		notes
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		laterRate.SKU,
-		laterRate.ServiceCode,
-		laterRate.ServiceName,
-		laterRate.ProductFamily,
-		laterRate.UsageType,
-		laterRate.Operation,
-		laterRate.RegionCode,
-		laterRate.Unit,
-		laterRate.RateMicros,
-		laterRate.CurrencyCode,
-		laterRate.EffectiveDate,
-		laterRate.PriceSource,
-		laterRate.PricingFormula,
-		laterRate.Notes,
-	)
-	if err == nil {
+	if err := insertPriceCatalogTestItemRow(ctx, db, laterRate); err == nil {
 		t.Fatal("duplicate same-SKU same-date insert error = nil, want primary-key violation")
+	}
+}
+
+func TestPriceCatalogLookupIdentityUniqueIndexRejectsAmbiguousRates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	ambiguous := validPriceCatalogTestItem()
+	ambiguous.SKU = "SIM-S3-PUT-ALT-1K"
+	ambiguous.ServiceCode = "AmazonS3"
+	ambiguous.ServiceName = "Amazon S3"
+	ambiguous.ProductFamily = "API Request"
+	ambiguous.UsageType = "requests:put-1k"
+	ambiguous.Operation = "PutObject"
+	ambiguous.RegionCode = "us-east-1"
+	ambiguous.Unit = "ThousandRequests"
+	ambiguous.RateMicros = 6000
+	ambiguous.EffectiveDate = "2026-01-01"
+	ambiguous.PricingFormula = "(request_count / 1000) * rate"
+	ambiguous.Notes = "Synthetic S3 PUT alternate row used to verify lookup identity uniqueness."
+
+	if err := insertPriceCatalogTestItemRow(ctx, db, ambiguous); err == nil {
+		t.Fatal("ambiguous same-date lookup identity insert error = nil, want unique constraint violation")
 	}
 }
 
@@ -309,7 +331,14 @@ func validPriceCatalogTestItem() PriceCatalogItem {
 func insertPriceCatalogTestItem(t *testing.T, db *sql.DB, item PriceCatalogItem) {
 	t.Helper()
 
-	_, err := db.ExecContext(context.Background(), `INSERT INTO price_catalog_items (
+	if err := insertPriceCatalogTestItemRow(context.Background(), db, item); err != nil {
+		t.Fatalf("insert price catalog item %q at %q: %v", item.SKU, item.EffectiveDate, err)
+	}
+}
+
+// insertPriceCatalogTestItemRow keeps expected database constraint failures observable in tests.
+func insertPriceCatalogTestItemRow(ctx context.Context, db *sql.DB, item PriceCatalogItem) error {
+	_, err := db.ExecContext(ctx, `INSERT INTO price_catalog_items (
 		sku,
 		service_code,
 		service_name,
@@ -340,9 +369,7 @@ func insertPriceCatalogTestItem(t *testing.T, db *sql.DB, item PriceCatalogItem)
 		item.PricingFormula,
 		item.Notes,
 	)
-	if err != nil {
-		t.Fatalf("insert price catalog item %q at %q: %v", item.SKU, item.EffectiveDate, err)
-	}
+	return err
 }
 
 func TestPriceCatalogLookupFallsBackToGlobalRegion(t *testing.T) {

@@ -2,18 +2,22 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
+
+	"aws-billing-simulator/internal/persistence"
 )
 
 // Server owns the local HTTP listener and its shutdown lifecycle.
 type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
+	db         *sql.DB
 	done       chan error
 }
 
@@ -26,8 +30,20 @@ func Start(cfg Config, logger *slog.Logger) (*Server, error) {
 		logger = slog.Default()
 	}
 
+	var db *sql.DB
+	if cfg.WorkspacePath != "" {
+		var err error
+		db, err = persistence.OpenWorkspace(context.Background(), cfg.WorkspacePath)
+		if err != nil {
+			return nil, fmt.Errorf("open workspace: %w", err)
+		}
+	}
+
 	listener, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
+		if db != nil {
+			_ = db.Close()
+		}
 		return nil, fmt.Errorf("listen on %s: %w", cfg.HTTPAddr, err)
 	}
 
@@ -37,6 +53,7 @@ func Start(cfg Config, logger *slog.Logger) (*Server, error) {
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		listener: listener,
+		db:       db,
 		done:     make(chan error, 1),
 	}
 
@@ -79,7 +96,13 @@ func (s *Server) URL() string {
 
 // Close gracefully stops the local HTTP server.
 func (s *Server) Close(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	err := s.httpServer.Shutdown(ctx)
+	if s.db != nil {
+		if dbErr := s.db.Close(); err == nil {
+			err = dbErr
+		}
+	}
+	return err
 }
 
 // Wait blocks until the serving goroutine exits.

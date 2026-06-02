@@ -1,0 +1,106 @@
+package persistence
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestOpenWorkspaceCreatesDatabaseAndRecordsMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspacePath := t.TempDir()
+
+	db, err := OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	assertMigrationState(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if _, err := os.Stat(WorkspaceDBPath(workspacePath)); err != nil {
+		t.Fatalf("workspace database was not created: %v", err)
+	}
+
+	db, err = OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() second run error = %v", err)
+	}
+	defer db.Close()
+	assertMigrationState(t, db)
+}
+
+func TestApplyMigrationsRejectsChangedHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := sql.Open(sqliteDriver, ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	if err := ApplyMigrations(ctx, db); err != nil {
+		t.Fatalf("ApplyMigrations() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE schema_migrations SET checksum = 'changed' WHERE version = 1`); err != nil {
+		t.Fatalf("tamper schema_migrations: %v", err)
+	}
+
+	err = ApplyMigrations(ctx, db)
+	if err == nil {
+		t.Fatal("ApplyMigrations() error = nil, want changed migration error")
+	}
+	if !strings.Contains(err.Error(), "changed since it was applied") {
+		t.Fatalf("ApplyMigrations() error = %q, want changed migration message", err.Error())
+	}
+}
+
+func assertMigrationState(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	ctx := context.Background()
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatalf("count schema_migrations: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("schema_migrations count = %d, want 1", count)
+	}
+
+	var version int
+	var name, checksum, appliedAt string
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT version, name, checksum, applied_at FROM schema_migrations WHERE version = 1`,
+	).Scan(&version, &name, &checksum, &appliedAt); err != nil {
+		t.Fatalf("read schema_migrations row: %v", err)
+	}
+	if version != 1 || name != "workspace_metadata" || checksum == "" || appliedAt == "" {
+		t.Fatalf("schema migration row = (%d, %q, %q, %q), want populated v1 workspace_metadata", version, name, checksum, appliedAt)
+	}
+
+	var schemaKind string
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT value FROM workspace_metadata WHERE key = 'schema_kind'`,
+	).Scan(&schemaKind); err != nil {
+		t.Fatalf("read workspace metadata: %v", err)
+	}
+	if schemaKind != "aws-billing-simulator" {
+		t.Fatalf("schema_kind = %q, want aws-billing-simulator", schemaKind)
+	}
+
+	var userVersion int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if userVersion != 1 {
+		t.Fatalf("user_version = %d, want 1", userVersion)
+	}
+}

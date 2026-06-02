@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
 	"testing"
 	"time"
+
+	"aws-billing-simulator/internal/persistence"
 )
 
 func TestStartServesHealthCheck(t *testing.T) {
@@ -46,5 +49,42 @@ func TestStartServesHealthCheck(t *testing.T) {
 	}
 	if err := server.Wait(); err != nil {
 		t.Fatalf("Wait() error = %v", err)
+	}
+}
+
+func TestStartAppliesWorkspaceMigrations(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.Close(shutdownCtx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+
+	db, err := sql.Open("sqlite", persistence.WorkspaceDBPath(cfg.WorkspacePath))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatalf("count schema_migrations: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("schema_migrations count = %d, want 1", count)
 	}
 }

@@ -84,7 +84,15 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("schema_migrations count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("schema_migrations count = %d, want 2", count)
+	}
+
+	var catalogCount int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM price_catalog_items`).Scan(&catalogCount); err != nil {
+		t.Fatalf("count price_catalog_items: %v", err)
+	}
+	if catalogCount != 18 {
+		t.Fatalf("price_catalog_items count = %d, want 18", catalogCount)
 	}
 }

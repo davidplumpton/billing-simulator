@@ -101,21 +101,12 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("schema_migrations count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("schema_migrations count = %d, want 2", count)
 	}
 
-	var version int
-	var name, checksum, appliedAt string
-	if err := db.QueryRowContext(
-		ctx,
-		`SELECT version, name, checksum, applied_at FROM schema_migrations WHERE version = 1`,
-	).Scan(&version, &name, &checksum, &appliedAt); err != nil {
-		t.Fatalf("read schema_migrations row: %v", err)
-	}
-	if version != 1 || name != "workspace_metadata" || checksum == "" || appliedAt == "" {
-		t.Fatalf("schema migration row = (%d, %q, %q, %q), want populated v1 workspace_metadata", version, name, checksum, appliedAt)
-	}
+	assertMigrationRecorded(t, db, 1, "workspace_metadata")
+	assertMigrationRecorded(t, db, 2, "price_catalog_items")
 
 	var schemaKind string
 	if err := db.QueryRowContext(
@@ -132,7 +123,24 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if userVersion != 1 {
-		t.Fatalf("user_version = %d, want 1", userVersion)
+	if userVersion != 2 {
+		t.Fatalf("user_version = %d, want 2", userVersion)
+	}
+}
+
+func assertMigrationRecorded(t *testing.T, db *sql.DB, wantVersion int, wantName string) {
+	t.Helper()
+
+	var version int
+	var name, checksum, appliedAt string
+	if err := db.QueryRowContext(
+		context.Background(),
+		`SELECT version, name, checksum, applied_at FROM schema_migrations WHERE version = ?`,
+		wantVersion,
+	).Scan(&version, &name, &checksum, &appliedAt); err != nil {
+		t.Fatalf("read schema_migrations row %d: %v", wantVersion, err)
+	}
+	if version != wantVersion || name != wantName || checksum == "" || appliedAt == "" {
+		t.Fatalf("schema migration row = (%d, %q, %q, %q), want populated v%d %s", version, name, checksum, appliedAt, wantVersion, wantName)
 	}
 }

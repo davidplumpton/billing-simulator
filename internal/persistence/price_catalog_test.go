@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -192,6 +193,99 @@ func TestPriceCatalogLookupMapsMeteringRecordToCatalogItem(t *testing.T) {
 	}
 }
 
+func TestPriceCatalogSupportsVersionedRatesForSameSKU(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewPriceCatalogRepository(db)
+
+	laterRate := validPriceCatalogTestItem()
+	laterRate.SKU = "SIM-S3-PUT-1K"
+	laterRate.ServiceCode = "AmazonS3"
+	laterRate.ServiceName = "Amazon S3"
+	laterRate.ProductFamily = "API Request"
+	laterRate.UsageType = "requests:put-1k"
+	laterRate.Operation = "PutObject"
+	laterRate.Unit = "ThousandRequests"
+	laterRate.RateMicros = 7000
+	laterRate.EffectiveDate = "2026-03-01"
+	laterRate.PricingFormula = "(request_count / 1000) * rate"
+	laterRate.Notes = "Synthetic S3 PUT rate update used to verify versioned catalog keys."
+	insertPriceCatalogTestItem(t, db, laterRate)
+
+	if err := repo.Validate(ctx); err != nil {
+		t.Fatalf("Validate() after versioned insert error = %v", err)
+	}
+
+	historical, err := repo.Lookup(ctx, PriceLookupRequest{
+		ServiceCode:         "AmazonS3",
+		UsageType:           "requests:put-1k",
+		Operation:           "PutObject",
+		RegionCode:          "us-east-1",
+		UsageUnit:           "Requests",
+		UsageQuantityMicros: 1000 * priceQuantityMicros,
+		UsageDate:           "2026-02-15",
+	})
+	if err != nil {
+		t.Fatalf("Lookup() historical rate error = %v", err)
+	}
+	if historical.Item.EffectiveDate != "2026-01-01" || historical.Item.RateMicros != 5000 || historical.CostMicros != 5000 {
+		t.Fatalf("Lookup() historical rate = %+v cost %d, want 2026-01-01 at 5000 micros", historical.Item, historical.CostMicros)
+	}
+
+	current, err := repo.Lookup(ctx, PriceLookupRequest{
+		ServiceCode:         "AmazonS3",
+		UsageType:           "requests:put-1k",
+		Operation:           "PutObject",
+		RegionCode:          "us-east-1",
+		UsageUnit:           "Requests",
+		UsageQuantityMicros: 1000 * priceQuantityMicros,
+		UsageDate:           "2026-03-15",
+	})
+	if err != nil {
+		t.Fatalf("Lookup() current rate error = %v", err)
+	}
+	if current.Item.EffectiveDate != "2026-03-01" || current.Item.RateMicros != 7000 || current.CostMicros != 7000 {
+		t.Fatalf("Lookup() current rate = %+v cost %d, want 2026-03-01 at 7000 micros", current.Item, current.CostMicros)
+	}
+
+	_, err = db.ExecContext(ctx, `INSERT INTO price_catalog_items (
+		sku,
+		service_code,
+		service_name,
+		product_family,
+		usage_type,
+		operation,
+		region_code,
+		unit,
+		rate_micros,
+		currency_code,
+		effective_date,
+		price_source,
+		pricing_formula,
+		notes
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		laterRate.SKU,
+		laterRate.ServiceCode,
+		laterRate.ServiceName,
+		laterRate.ProductFamily,
+		laterRate.UsageType,
+		laterRate.Operation,
+		laterRate.RegionCode,
+		laterRate.Unit,
+		laterRate.RateMicros,
+		laterRate.CurrencyCode,
+		laterRate.EffectiveDate,
+		laterRate.PriceSource,
+		laterRate.PricingFormula,
+		laterRate.Notes,
+	)
+	if err == nil {
+		t.Fatal("duplicate same-SKU same-date insert error = nil, want primary-key violation")
+	}
+}
+
 func validPriceCatalogTestItem() PriceCatalogItem {
 	return PriceCatalogItem{
 		SKU:            "SIM-TEST-CATALOG",
@@ -208,6 +302,46 @@ func validPriceCatalogTestItem() PriceCatalogItem {
 		PriceSource:    "synthetic",
 		PricingFormula: "usage_quantity * rate",
 		Notes:          "Synthetic row used to verify catalog validation.",
+	}
+}
+
+// insertPriceCatalogTestItem adds one complete catalog row for tests that need custom rate versions.
+func insertPriceCatalogTestItem(t *testing.T, db *sql.DB, item PriceCatalogItem) {
+	t.Helper()
+
+	_, err := db.ExecContext(context.Background(), `INSERT INTO price_catalog_items (
+		sku,
+		service_code,
+		service_name,
+		product_family,
+		usage_type,
+		operation,
+		region_code,
+		unit,
+		rate_micros,
+		currency_code,
+		effective_date,
+		price_source,
+		pricing_formula,
+		notes
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.SKU,
+		item.ServiceCode,
+		item.ServiceName,
+		item.ProductFamily,
+		item.UsageType,
+		item.Operation,
+		item.RegionCode,
+		item.Unit,
+		item.RateMicros,
+		item.CurrencyCode,
+		item.EffectiveDate,
+		item.PriceSource,
+		item.PricingFormula,
+		item.Notes,
+	)
+	if err != nil {
+		t.Fatalf("insert price catalog item %q at %q: %v", item.SKU, item.EffectiveDate, err)
 	}
 }
 

@@ -57,6 +57,14 @@ func TestOpenWorkspaceConfiguresSQLiteConcurrencyPragmas(t *testing.T) {
 		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
 
+	var foreignKeysEnabled int
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeysEnabled); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if foreignKeysEnabled != 1 {
+		t.Fatalf("foreign_keys = %d, want 1", foreignKeysEnabled)
+	}
+
 	var busyTimeoutMS int
 	if err := db.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeoutMS); err != nil {
 		t.Fatalf("read busy_timeout: %v", err)
@@ -101,8 +109,8 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 5 {
-		t.Fatalf("schema_migrations count = %d, want 5", count)
+	if count != 6 {
+		t.Fatalf("schema_migrations count = %d, want 6", count)
 	}
 
 	assertMigrationRecorded(t, db, 1, "workspace_metadata")
@@ -110,6 +118,7 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	assertMigrationRecorded(t, db, 3, "price_catalog_rate_versions")
 	assertMigrationRecorded(t, db, 4, "price_catalog_lookup_identity")
 	assertMigrationRecorded(t, db, 5, "price_catalog_positive_rates")
+	assertMigrationRecorded(t, db, 6, "resource_usage_events")
 
 	var schemaKind string
 	if err := db.QueryRowContext(
@@ -126,8 +135,8 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if userVersion != 5 {
-		t.Fatalf("user_version = %d, want 5", userVersion)
+	if userVersion != 6 {
+		t.Fatalf("user_version = %d, want 6", userVersion)
 	}
 }
 

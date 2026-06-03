@@ -68,6 +68,7 @@ func workspaceDSN(dbPath string) (string, error) {
 
 	query := url.Values{}
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", int(workspaceBusyTimeout/time.Millisecond)))
+	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "journal_mode(WAL)")
 
 	uri := url.URL{

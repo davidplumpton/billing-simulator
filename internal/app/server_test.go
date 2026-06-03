@@ -202,6 +202,40 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	if generatorCount != 2 {
 		t.Fatalf("generated usage event count = %d, want 2", generatorCount)
 	}
+
+	resp, err = client.PostForm(server.URL+"/resources/billing-pipeline", url.Values{
+		"payer_account_id": {"999988887777"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/billing-pipeline error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/billing-pipeline final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Created 3 metering records and 3 bill line items") ||
+		!strings.Contains(body, "Metering Records") ||
+		!strings.Contains(body, "Bill Line Items") ||
+		!strings.Contains(body, "SIM-EC2-T3-MEDIUM-HR") ||
+		!strings.Contains(body, "999988887777") {
+		t.Fatalf("billing pipeline response missing metering or bill line item details: %s", body)
+	}
+
+	var meteringCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metering_records`).Scan(&meteringCount); err != nil {
+		t.Fatalf("count metering_records: %v", err)
+	}
+	if meteringCount != 3 {
+		t.Fatalf("metering record count = %d, want 3", meteringCount)
+	}
+
+	var billLineItemCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items`).Scan(&billLineItemCount); err != nil {
+		t.Fatalf("count bill_line_items: %v", err)
+	}
+	if billLineItemCount != 3 {
+		t.Fatalf("bill line item count = %d, want 3", billLineItemCount)
+	}
 }
 
 func readResponseBody(t *testing.T, resp *http.Response) string {

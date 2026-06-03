@@ -121,6 +121,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/resources/tags", resourceLab.handleAddTag)
 	mux.HandleFunc("/resources/usage", resourceLab.handleRecordUsage)
 	mux.HandleFunc("/resources/generate", resourceLab.handleGenerateUsage)
+	mux.HandleFunc("/resources/billing-pipeline", resourceLab.handleRunBillingPipeline)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

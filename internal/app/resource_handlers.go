@@ -30,6 +30,8 @@ type resourceLabHandler struct {
 	db        *sql.DB
 	resources persistence.ResourceUsageRepository
 	catalog   persistence.PriceCatalogRepository
+	metering  persistence.MeteringRepository
+	lineItems persistence.BillLineItemRepository
 }
 
 type resourcePreset struct {
@@ -63,6 +65,7 @@ type resourcePageData struct {
 	Flash                      string
 	Error                      string
 	DefaultAccountID           string
+	DefaultPayerAccountID      string
 	DefaultUsageStart          string
 	DefaultUsageEnd            string
 	DefaultGenerationStartDate string
@@ -74,6 +77,8 @@ type resourcePageData struct {
 	UsageGenerationPresets     []usageGenerationPreset
 	Resources                  []resourceView
 	UsageEvents                []usageEventView
+	MeteringRecords            []meteringRecordView
+	BillLineItems              []billLineItemView
 	CatalogItems               []catalogItemView
 }
 
@@ -110,6 +115,32 @@ type usageEventView struct {
 	Tags               []keyValueView
 }
 
+type meteringRecordView struct {
+	ResourceName       string
+	AccountID          string
+	BillableDimensions string
+	Window             string
+	Quantity           string
+	Unit               string
+	Tags               []keyValueView
+}
+
+type billLineItemView struct {
+	ResourceName     string
+	Period           string
+	PayerAccountID   string
+	UsageAccountID   string
+	ServiceCode      string
+	Description      string
+	PricingQuantity  string
+	PricingUnit      string
+	UnblendedRate    string
+	UnblendedCost    string
+	PriceCatalogSKU  string
+	PriceEffectiveOn string
+	Tags             []keyValueView
+}
+
 type catalogItemView struct {
 	ServiceCode        string
 	UsageType          string
@@ -131,6 +162,8 @@ func newResourceLabHandler(db *sql.DB) resourceLabHandler {
 		db:        db,
 		resources: persistence.NewResourceUsageRepository(db),
 		catalog:   persistence.NewPriceCatalogRepository(db),
+		metering:  persistence.NewMeteringRepository(db),
+		lineItems: persistence.NewBillLineItemRepository(db),
 	}
 }
 
@@ -259,12 +292,46 @@ func (h resourceLabHandler) handleGenerateUsage(w http.ResponseWriter, r *http.R
 	)
 }
 
+// handleRunBillingPipeline converts pending usage into metering records and priced bill line items.
+func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before pricing usage.", "")
+		return
+	}
+	request, err := billingPipelineRequestFromForm(r)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	meteringResult, err := h.metering.GenerateMeteringRecords(r.Context())
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	lineItemResult, err := h.lineItems.GenerateBillLineItems(r.Context(), request)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	flash := fmt.Sprintf(
+		"Created %d metering records and %d bill line items",
+		meteringResult.RecordsCreated,
+		lineItemResult.ItemsCreated,
+	)
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
+}
+
 func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	data := resourcePageData{
 		WorkspaceReady:             h.db != nil,
 		Flash:                      flashMessage,
 		Error:                      errorMessage,
 		DefaultAccountID:           defaultAccountID,
+		DefaultPayerAccountID:      defaultAccountID,
 		DefaultUsageStart:          defaultUsageStartLocal,
 		DefaultUsageEnd:            defaultUsageEndLocal,
 		DefaultGenerationStartDate: defaultGenerationStartDate,
@@ -310,6 +377,22 @@ func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *reso
 	}
 	for _, event := range usageEvents {
 		data.UsageEvents = append(data.UsageEvents, h.usageEventView(ctx, event, resourceNames[event.ResourceID]))
+	}
+
+	meteringRecords, err := h.metering.ListMeteringRecords(ctx, 25)
+	if err != nil {
+		return err
+	}
+	for _, record := range meteringRecords {
+		data.MeteringRecords = append(data.MeteringRecords, meteringRecordViewFromRecord(record, resourceNames[record.ResourceID]))
+	}
+
+	billLineItems, err := h.lineItems.ListBillLineItems(ctx, 25)
+	if err != nil {
+		return err
+	}
+	for _, item := range billLineItems {
+		data.BillLineItems = append(data.BillLineItems, billLineItemViewFromItem(item, resourceNames[item.ResourceID]))
 	}
 
 	catalogItems, err := h.catalog.List(ctx)
@@ -432,6 +515,15 @@ func usageGenerationRequestFromForm(r *http.Request) (persistence.UsageGeneratio
 	}, nil
 }
 
+func billingPipelineRequestFromForm(r *http.Request) (persistence.BillLineItemGenerationRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return persistence.BillLineItemGenerationRequest{}, fmt.Errorf("parse billing pipeline form: %w", err)
+	}
+	return persistence.BillLineItemGenerationRequest{
+		PayerAccountID: r.PostForm.Get("payer_account_id"),
+	}, nil
+}
+
 func resourceViewFromSummary(summary persistence.ResourceSummary) resourceView {
 	resource := summary.Resource
 	name := displayResourceName(resource)
@@ -449,6 +541,42 @@ func resourceViewFromSummary(summary persistence.ResourceSummary) resourceView {
 		LastUsageEndTime: summary.LastUsageEndTime,
 		Tags:             keyValueViews(summary.ActiveTags),
 		Attributes:       keyValueViews(resource.Attributes),
+	}
+}
+
+func meteringRecordViewFromRecord(record persistence.MeteringRecord, resourceName string) meteringRecordView {
+	if resourceName == "" {
+		resourceName = record.ResourceID
+	}
+	return meteringRecordView{
+		ResourceName:       resourceName,
+		AccountID:          record.AccountID,
+		BillableDimensions: billableDimensions(record.ServiceCode, record.UsageType, record.Operation, record.RegionCode),
+		Window:             record.UsageStartTime + " to " + record.UsageEndTime,
+		Quantity:           formatQuantityMicros(record.UsageQuantityMicros),
+		Unit:               record.UsageUnit,
+		Tags:               keyValueViews(record.TagSnapshot),
+	}
+}
+
+func billLineItemViewFromItem(item persistence.BillLineItem, resourceName string) billLineItemView {
+	if resourceName == "" {
+		resourceName = item.ResourceID
+	}
+	return billLineItemView{
+		ResourceName:     resourceName,
+		Period:           item.BillingPeriodStart + " to " + item.BillingPeriodEnd,
+		PayerAccountID:   item.PayerAccountID,
+		UsageAccountID:   item.UsageAccountID,
+		ServiceCode:      item.ServiceCode,
+		Description:      item.Description,
+		PricingQuantity:  formatQuantityMicros(item.PricingQuantityMicros),
+		PricingUnit:      item.PricingUnit,
+		UnblendedRate:    formatUSDMicros(item.UnblendedRateMicros),
+		UnblendedCost:    formatUSDMicros(item.UnblendedCostMicros),
+		PriceCatalogSKU:  item.PriceCatalogSKU,
+		PriceEffectiveOn: item.PriceEffectiveDate,
+		Tags:             keyValueViews(item.TagSnapshot),
 	}
 }
 
@@ -913,6 +1041,16 @@ owner=web-platform</textarea>
 					</div>
 					<button type="submit">Add Tag</button>
 				</form>
+
+				<form method="post" action="/resources/billing-pipeline" class="panel compact">
+					<h2>Price Usage</h2>
+					<div class="fields">
+						<label>Payer Account ID
+							<input name="payer_account_id" value="{{.DefaultPayerAccountID}}">
+						</label>
+					</div>
+					<button type="submit">Run Billing Pipeline</button>
+				</form>
 			</section>
 
 			<section>
@@ -983,6 +1121,80 @@ owner=web-platform</textarea>
 								</tr>
 							{{else}}
 								<tr><td colspan="6" class="empty-cell">No usage events</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Metering Records</h2>
+					<span>{{len .MeteringRecords}} records</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Resource</th>
+								<th>Billable Dimensions</th>
+								<th>Window</th>
+								<th>Quantity</th>
+								<th>Tags Snapshot</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .MeteringRecords}}
+								<tr>
+									<td><strong>{{.ResourceName}}</strong><small>{{.AccountID}}</small></td>
+									<td><code>{{.BillableDimensions}}</code></td>
+									<td>{{.Window}}</td>
+									<td>{{.Quantity}} {{.Unit}}</td>
+									<td>{{template "tags" .Tags}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="5" class="empty-cell">No metering records</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Bill Line Items</h2>
+					<span>{{len .BillLineItems}} items</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Resource</th>
+								<th>Period</th>
+								<th>Accounts</th>
+								<th>Service</th>
+								<th>Description</th>
+								<th>Usage</th>
+								<th>Rate</th>
+								<th>Cost</th>
+								<th>Tags Snapshot</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .BillLineItems}}
+								<tr>
+									<td><strong>{{.ResourceName}}</strong><small>{{.PriceCatalogSKU}} @ {{.PriceEffectiveOn}}</small></td>
+									<td>{{.Period}}</td>
+									<td><strong>{{.PayerAccountID}}</strong><small>{{.UsageAccountID}}</small></td>
+									<td>{{.ServiceCode}}</td>
+									<td>{{.Description}}</td>
+									<td>{{.PricingQuantity}} {{.PricingUnit}}</td>
+									<td>{{.UnblendedRate}}</td>
+									<td>{{.UnblendedCost}}</td>
+									<td>{{template "tags" .Tags}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="9" class="empty-cell">No bill line items</td></tr>
 							{{end}}
 						</tbody>
 					</table>

@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -207,6 +208,207 @@ func TestBillLineItemRepositoryProratesStorageByBillingPeriodDays(t *testing.T) 
 	}
 }
 
+func TestBillLineItemRepositoryPricesBoundaryScenarios(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	tests := []struct {
+		name     string
+		resource ResourceCreateRequest
+		usage    UsageEventCreateRequest
+		want     billLineItemBoundaryWant
+	}{
+		{
+			name: "hourly instance usage starting before month boundary stays in start period",
+			resource: ResourceCreateRequest{
+				ID:           "resource-boundary-ec2-active",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEC2,
+				ResourceType: "ec2_instance",
+				Status:       "active",
+				StartedAt:    "2026-02-28T22:00:00Z",
+			},
+			usage: UsageEventCreateRequest{
+				ID:                  "usage-boundary-ec2-active",
+				ResourceID:          "resource-boundary-ec2-active",
+				UsageType:           "instance-hours:t3.medium",
+				Operation:           "RunInstances",
+				UsageStartTime:      "2026-02-28T22:00:00Z",
+				UsageEndTime:        "2026-03-01T02:00:00Z",
+				UsageQuantityMicros: 4_000_000,
+				UsageUnit:           "Hours",
+			},
+			want: billLineItemBoundaryWant{
+				BillingPeriodStart:    "2026-02-01",
+				BillingPeriodEnd:      "2026-03-01",
+				BillingPeriodDays:     28,
+				UsageStartTime:        "2026-02-28T22:00:00Z",
+				UsageEndTime:          "2026-03-01T02:00:00Z",
+				UsageQuantityMicros:   4_000_000,
+				UsageUnit:             "Hours",
+				PricingUnit:           "InstanceHour",
+				PricingQuantityMicros: 4_000_000,
+				UnblendedRateMicros:   41_600,
+				UnblendedCostMicros:   166_400,
+				PriceCatalogSKU:       "SIM-EC2-T3-MEDIUM-HR",
+			},
+		},
+		{
+			name: "stopped instance charges recorded hours through stop time",
+			resource: ResourceCreateRequest{
+				ID:           "resource-boundary-ec2-stopped",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEC2,
+				ResourceType: "ec2_instance",
+				Status:       "stopped",
+				StartedAt:    "2026-03-31T18:00:00Z",
+				StoppedAt:    "2026-04-01T00:00:00Z",
+			},
+			usage: UsageEventCreateRequest{
+				ID:                  "usage-boundary-ec2-stopped",
+				ResourceID:          "resource-boundary-ec2-stopped",
+				UsageType:           "instance-hours:t3.medium",
+				Operation:           "RunInstances",
+				UsageStartTime:      "2026-03-31T18:00:00Z",
+				UsageEndTime:        "2026-04-01T00:00:00Z",
+				UsageQuantityMicros: 6_000_000,
+				UsageUnit:           "Hours",
+			},
+			want: billLineItemBoundaryWant{
+				BillingPeriodStart:    "2026-03-01",
+				BillingPeriodEnd:      "2026-04-01",
+				BillingPeriodDays:     31,
+				UsageStartTime:        "2026-03-31T18:00:00Z",
+				UsageEndTime:          "2026-04-01T00:00:00Z",
+				UsageQuantityMicros:   6_000_000,
+				UsageUnit:             "Hours",
+				PricingUnit:           "InstanceHour",
+				PricingQuantityMicros: 6_000_000,
+				UnblendedRateMicros:   41_600,
+				UnblendedCostMicros:   249_600,
+				PriceCatalogSKU:       "SIM-EC2-T3-MEDIUM-HR",
+			},
+		},
+		{
+			name: "daily storage proration uses leap year February days and rounds cost",
+			resource: ResourceCreateRequest{
+				ID:           "resource-boundary-ebs-leap",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEBS,
+				ResourceType: "ebs_volume",
+				Status:       "active",
+			},
+			usage: UsageEventCreateRequest{
+				ID:                  "usage-boundary-ebs-leap",
+				ResourceID:          "resource-boundary-ebs-leap",
+				UsageType:           "storage:gp3-gb-month",
+				Operation:           "VolumeStorage",
+				UsageStartTime:      "2028-02-29T00:00:00Z",
+				UsageEndTime:        "2028-03-01T00:00:00Z",
+				UsageQuantityMicros: 100_000_000,
+				UsageUnit:           "GBDay",
+			},
+			want: billLineItemBoundaryWant{
+				BillingPeriodStart:    "2028-02-01",
+				BillingPeriodEnd:      "2028-03-01",
+				BillingPeriodDays:     29,
+				UsageStartTime:        "2028-02-29T00:00:00Z",
+				UsageEndTime:          "2028-03-01T00:00:00Z",
+				UsageQuantityMicros:   100_000_000,
+				UsageUnit:             "GBDay",
+				PricingUnit:           "GBMonth",
+				PricingQuantityMicros: 3_448_276,
+				UnblendedRateMicros:   80_000,
+				UnblendedCostMicros:   275_862,
+				PriceCatalogSKU:       "SIM-EBS-GP3-GBMO",
+			},
+		},
+		{
+			name: "daily storage proration uses 31 day month at boundary",
+			resource: ResourceCreateRequest{
+				ID:           "resource-boundary-s3-march",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonS3,
+				ResourceType: "s3_bucket",
+				Status:       "active",
+			},
+			usage: UsageEventCreateRequest{
+				ID:                  "usage-boundary-s3-march",
+				ResourceID:          "resource-boundary-s3-march",
+				UsageType:           "storage:standard-gb-month",
+				Operation:           "StandardStorage",
+				UsageStartTime:      "2026-03-31T00:00:00Z",
+				UsageEndTime:        "2026-04-01T00:00:00Z",
+				UsageQuantityMicros: 100_000_000,
+				UsageUnit:           "GBDay",
+			},
+			want: billLineItemBoundaryWant{
+				BillingPeriodStart:    "2026-03-01",
+				BillingPeriodEnd:      "2026-04-01",
+				BillingPeriodDays:     31,
+				UsageStartTime:        "2026-03-31T00:00:00Z",
+				UsageEndTime:          "2026-04-01T00:00:00Z",
+				UsageQuantityMicros:   100_000_000,
+				UsageUnit:             "GBDay",
+				PricingUnit:           "GBMonth",
+				PricingQuantityMicros: 3_225_806,
+				UnblendedRateMicros:   23_000,
+				UnblendedCostMicros:   74_194,
+				PriceCatalogSKU:       "SIM-S3-STANDARD-GBMO",
+			},
+		},
+		{
+			name: "monthly subscription starting before month boundary stays in start period",
+			resource: ResourceCreateRequest{
+				ID:           "resource-boundary-marketplace",
+				AccountID:    "111122223333",
+				RegionCode:   "global",
+				ServiceCode:  "AWSMarketplace",
+				ResourceType: "marketplace_subscription",
+				Status:       "active",
+			},
+			usage: UsageEventCreateRequest{
+				ID:                  "usage-boundary-marketplace",
+				ResourceID:          "resource-boundary-marketplace",
+				UsageType:           "marketplace-security-tool-month",
+				Operation:           "MonthlySubscription",
+				UsageStartTime:      "2026-04-30T23:00:00Z",
+				UsageEndTime:        "2026-05-01T00:00:00Z",
+				UsageQuantityMicros: 1_000_000,
+				UsageUnit:           "Months",
+			},
+			want: billLineItemBoundaryWant{
+				BillingPeriodStart:    "2026-04-01",
+				BillingPeriodEnd:      "2026-05-01",
+				BillingPeriodDays:     30,
+				UsageStartTime:        "2026-04-30T23:00:00Z",
+				UsageEndTime:          "2026-05-01T00:00:00Z",
+				UsageQuantityMicros:   1_000_000,
+				UsageUnit:             "Months",
+				PricingUnit:           "SubscriptionMonth",
+				PricingQuantityMicros: 1_000_000,
+				UnblendedRateMicros:   250_000_000,
+				UnblendedCostMicros:   250_000_000,
+				PriceCatalogSKU:       "SIM-MARKETPLACE-SECURITY-MONTH",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestWorkspace(t)
+			item := recordAndPriceSingleUsage(t, ctx, db, tt.resource, tt.usage)
+
+			assertBillLineItemBoundary(t, item, tt.want)
+		})
+	}
+}
+
 func TestBillLineItemRepositorySurfacesMissingCatalogRate(t *testing.T) {
 	t.Parallel()
 
@@ -269,5 +471,78 @@ func TestBillLineItemRepositoryRejectsNilDB(t *testing.T) {
 	}
 	if _, err := repo.GenerateBillLineItems(context.Background(), BillLineItemGenerationRequest{}); err == nil {
 		t.Fatal("GenerateBillLineItems() error = nil, want database handle validation error")
+	}
+}
+
+type billLineItemBoundaryWant struct {
+	BillingPeriodStart    string
+	BillingPeriodEnd      string
+	BillingPeriodDays     int
+	UsageStartTime        string
+	UsageEndTime          string
+	UsageQuantityMicros   int64
+	UsageUnit             string
+	PricingUnit           string
+	PricingQuantityMicros int64
+	UnblendedRateMicros   int64
+	UnblendedCostMicros   int64
+	PriceCatalogSKU       string
+}
+
+// recordAndPriceSingleUsage exercises the usage -> metering -> bill line item path for one test case.
+func recordAndPriceSingleUsage(t *testing.T, ctx context.Context, db *sql.DB, resourceRequest ResourceCreateRequest, usageRequest UsageEventCreateRequest) BillLineItem {
+	t.Helper()
+
+	usageRepo := NewResourceUsageRepository(db)
+	meteringRepo := NewMeteringRepository(db)
+	lineItemRepo := NewBillLineItemRepository(db)
+
+	resource, err := usageRepo.CreateResource(ctx, resourceRequest)
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	event, err := usageRepo.RecordUsageEvent(ctx, usageRequest)
+	if err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	metering, err := meteringRepo.GenerateMeteringRecords(ctx)
+	if err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	result, err := lineItemRepo.GenerateBillLineItems(ctx, BillLineItemGenerationRequest{})
+	if err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+	if result.ItemsCreated != 1 || len(result.Items) != 1 {
+		t.Fatalf("GenerateBillLineItems() = %+v, want one created line item", result)
+	}
+	item := result.Items[0]
+	if item.ResourceID != resource.ID || item.UsageEventID != event.ID || item.MeteringRecordID != metering.Records[0].ID {
+		t.Fatalf("line item lineage = %+v, want resource %q usage event %q metering %q", item, resource.ID, event.ID, metering.Records[0].ID)
+	}
+	return item
+}
+
+// assertBillLineItemBoundary verifies the fields that define billing boundary math.
+func assertBillLineItemBoundary(t *testing.T, item BillLineItem, want billLineItemBoundaryWant) {
+	t.Helper()
+
+	if item.BillingPeriodStart != want.BillingPeriodStart || item.BillingPeriodEnd != want.BillingPeriodEnd || item.BillingPeriodDays != want.BillingPeriodDays {
+		t.Fatalf("billing period = %s/%s days %d, want %s/%s days %d", item.BillingPeriodStart, item.BillingPeriodEnd, item.BillingPeriodDays, want.BillingPeriodStart, want.BillingPeriodEnd, want.BillingPeriodDays)
+	}
+	if item.UsageStartTime != want.UsageStartTime || item.UsageEndTime != want.UsageEndTime {
+		t.Fatalf("usage window = %s/%s, want %s/%s", item.UsageStartTime, item.UsageEndTime, want.UsageStartTime, want.UsageEndTime)
+	}
+	if item.UsageQuantityMicros != want.UsageQuantityMicros || item.UsageUnit != want.UsageUnit {
+		t.Fatalf("usage quantity = %d %s, want %d %s", item.UsageQuantityMicros, item.UsageUnit, want.UsageQuantityMicros, want.UsageUnit)
+	}
+	if item.PricingUnit != want.PricingUnit || item.PricingQuantityMicros != want.PricingQuantityMicros {
+		t.Fatalf("pricing quantity = %d %s, want %d %s", item.PricingQuantityMicros, item.PricingUnit, want.PricingQuantityMicros, want.PricingUnit)
+	}
+	if item.UnblendedRateMicros != want.UnblendedRateMicros || item.UnblendedCostMicros != want.UnblendedCostMicros {
+		t.Fatalf("pricing math = rate %d cost %d, want rate %d cost %d", item.UnblendedRateMicros, item.UnblendedCostMicros, want.UnblendedRateMicros, want.UnblendedCostMicros)
+	}
+	if item.PriceCatalogSKU != want.PriceCatalogSKU || item.PriceEffectiveDate != "2026-01-01" {
+		t.Fatalf("price lineage = %q/%q, want SKU %q effective 2026-01-01", item.PriceCatalogSKU, item.PriceEffectiveDate, want.PriceCatalogSKU)
 	}
 }

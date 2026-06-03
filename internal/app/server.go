@@ -49,7 +49,7 @@ func Start(cfg Config, logger *slog.Logger) (*Server, error) {
 
 	server := &Server{
 		httpServer: &http.Server{
-			Handler:           newMux(),
+			Handler:           newMux(db),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		listener: listener,
@@ -110,17 +110,16 @@ func (s *Server) Wait() error {
 	return <-s.done
 }
 
-// newMux wires the first smoke-testable endpoints for the simulator process.
-func newMux() http.Handler {
+// newMux wires the simulator's local browser UI and smoke-testable endpoints.
+func newMux(db *sql.DB) http.Handler {
+	resourceLab := newResourceLabHandler(db)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "AWS Billing Simulator")
-	})
+	mux.HandleFunc("/", resourceLab.handleRoot)
+	mux.HandleFunc("/assets/app.css", resourceLab.handleStylesheet)
+	mux.HandleFunc("/resources", resourceLab.handleResources)
+	mux.HandleFunc("/resources/create", resourceLab.handleCreateResource)
+	mux.HandleFunc("/resources/tags", resourceLab.handleAddTag)
+	mux.HandleFunc("/resources/usage", resourceLab.handleRecordUsage)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

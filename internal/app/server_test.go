@@ -6,6 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,4 +98,104 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if catalogCount != 18 {
 		t.Fatalf("price_catalog_items count = %d, want 18", catalogCount)
 	}
+}
+
+func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/resources")
+	if err != nil {
+		t.Fatalf("GET /resources error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Create Resource") || !strings.Contains(body, "Price Dimensions") {
+		t.Fatalf("GET /resources body missing resource lab UI: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Storefront web"},
+		"status":         {"active"},
+		"started_at":     {"2026-02-01T00:00"},
+		"tags":           {"app=storefront\nowner=web-platform"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Storefront web") || !strings.Contains(body, "app=storefront") {
+		t.Fatalf("resource create response missing created resource/tag: %s", body)
+	}
+
+	resourceID := readOnlyResourceID(t, db)
+	resp, err = client.PostForm(server.URL+"/resources/usage", url.Values{
+		"resource_id":      {resourceID},
+		"usage_preset":     {"ec2_hours"},
+		"quantity":         {"2"},
+		"usage_start_time": {"2026-02-01T00:00"},
+		"usage_end_time":   {"2026-02-01T02:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/usage error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/usage final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "instance-hours:t3.medium") || !strings.Contains(body, "$0.0832") {
+		t.Fatalf("usage response missing billable dimensions or estimate: %s", body)
+	}
+
+	var usageCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE resource_id = ?`, resourceID).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage events: %v", err)
+	}
+	if usageCount != 1 {
+		t.Fatalf("usage event count = %d, want 1", usageCount)
+	}
+}
+
+func readResponseBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return string(body)
+}
+
+func readOnlyResourceID(t *testing.T, db *sql.DB) string {
+	t.Helper()
+
+	var resourceID string
+	if err := db.QueryRowContext(context.Background(), `SELECT id FROM resources LIMIT 1`).Scan(&resourceID); err != nil {
+		t.Fatalf("read resource ID: %v", err)
+	}
+	return resourceID
 }

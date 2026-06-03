@@ -241,6 +241,103 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	}
 }
 
+func TestResourcesUIStorageEstimatesUseBillingPeriodDays(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		usageID        string
+		usageStartTime string
+		usageEndTime   string
+		quantityMicros int64
+		wantDays       int
+	}{
+		{
+			name:           "February",
+			usageID:        "usage-ui-storage-february",
+			usageStartTime: "2026-02-10T00:00:00Z",
+			usageEndTime:   "2026-02-11T00:00:00Z",
+			quantityMicros: 280_000_000,
+			wantDays:       28,
+		},
+		{
+			name:           "March",
+			usageID:        "usage-ui-storage-march",
+			usageStartTime: "2026-03-10T00:00:00Z",
+			usageEndTime:   "2026-03-11T00:00:00Z",
+			quantityMicros: 310_000_000,
+			wantDays:       31,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+			if err != nil {
+				t.Fatalf("OpenWorkspace() error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Errorf("Close() error = %v", err)
+				}
+			})
+
+			usageRepo := persistence.NewResourceUsageRepository(db)
+			resource, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+				ID:           "resource-" + tt.usageID,
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  "AmazonEBS",
+				ResourceType: "ebs_volume",
+				ResourceName: tt.name + " volume",
+				Status:       "active",
+				StartedAt:    "2026-02-01T00:00:00Z",
+			})
+			if err != nil {
+				t.Fatalf("CreateResource() error = %v", err)
+			}
+			event, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+				ID:                  tt.usageID,
+				ResourceID:          resource.ID,
+				UsageType:           "storage:gp3-gb-month",
+				Operation:           "VolumeStorage",
+				UsageStartTime:      tt.usageStartTime,
+				UsageEndTime:        tt.usageEndTime,
+				UsageQuantityMicros: tt.quantityMicros,
+				UsageUnit:           "GBDay",
+			})
+			if err != nil {
+				t.Fatalf("RecordUsageEvent() error = %v", err)
+			}
+
+			view := newResourceLabHandler(db).usageEventView(ctx, event, resource.ResourceName)
+			if view.EstimatedCost == "unpriced" {
+				t.Fatalf("usageEventView() estimate = %q, want priced storage estimate", view.EstimatedCost)
+			}
+
+			if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+				t.Fatalf("GenerateMeteringRecords() error = %v", err)
+			}
+			result, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{})
+			if err != nil {
+				t.Fatalf("GenerateBillLineItems() error = %v", err)
+			}
+			if result.ItemsCreated != 1 {
+				t.Fatalf("GenerateBillLineItems() created %d, want 1", result.ItemsCreated)
+			}
+			item := result.Items[0]
+			if item.BillingPeriodDays != tt.wantDays {
+				t.Fatalf("bill line item billing period days = %d, want %d", item.BillingPeriodDays, tt.wantDays)
+			}
+			if want := formatUSDMicros(item.UnblendedCostMicros); view.EstimatedCost != want {
+				t.Fatalf("usageEventView() estimate = %q, want persisted bill line item cost %q", view.EstimatedCost, want)
+			}
+		})
+	}
+}
+
 func TestResourcesUIAdvancesSimulatorClock(t *testing.T) {
 	t.Parallel()
 
@@ -270,6 +367,9 @@ func TestResourcesUIAdvancesSimulatorClock(t *testing.T) {
 	if !strings.Contains(body, "2026-02-01 to 2026-03-01 (28 days)") {
 		t.Fatalf("GET /resources body missing initial billing period: %s", body)
 	}
+	if !strings.Contains(body, "100 GB-day $0.285714") {
+		t.Fatalf("GET /resources body missing February storage price-dimension estimate: %s", body)
+	}
 
 	body = postClockAdvance(t, client, server.URL, "6", string(persistence.SimulatorClockAdvanceHours))
 	if !strings.Contains(body, "Advanced clock to 2026-02-01T06:00:00Z") ||
@@ -287,6 +387,7 @@ func TestResourcesUIAdvancesSimulatorClock(t *testing.T) {
 	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
 	if !strings.Contains(body, "Advanced clock to 2026-03-01T00:00:00Z") ||
 		!strings.Contains(body, "2026-03-01 to 2026-04-01 (31 days)") ||
+		!strings.Contains(body, "100 GB-day $0.258065") ||
 		!strings.Contains(body, `value="2026-03-01T00:00"`) {
 		t.Fatalf("billing-period advance response missing updated clock state: %s", body)
 	}

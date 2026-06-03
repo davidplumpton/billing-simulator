@@ -644,7 +644,7 @@ func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *reso
 		return err
 	}
 	for _, item := range catalogItems {
-		data.CatalogItems = append(data.CatalogItems, catalogItemViewFromCatalog(item))
+		data.CatalogItems = append(data.CatalogItems, catalogItemViewFromCatalog(item, clock.BillingPeriodDays))
 	}
 	return nil
 }
@@ -953,18 +953,21 @@ func (h resourceLabHandler) usageEventView(ctx context.Context, event persistenc
 		resourceName = event.ResourceID
 	}
 	costEstimate := "unpriced"
-	lookupResult, err := h.catalog.Lookup(ctx, persistence.PriceLookupRequest{
-		ServiceCode:         event.ServiceCode,
-		UsageType:           event.UsageType,
-		Operation:           event.Operation,
-		RegionCode:          event.RegionCode,
-		UsageUnit:           event.UsageUnit,
-		UsageQuantityMicros: event.UsageQuantityMicros,
-		UsageDate:           usageDate(event.UsageStartTime),
-		BillingPeriodDays:   30,
-	})
-	if err == nil {
-		costEstimate = formatUSDMicros(lookupResult.CostMicros)
+	usageDate, billingPeriodDays, ok := usageEstimatePeriod(event.UsageStartTime)
+	if ok {
+		lookupResult, err := h.catalog.Lookup(ctx, persistence.PriceLookupRequest{
+			ServiceCode:         event.ServiceCode,
+			UsageType:           event.UsageType,
+			Operation:           event.Operation,
+			RegionCode:          event.RegionCode,
+			UsageUnit:           event.UsageUnit,
+			UsageQuantityMicros: event.UsageQuantityMicros,
+			UsageDate:           usageDate,
+			BillingPeriodDays:   billingPeriodDays,
+		})
+		if err == nil {
+			costEstimate = formatUSDMicros(lookupResult.CostMicros)
+		}
 	}
 
 	return usageEventView{
@@ -985,13 +988,13 @@ func (h resourceLabHandler) usageEventView(ctx context.Context, event persistenc
 	}
 }
 
-func catalogItemViewFromCatalog(item persistence.PriceCatalogItem) catalogItemView {
+func catalogItemViewFromCatalog(item persistence.PriceCatalogItem, billingPeriodDays int) catalogItemView {
 	periodEstimate := ""
 	if strings.Contains(strings.ToLower(item.Unit), "hour") {
 		periodEstimate = "24h " + formatUSDMicros(item.RateMicros*24)
 	}
-	if strings.EqualFold(item.Unit, "GBMonth") {
-		periodEstimate = "100 GB-day " + formatUSDMicros(divideAndRoundInt64(item.RateMicros*100, 30))
+	if strings.EqualFold(item.Unit, "GBMonth") && billingPeriodDays > 0 {
+		periodEstimate = "100 GB-day " + formatUSDMicros(divideAndRoundInt64(item.RateMicros*100, int64(billingPeriodDays)))
 	}
 	return catalogItemView{
 		ServiceCode:        item.ServiceCode,
@@ -1263,11 +1266,17 @@ func displayResourceName(resource persistence.Resource) string {
 	return resource.ID
 }
 
-func usageDate(value string) string {
-	if len(value) >= len(time.DateOnly) {
-		return value[:len(time.DateOnly)]
+// usageEstimatePeriod returns the lookup date and calendar-month days used for UI-only price estimates.
+func usageEstimatePeriod(value string) (string, int, bool) {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return "", 0, false
 	}
-	return ""
+	period, err := persistence.BillingPeriodForTime(parsed)
+	if err != nil {
+		return "", 0, false
+	}
+	return parsed.UTC().Format(time.DateOnly), period.Days, true
 }
 
 func billableDimensions(serviceCode, usageType, operation, regionCode string) string {

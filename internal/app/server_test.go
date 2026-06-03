@@ -594,6 +594,116 @@ func TestResourcesUIMonthEndCloseIssuesBill(t *testing.T) {
 	}
 }
 
+func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.PostForm(server.URL+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Workflow web"},
+		"status":         {"active"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	resourceID := readOnlyResourceID(t, db)
+	resp, err = client.PostForm(server.URL+"/resources/usage", url.Values{
+		"resource_id":      {resourceID},
+		"usage_preset":     {"ec2_hours"},
+		"quantity":         {"2"},
+		"usage_start_time": {"2026-02-01T00:00"},
+		"usage_end_time":   {"2026-02-01T02:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/usage error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/usage final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	body = postClockAdvance(t, client, server.URL, "3", string(persistence.SimulatorClockAdvanceHours))
+	if !strings.Contains(body, "Advanced clock to 2026-02-01T03:00:00Z") ||
+		!strings.Contains(body, "daily metering created 1 metering records and 2 bill line items") ||
+		!strings.Contains(body, "Current Billing Summary") ||
+		!strings.Contains(body, "AWSSupport") ||
+		!strings.Contains(body, "estimated") {
+		t.Fatalf("clock-advanced daily metering response missing estimated billing summary: %s", body)
+	}
+
+	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
+	if !strings.Contains(body, "Advanced clock to 2026-03-01T00:00:00Z") ||
+		!strings.Contains(body, "2026-03-01 to 2026-04-01 (31 days)") {
+		t.Fatalf("billing-period advance response missing March clock state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/resources/month-close", url.Values{
+		"payer_account_id": {"111122223333"},
+		"invoice_due_days": {"14"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/month-close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/month-close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Month-end close finalized 2 line items into bill") ||
+		!strings.Contains(body, "Closed Billing Periods") ||
+		!strings.Contains(body, "Issued Bills") ||
+		!strings.Contains(body, "AWSSupport") ||
+		!strings.Contains(body, "SIM-INV-202602-") ||
+		!strings.Contains(body, "$1.0832") ||
+		!strings.Contains(body, "final") ||
+		!strings.Contains(body, "due") {
+		t.Fatalf("month-end close response missing final bill workflow details: %s", body)
+	}
+
+	var finalLineItems int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = 'final'`).Scan(&finalLineItems); err != nil {
+		t.Fatalf("count final bill_line_items: %v", err)
+	}
+	if finalLineItems != 2 {
+		t.Fatalf("final bill line item count = %d, want 2", finalLineItems)
+	}
+	var issuedBills int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bills WHERE bill_state = 'issued'`).Scan(&issuedBills); err != nil {
+		t.Fatalf("count issued bills: %v", err)
+	}
+	if issuedBills != 1 {
+		t.Fatalf("issued bill count = %d, want 1", issuedBills)
+	}
+	var dueInvoices int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoice_obligations WHERE status = 'due'`).Scan(&dueInvoices); err != nil {
+		t.Fatalf("count due invoice obligations: %v", err)
+	}
+	if dueInvoices != 1 {
+		t.Fatalf("due invoice count = %d, want 1", dueInvoices)
+	}
+}
+
 func postClockAdvance(t *testing.T, client *http.Client, serverURL, amount, unit string) string {
 	t.Helper()
 

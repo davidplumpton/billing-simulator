@@ -87,8 +87,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 9 {
-		t.Fatalf("schema_migrations count = %d, want 9", count)
+	if count != 10 {
+		t.Fatalf("schema_migrations count = %d, want 10", count)
 	}
 
 	var catalogCount int
@@ -313,6 +313,109 @@ func TestResourcesUIAdvancesSimulatorClock(t *testing.T) {
 	}
 	if startedAt != "2026-03-01T00:00:00Z" {
 		t.Fatalf("created resource started_at = %q, want simulator clock default", startedAt)
+	}
+}
+
+func TestResourcesUIDailyMeteringRunsOnDemandAndAfterClockAdvance(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	body := postClockAdvance(t, client, server.URL, "2", string(persistence.SimulatorClockAdvanceHours))
+	if !strings.Contains(body, "daily metering created 0 metering records and 0 bill line items") {
+		t.Fatalf("initial clock advance response missing daily metering job flash: %s", body)
+	}
+
+	resp, err := client.PostForm(server.URL+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Daily metered web"},
+		"status":         {"active"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	resourceID := readOnlyResourceID(t, db)
+	resp, err = client.PostForm(server.URL+"/resources/usage", url.Values{
+		"resource_id":      {resourceID},
+		"usage_preset":     {"ec2_hours"},
+		"quantity":         {"1"},
+		"usage_start_time": {"2026-02-01T00:00"},
+		"usage_end_time":   {"2026-02-01T01:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/usage ready error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/usage ready final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	resp, err = client.PostForm(server.URL+"/resources/usage", url.Values{
+		"resource_id":      {resourceID},
+		"usage_preset":     {"ec2_hours"},
+		"quantity":         {"1"},
+		"usage_start_time": {"2026-02-01T02:00"},
+		"usage_end_time":   {"2026-02-01T03:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/usage future error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/usage future final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/resources/daily-metering", url.Values{
+		"payer_account_id": {"999988887777"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/daily-metering error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/daily-metering final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Daily metering created 1 metering records, 1 bill line items, and refreshed 1 summaries") ||
+		!strings.Contains(body, "Current Billing Summary") ||
+		!strings.Contains(body, "Daily Metering Jobs") ||
+		!strings.Contains(body, "estimated") ||
+		!strings.Contains(body, "999988887777") {
+		t.Fatalf("daily metering response missing summary/job details: %s", body)
+	}
+
+	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceHours))
+	if !strings.Contains(body, "daily metering created 1 metering records and 1 bill line items") ||
+		!strings.Contains(body, "clock_advance") ||
+		!strings.Contains(body, "on_demand") {
+		t.Fatalf("clock advance response missing triggered daily metering details: %s", body)
+	}
+
+	var jobRunCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM daily_metering_job_runs`).Scan(&jobRunCount); err != nil {
+		t.Fatalf("count daily_metering_job_runs: %v", err)
+	}
+	if jobRunCount != 3 {
+		t.Fatalf("daily metering job run count = %d, want 3", jobRunCount)
 	}
 }
 

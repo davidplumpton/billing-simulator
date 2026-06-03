@@ -34,6 +34,7 @@ type resourceLabHandler struct {
 	metering  persistence.MeteringRepository
 	lineItems persistence.BillLineItemRepository
 	clock     persistence.SimulatorClockRepository
+	dailyJobs persistence.DailyMeteringJobRepository
 }
 
 type resourcePreset struct {
@@ -98,6 +99,8 @@ type resourcePageData struct {
 	UsageEvents                []usageEventView
 	MeteringRecords            []meteringRecordView
 	BillLineItems              []billLineItemView
+	BillingPeriodSummaries     []billingPeriodSummaryView
+	DailyMeteringJobRuns       []dailyMeteringJobRunView
 	CatalogItems               []catalogItemView
 }
 
@@ -147,6 +150,7 @@ type meteringRecordView struct {
 type billLineItemView struct {
 	ResourceName     string
 	Period           string
+	Status           string
 	PayerAccountID   string
 	UsageAccountID   string
 	ServiceCode      string
@@ -158,6 +162,28 @@ type billLineItemView struct {
 	PriceCatalogSKU  string
 	PriceEffectiveOn string
 	Tags             []keyValueView
+}
+
+type billingPeriodSummaryView struct {
+	Period         string
+	PayerAccountID string
+	UsageAccountID string
+	ServiceCode    string
+	Status         string
+	LineItemCount  int
+	Cost           string
+	RefreshedAt    string
+}
+
+type dailyMeteringJobRunView struct {
+	ID                     string
+	Trigger                string
+	ClockTime              string
+	PayerAccountID         string
+	MeteringRecordsCreated int
+	BillLineItemsCreated   int
+	SummariesRefreshed     int
+	CompletedAt            string
 }
 
 type catalogItemView struct {
@@ -184,6 +210,7 @@ func newResourceLabHandler(db *sql.DB) resourceLabHandler {
 		metering:  persistence.NewMeteringRepository(db),
 		lineItems: persistence.NewBillLineItemRepository(db),
 		clock:     persistence.NewSimulatorClockRepository(db),
+		dailyJobs: persistence.NewDailyMeteringJobRepository(db),
 	}
 }
 
@@ -352,10 +379,50 @@ func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *h
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
+	clock, err := h.clock.Get(r.Context())
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	summaries, err := h.dailyJobs.RefreshBillingPeriodServiceSummaries(r.Context(), clock.BillingPeriodStart, clock.BillingPeriodEnd)
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
 	flash := fmt.Sprintf(
-		"Created %d metering records and %d bill line items",
+		"Created %d metering records and %d bill line items; refreshed %d summaries",
 		meteringResult.RecordsCreated,
 		lineItemResult.ItemsCreated,
+		len(summaries),
+	)
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
+}
+
+// handleRunDailyMeteringJob runs clock-bounded metering and refreshes current-period summaries.
+func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before running daily metering.", "")
+		return
+	}
+	request, err := dailyMeteringJobRequestFromForm(r, persistence.DailyMeteringJobTriggerOnDemand)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	result, err := h.dailyJobs.Run(r.Context(), request)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	flash := fmt.Sprintf(
+		"Daily metering created %d metering records, %d bill line items, and refreshed %d summaries",
+		result.MeteringRecordsCreated,
+		result.BillLineItemsCreated,
+		len(result.Summaries),
 	)
 	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
 }
@@ -380,7 +447,21 @@ func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Re
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
-	http.Redirect(w, r, "/resources?flash="+urlQueryEscape("Advanced clock to "+clock.CurrentTime), http.StatusSeeOther)
+	result, err := h.dailyJobs.Run(r.Context(), persistence.DailyMeteringJobRequest{
+		Trigger:        persistence.DailyMeteringJobTriggerClockAdvance,
+		PayerAccountID: defaultAccountID,
+	})
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	flash := fmt.Sprintf(
+		"Advanced clock to %s; daily metering created %d metering records and %d bill line items",
+		clock.CurrentTime,
+		result.MeteringRecordsCreated,
+		result.BillLineItemsCreated,
+	)
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
 }
 
 func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
@@ -460,6 +541,22 @@ func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *reso
 	}
 	for _, item := range billLineItems {
 		data.BillLineItems = append(data.BillLineItems, billLineItemViewFromItem(item, resourceNames[item.ResourceID]))
+	}
+
+	summaries, err := h.dailyJobs.ListBillingPeriodServiceSummaries(ctx, clock.BillingPeriodStart, clock.BillingPeriodEnd)
+	if err != nil {
+		return err
+	}
+	for _, summary := range summaries {
+		data.BillingPeriodSummaries = append(data.BillingPeriodSummaries, billingPeriodSummaryViewFromSummary(summary))
+	}
+
+	runs, err := h.dailyJobs.ListRuns(ctx, 10)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		data.DailyMeteringJobRuns = append(data.DailyMeteringJobRuns, dailyMeteringJobRunViewFromRun(run))
 	}
 
 	catalogItems, err := h.catalog.List(ctx)
@@ -625,6 +722,16 @@ func billingPipelineRequestFromForm(r *http.Request) (persistence.BillLineItemGe
 	}, nil
 }
 
+func dailyMeteringJobRequestFromForm(r *http.Request, trigger persistence.DailyMeteringJobTrigger) (persistence.DailyMeteringJobRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return persistence.DailyMeteringJobRequest{}, fmt.Errorf("parse daily metering form: %w", err)
+	}
+	return persistence.DailyMeteringJobRequest{
+		Trigger:        trigger,
+		PayerAccountID: r.PostForm.Get("payer_account_id"),
+	}, nil
+}
+
 func resourceViewFromSummary(summary persistence.ResourceSummary) resourceView {
 	resource := summary.Resource
 	name := displayResourceName(resource)
@@ -667,6 +774,7 @@ func billLineItemViewFromItem(item persistence.BillLineItem, resourceName string
 	return billLineItemView{
 		ResourceName:     resourceName,
 		Period:           item.BillingPeriodStart + " to " + item.BillingPeriodEnd,
+		Status:           item.LineItemStatus,
 		PayerAccountID:   item.PayerAccountID,
 		UsageAccountID:   item.UsageAccountID,
 		ServiceCode:      item.ServiceCode,
@@ -678,6 +786,32 @@ func billLineItemViewFromItem(item persistence.BillLineItem, resourceName string
 		PriceCatalogSKU:  item.PriceCatalogSKU,
 		PriceEffectiveOn: item.PriceEffectiveDate,
 		Tags:             keyValueViews(item.TagSnapshot),
+	}
+}
+
+func billingPeriodSummaryViewFromSummary(summary persistence.BillingPeriodServiceSummary) billingPeriodSummaryView {
+	return billingPeriodSummaryView{
+		Period:         summary.BillingPeriodStart + " to " + summary.BillingPeriodEnd,
+		PayerAccountID: summary.PayerAccountID,
+		UsageAccountID: summary.UsageAccountID,
+		ServiceCode:    summary.ServiceCode,
+		Status:         summary.LineItemStatus,
+		LineItemCount:  summary.LineItemCount,
+		Cost:           formatUSDMicros(summary.UnblendedCostMicros),
+		RefreshedAt:    summary.RefreshedAt,
+	}
+}
+
+func dailyMeteringJobRunViewFromRun(run persistence.DailyMeteringJobRun) dailyMeteringJobRunView {
+	return dailyMeteringJobRunView{
+		ID:                     run.ID,
+		Trigger:                string(run.Trigger),
+		ClockTime:              run.ClockTime,
+		PayerAccountID:         run.PayerAccountID,
+		MeteringRecordsCreated: run.MeteringRecordsCreated,
+		BillLineItemsCreated:   run.BillLineItemsCreated,
+		SummariesRefreshed:     run.SummariesRefreshed,
+		CompletedAt:            run.CompletedAt,
 	}
 }
 
@@ -1223,6 +1357,16 @@ owner=web-platform</textarea>
 					</div>
 					<button type="submit">Run Billing Pipeline</button>
 				</form>
+
+				<form method="post" action="/resources/daily-metering" class="panel compact">
+					<h2>Daily Metering</h2>
+					<div class="fields">
+						<label>Payer Account ID
+							<input name="payer_account_id" value="{{.DefaultPayerAccountID}}">
+						</label>
+					</div>
+					<button type="submit">Run Daily Metering</button>
+				</form>
 			</section>
 
 			<section>
@@ -1301,6 +1445,82 @@ owner=web-platform</textarea>
 
 			<section>
 				<div class="section-heading">
+					<h2>Current Billing Summary</h2>
+					<span>{{len .BillingPeriodSummaries}} summaries</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Period</th>
+								<th>Payer</th>
+								<th>Usage Account</th>
+								<th>Service</th>
+								<th>Status</th>
+								<th>Items</th>
+								<th>Cost</th>
+								<th>Refreshed</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .BillingPeriodSummaries}}
+								<tr>
+									<td>{{.Period}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td>{{.UsageAccountID}}</td>
+									<td>{{.ServiceCode}}</td>
+									<td><span class="status">{{.Status}}</span></td>
+									<td>{{.LineItemCount}}</td>
+									<td>{{.Cost}}</td>
+									<td>{{.RefreshedAt}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="8" class="empty-cell">No billing summary</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Daily Metering Jobs</h2>
+					<span>{{len .DailyMeteringJobRuns}} runs</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Completed</th>
+								<th>Trigger</th>
+								<th>Clock</th>
+								<th>Payer</th>
+								<th>Metering</th>
+								<th>Line Items</th>
+								<th>Summaries</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .DailyMeteringJobRuns}}
+								<tr>
+									<td><strong>{{.CompletedAt}}</strong><small>{{.ID}}</small></td>
+									<td>{{.Trigger}}</td>
+									<td>{{.ClockTime}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td>{{.MeteringRecordsCreated}}</td>
+									<td>{{.BillLineItemsCreated}}</td>
+									<td>{{.SummariesRefreshed}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="7" class="empty-cell">No daily metering jobs</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
 					<h2>Metering Records</h2>
 					<span>{{len .MeteringRecords}} records</span>
 				</div>
@@ -1343,6 +1563,7 @@ owner=web-platform</textarea>
 							<tr>
 								<th>Resource</th>
 								<th>Period</th>
+								<th>Status</th>
 								<th>Accounts</th>
 								<th>Service</th>
 								<th>Description</th>
@@ -1357,6 +1578,7 @@ owner=web-platform</textarea>
 								<tr>
 									<td><strong>{{.ResourceName}}</strong><small>{{.PriceCatalogSKU}} @ {{.PriceEffectiveOn}}</small></td>
 									<td>{{.Period}}</td>
+									<td><span class="status">{{.Status}}</span></td>
 									<td><strong>{{.PayerAccountID}}</strong><small>{{.UsageAccountID}}</small></td>
 									<td>{{.ServiceCode}}</td>
 									<td>{{.Description}}</td>
@@ -1366,7 +1588,7 @@ owner=web-platform</textarea>
 									<td>{{template "tags" .Tags}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="9" class="empty-cell">No bill line items</td></tr>
+								<tr><td colspan="10" class="empty-cell">No bill line items</td></tr>
 							{{end}}
 						</tbody>
 					</table>

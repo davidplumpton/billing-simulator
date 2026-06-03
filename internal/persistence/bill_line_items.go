@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	defaultBillLineItemLimit = 25
-	maxBillLineItemLimit     = 100
-	billLineItemTypeUsage    = "Usage"
+	defaultBillLineItemLimit    = 25
+	maxBillLineItemLimit        = 100
+	billLineItemTypeUsage       = "Usage"
+	billLineItemStatusEstimated = "estimated"
+	billLineItemStatusFinal     = "final"
+	defaultBillLineItemStatus   = billLineItemStatusEstimated
 )
 
 // BillLineItem stores a priced usage charge with lineage back to metering and catalog rows.
@@ -34,6 +37,7 @@ type BillLineItem struct {
 	Operation             string
 	RegionCode            string
 	LineItemType          string
+	LineItemStatus        string
 	UsageStartTime        string
 	UsageEndTime          string
 	UsageQuantityMicros   int64
@@ -53,6 +57,7 @@ type BillLineItem struct {
 // BillLineItemGenerationRequest configures a pricing run for unpriced metering records.
 type BillLineItemGenerationRequest struct {
 	PayerAccountID string
+	LineItemStatus string
 }
 
 // BillLineItemGenerationResult reports the bill line items created during one pricing run.
@@ -77,12 +82,36 @@ func NewBillLineItemRepository(db *sql.DB) BillLineItemRepository {
 
 // GenerateBillLineItems prices every unpriced metering record and persists stable usage line items.
 func (r BillLineItemRepository) GenerateBillLineItems(ctx context.Context, request BillLineItemGenerationRequest) (BillLineItemGenerationResult, error) {
+	return r.generateBillLineItems(ctx, request, "")
+}
+
+// GenerateBillLineItemsThrough prices unpriced metering records that have ended by the given UTC time.
+func (r BillLineItemRepository) GenerateBillLineItemsThrough(ctx context.Context, request BillLineItemGenerationRequest, throughTime string) (BillLineItemGenerationResult, error) {
+	throughTime = strings.TrimSpace(throughTime)
+	if throughTime != "" {
+		parsed, err := time.Parse(time.RFC3339, throughTime)
+		if err != nil {
+			return BillLineItemGenerationResult{}, fmt.Errorf("bill line item through time must use RFC3339: %w", err)
+		}
+		throughTime = parsed.UTC().Format(time.RFC3339)
+	}
+	return r.generateBillLineItems(ctx, request, throughTime)
+}
+
+func (r BillLineItemRepository) generateBillLineItems(ctx context.Context, request BillLineItemGenerationRequest, throughTime string) (BillLineItemGenerationResult, error) {
 	if r.db == nil {
 		return BillLineItemGenerationResult{}, fmt.Errorf("database handle is required")
 	}
 	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
+	request.LineItemStatus = strings.TrimSpace(request.LineItemStatus)
+	if request.LineItemStatus == "" {
+		request.LineItemStatus = defaultBillLineItemStatus
+	}
+	if !isBillLineItemStatus(request.LineItemStatus) {
+		return BillLineItemGenerationResult{}, fmt.Errorf("unsupported bill line item status %q", request.LineItemStatus)
+	}
 
-	records, err := r.listUnpricedMeteringRecords(ctx)
+	records, err := r.listUnpricedMeteringRecords(ctx, throughTime)
 	if err != nil {
 		return BillLineItemGenerationResult{}, err
 	}
@@ -152,6 +181,7 @@ func (r BillLineItemRepository) ListBillLineItems(ctx context.Context, limit int
 			operation,
 			region_code,
 			line_item_type,
+			line_item_status,
 			usage_start_time,
 			usage_end_time,
 			usage_quantity_micros,
@@ -190,7 +220,7 @@ func (r BillLineItemRepository) ListBillLineItems(ctx context.Context, limit int
 	return items, nil
 }
 
-func (r BillLineItemRepository) listUnpricedMeteringRecords(ctx context.Context) ([]MeteringRecord, error) {
+func (r BillLineItemRepository) listUnpricedMeteringRecords(ctx context.Context, throughTime string) ([]MeteringRecord, error) {
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -211,7 +241,10 @@ func (r BillLineItemRepository) listUnpricedMeteringRecords(ctx context.Context)
 		 FROM metering_records m
 		 LEFT JOIN bill_line_items b ON b.metering_record_id = m.id
 		 WHERE b.id IS NULL
+		   AND (? = '' OR m.usage_end_time <= ?)
 		 ORDER BY m.usage_start_time, m.id`,
+		throughTime,
+		throughTime,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list unpriced metering records: %w", err)
@@ -272,6 +305,7 @@ func (r BillLineItemRepository) billLineItemFromMeteringRecord(ctx context.Conte
 		Operation:             record.Operation,
 		RegionCode:            record.RegionCode,
 		LineItemType:          billLineItemTypeUsage,
+		LineItemStatus:        request.LineItemStatus,
 		UsageStartTime:        record.UsageStartTime,
 		UsageEndTime:          record.UsageEndTime,
 		UsageQuantityMicros:   record.UsageQuantityMicros,
@@ -323,6 +357,9 @@ func validateBillLineItem(item BillLineItem) error {
 	if !isBillLineItemType(item.LineItemType) {
 		return fmt.Errorf("unsupported bill line item type %q", item.LineItemType)
 	}
+	if !isBillLineItemStatus(item.LineItemStatus) {
+		return fmt.Errorf("unsupported bill line item status %q", item.LineItemStatus)
+	}
 	if item.UsageStartTime == "" || item.UsageEndTime == "" {
 		return fmt.Errorf("bill line item usage window is required")
 	}
@@ -359,6 +396,15 @@ func isBillLineItemType(value string) bool {
 	}
 }
 
+func isBillLineItemStatus(value string) bool {
+	switch value {
+	case billLineItemStatusEstimated, billLineItemStatusFinal:
+		return true
+	default:
+		return false
+	}
+}
+
 func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (bool, error) {
 	tagSnapshotJSON, err := marshalStringMap(item.TagSnapshot)
 	if err != nil {
@@ -383,6 +429,7 @@ func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (boo
 			operation,
 			region_code,
 			line_item_type,
+			line_item_status,
 			usage_start_time,
 			usage_end_time,
 			usage_quantity_micros,
@@ -396,7 +443,7 @@ func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (boo
 			price_effective_date,
 			tag_snapshot_json,
 			description
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(metering_record_id) DO NOTHING`,
 		item.ID,
 		item.MeteringRecordID,
@@ -414,6 +461,7 @@ func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (boo
 		item.Operation,
 		item.RegionCode,
 		item.LineItemType,
+		item.LineItemStatus,
 		item.UsageStartTime,
 		item.UsageEndTime,
 		item.UsageQuantityMicros,
@@ -462,6 +510,7 @@ func scanBillLineItem(row billLineItemRow) (BillLineItem, error) {
 		&item.Operation,
 		&item.RegionCode,
 		&item.LineItemType,
+		&item.LineItemStatus,
 		&item.UsageStartTime,
 		&item.UsageEndTime,
 		&item.UsageQuantityMicros,

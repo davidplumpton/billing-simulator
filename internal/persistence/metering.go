@@ -51,11 +51,28 @@ func NewMeteringRepository(db *sql.DB) MeteringRepository {
 
 // GenerateMeteringRecords creates one stable metering record for every unmetered usage event.
 func (r MeteringRepository) GenerateMeteringRecords(ctx context.Context) (MeteringGenerationResult, error) {
+	return r.generateMeteringRecords(ctx, "")
+}
+
+// GenerateMeteringRecordsThrough creates metering records for usage that has ended by the given UTC time.
+func (r MeteringRepository) GenerateMeteringRecordsThrough(ctx context.Context, throughTime string) (MeteringGenerationResult, error) {
+	throughTime = strings.TrimSpace(throughTime)
+	if throughTime != "" {
+		parsed, err := time.Parse(time.RFC3339, throughTime)
+		if err != nil {
+			return MeteringGenerationResult{}, fmt.Errorf("metering through time must use RFC3339: %w", err)
+		}
+		throughTime = parsed.UTC().Format(time.RFC3339)
+	}
+	return r.generateMeteringRecords(ctx, throughTime)
+}
+
+func (r MeteringRepository) generateMeteringRecords(ctx context.Context, throughTime string) (MeteringGenerationResult, error) {
 	if r.db == nil {
 		return MeteringGenerationResult{}, fmt.Errorf("database handle is required")
 	}
 
-	events, err := r.listUnmeteredUsageEvents(ctx)
+	events, err := r.listUnmeteredUsageEvents(ctx, throughTime)
 	if err != nil {
 		return MeteringGenerationResult{}, err
 	}
@@ -142,7 +159,7 @@ func (r MeteringRepository) ListMeteringRecords(ctx context.Context, limit int) 
 	return records, nil
 }
 
-func (r MeteringRepository) listUnmeteredUsageEvents(ctx context.Context) ([]UsageEvent, error) {
+func (r MeteringRepository) listUnmeteredUsageEvents(ctx context.Context, throughTime string) ([]UsageEvent, error) {
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -164,7 +181,10 @@ func (r MeteringRepository) listUnmeteredUsageEvents(ctx context.Context) ([]Usa
 		 FROM usage_events u
 		 LEFT JOIN metering_records m ON m.usage_event_id = u.id
 		 WHERE m.id IS NULL
+		   AND (? = '' OR u.usage_end_time <= ?)
 		 ORDER BY u.usage_start_time, u.id`,
+		throughTime,
+		throughTime,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list unmetered usage events: %w", err)

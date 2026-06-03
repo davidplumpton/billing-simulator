@@ -73,6 +73,9 @@ func TestBillLineItemRepositoryGeneratesPricedUsageLineItems(t *testing.T) {
 	if item.LineItemType != "Usage" || item.CurrencyCode != "USD" {
 		t.Fatalf("bill line item type/currency = %q/%q, want Usage/USD", item.LineItemType, item.CurrencyCode)
 	}
+	if item.LineItemStatus != billLineItemStatusEstimated {
+		t.Fatalf("bill line item status = %q, want estimated", item.LineItemStatus)
+	}
 	if item.BillingPeriodStart != "2026-02-01" || item.BillingPeriodEnd != "2026-03-01" || item.BillingPeriodDays != 28 {
 		t.Fatalf("billing period = %s/%s days %d, want February 2026", item.BillingPeriodStart, item.BillingPeriodEnd, item.BillingPeriodDays)
 	}

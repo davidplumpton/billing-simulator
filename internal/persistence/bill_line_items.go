@@ -501,16 +501,14 @@ func billingPeriodForUsageStart(value string) (billLineItemBillingPeriod, error)
 		return billLineItemBillingPeriod{}, fmt.Errorf("usage start time must use RFC3339: %w", err)
 	}
 	usageStart = usageStart.UTC()
-	periodStart := time.Date(usageStart.Year(), usageStart.Month(), 1, 0, 0, 0, 0, time.UTC)
-	periodEnd := periodStart.AddDate(0, 1, 0)
-	days := int(periodEnd.Sub(periodStart).Hours() / 24)
-	if days <= 0 {
-		return billLineItemBillingPeriod{}, fmt.Errorf("billing period days must be greater than zero")
+	period, err := BillingPeriodForTime(usageStart)
+	if err != nil {
+		return billLineItemBillingPeriod{}, err
 	}
 	return billLineItemBillingPeriod{
-		Start:     periodStart.Format(time.DateOnly),
-		End:       periodEnd.Format(time.DateOnly),
-		Days:      days,
+		Start:     period.Start,
+		End:       period.End,
+		Days:      period.Days,
 		UsageDate: usageStart.Format(time.DateOnly),
 	}, nil
 }

@@ -87,8 +87,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 8 {
-		t.Fatalf("schema_migrations count = %d, want 8", count)
+	if count != 9 {
+		t.Fatalf("schema_migrations count = %d, want 9", count)
 	}
 
 	var catalogCount int
@@ -128,6 +128,9 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	}
 	if !strings.Contains(body, "Create Resource") || !strings.Contains(body, "Price Dimensions") {
 		t.Fatalf("GET /resources body missing resource lab UI: %s", body)
+	}
+	if !strings.Contains(body, "Simulator Clock") || !strings.Contains(body, "2026-02-01T00:00:00Z") {
+		t.Fatalf("GET /resources body missing simulator clock UI: %s", body)
 	}
 
 	resp, err = client.PostForm(server.URL+"/resources/create", url.Values{
@@ -236,6 +239,98 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	if billLineItemCount != 3 {
 		t.Fatalf("bill line item count = %d, want 3", billLineItemCount)
 	}
+}
+
+func TestResourcesUIAdvancesSimulatorClock(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/resources")
+	if err != nil {
+		t.Fatalf("GET /resources error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "2026-02-01 to 2026-03-01 (28 days)") {
+		t.Fatalf("GET /resources body missing initial billing period: %s", body)
+	}
+
+	body = postClockAdvance(t, client, server.URL, "6", string(persistence.SimulatorClockAdvanceHours))
+	if !strings.Contains(body, "Advanced clock to 2026-02-01T06:00:00Z") ||
+		!strings.Contains(body, `value="2026-02-01T06:00"`) ||
+		!strings.Contains(body, `value="2026-02-01T07:00"`) {
+		t.Fatalf("hour advance response missing updated clock defaults: %s", body)
+	}
+
+	body = postClockAdvance(t, client, server.URL, "2", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-03T06:00:00Z") ||
+		!strings.Contains(body, `value="2026-02-03"`) {
+		t.Fatalf("day advance response missing updated clock defaults: %s", body)
+	}
+
+	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
+	if !strings.Contains(body, "Advanced clock to 2026-03-01T00:00:00Z") ||
+		!strings.Contains(body, "2026-03-01 to 2026-04-01 (31 days)") ||
+		!strings.Contains(body, `value="2026-03-01T00:00"`) {
+		t.Fatalf("billing-period advance response missing updated clock state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Clock default web"},
+		"status":         {"active"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var startedAt string
+	if err := db.QueryRowContext(ctx, `SELECT started_at FROM resources WHERE resource_name = ?`, "Clock default web").Scan(&startedAt); err != nil {
+		t.Fatalf("read created resource started_at: %v", err)
+	}
+	if startedAt != "2026-03-01T00:00:00Z" {
+		t.Fatalf("created resource started_at = %q, want simulator clock default", startedAt)
+	}
+}
+
+func postClockAdvance(t *testing.T, client *http.Client, serverURL, amount, unit string) string {
+	t.Helper()
+
+	resp, err := client.PostForm(serverURL+"/clock/advance", url.Values{
+		"clock_advance_amount": {amount},
+		"clock_advance_unit":   {unit},
+	})
+	if err != nil {
+		t.Fatalf("POST /clock/advance error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /clock/advance final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	return body
 }
 
 func readResponseBody(t *testing.T, resp *http.Response) string {

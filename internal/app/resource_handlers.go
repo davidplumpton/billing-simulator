@@ -24,6 +24,7 @@ const (
 	defaultUsageEndRFC3339        = "2026-02-01T01:00:00Z"
 	defaultGenerationStartDate    = "2026-02-01"
 	defaultUsageGenerationDaySpan = 3
+	defaultClockAdvanceAmount     = 1
 )
 
 type resourceLabHandler struct {
@@ -32,6 +33,7 @@ type resourceLabHandler struct {
 	catalog   persistence.PriceCatalogRepository
 	metering  persistence.MeteringRepository
 	lineItems persistence.BillLineItemRepository
+	clock     persistence.SimulatorClockRepository
 }
 
 type resourcePreset struct {
@@ -60,10 +62,26 @@ type usageGenerationPreset struct {
 	Label string
 }
 
+type clockAdvanceUnitView struct {
+	Key   persistence.SimulatorClockAdvanceUnit
+	Label string
+}
+
+type resourceFormDefaults struct {
+	UsageStartLocal     string
+	UsageEndLocal       string
+	UsageStartRFC3339   string
+	UsageEndRFC3339     string
+	GenerationStartDate string
+}
+
 type resourcePageData struct {
 	WorkspaceReady             bool
 	Flash                      string
 	Error                      string
+	ClockCurrentTime           string
+	ClockBillingPeriod         string
+	DefaultClockAdvanceAmount  int
 	DefaultAccountID           string
 	DefaultPayerAccountID      string
 	DefaultUsageStart          string
@@ -75,6 +93,7 @@ type resourcePageData struct {
 	StatusOptions              []string
 	UsagePresets               []usagePreset
 	UsageGenerationPresets     []usageGenerationPreset
+	ClockAdvanceUnits          []clockAdvanceUnitView
 	Resources                  []resourceView
 	UsageEvents                []usageEventView
 	MeteringRecords            []meteringRecordView
@@ -164,6 +183,7 @@ func newResourceLabHandler(db *sql.DB) resourceLabHandler {
 		catalog:   persistence.NewPriceCatalogRepository(db),
 		metering:  persistence.NewMeteringRepository(db),
 		lineItems: persistence.NewBillLineItemRepository(db),
+		clock:     persistence.NewSimulatorClockRepository(db),
 	}
 }
 
@@ -205,7 +225,12 @@ func (h resourceLabHandler) handleCreateResource(w http.ResponseWriter, r *http.
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before creating resources.", "")
 		return
 	}
-	request, err := resourceCreateRequestFromForm(r)
+	defaults, err := h.resourceFormDefaults(r.Context())
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	request, err := resourceCreateRequestFromForm(r, defaults)
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
@@ -252,7 +277,12 @@ func (h resourceLabHandler) handleRecordUsage(w http.ResponseWriter, r *http.Req
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before recording usage.", "")
 		return
 	}
-	request, err := usageEventCreateRequestFromForm(r)
+	defaults, err := h.resourceFormDefaults(r.Context())
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	request, err := usageEventCreateRequestFromForm(r, defaults)
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
@@ -274,7 +304,12 @@ func (h resourceLabHandler) handleGenerateUsage(w http.ResponseWriter, r *http.R
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before generating usage.", "")
 		return
 	}
-	request, err := usageGenerationRequestFromForm(r)
+	defaults, err := h.resourceFormDefaults(r.Context())
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	request, err := usageGenerationRequestFromForm(r, defaults)
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
@@ -325,22 +360,48 @@ func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *h
 	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
 }
 
+// handleAdvanceClock applies a learner-triggered deterministic time change.
+func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before advancing the clock.", "")
+		return
+	}
+	request, err := clockAdvanceRequestFromForm(r)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	clock, err := h.clock.Advance(r.Context(), request)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape("Advanced clock to "+clock.CurrentTime), http.StatusSeeOther)
+}
+
 func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
+	defaults := defaultResourceFormDefaults()
 	data := resourcePageData{
 		WorkspaceReady:             h.db != nil,
 		Flash:                      flashMessage,
 		Error:                      errorMessage,
+		DefaultClockAdvanceAmount:  defaultClockAdvanceAmount,
 		DefaultAccountID:           defaultAccountID,
 		DefaultPayerAccountID:      defaultAccountID,
-		DefaultUsageStart:          defaultUsageStartLocal,
-		DefaultUsageEnd:            defaultUsageEndLocal,
-		DefaultGenerationStartDate: defaultGenerationStartDate,
+		DefaultUsageStart:          defaults.UsageStartLocal,
+		DefaultUsageEnd:            defaults.UsageEndLocal,
+		DefaultGenerationStartDate: defaults.GenerationStartDate,
 		DefaultGenerationDays:      defaultUsageGenerationDaySpan,
 		ResourcePresets:            resourcePresets(),
 		RegionOptions:              []string{"us-east-1", "global"},
 		StatusOptions:              []string{"active", "planned", "stopped", "deleted"},
 		UsagePresets:               usagePresets(),
 		UsageGenerationPresets:     usageGenerationPresets(),
+		ClockAdvanceUnits:          clockAdvanceUnitOptions(),
 	}
 	if h.db != nil {
 		if err := h.loadResourcePageData(r.Context(), &data); err != nil {
@@ -360,6 +421,12 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 }
 
 func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *resourcePageData) error {
+	clock, err := h.clock.Get(ctx)
+	if err != nil {
+		return err
+	}
+	applyClockToResourcePageData(data, clock)
+
 	resourceSummaries, err := h.resources.ListResources(ctx)
 	if err != nil {
 		return err
@@ -405,7 +472,23 @@ func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *reso
 	return nil
 }
 
-func resourceCreateRequestFromForm(r *http.Request) (persistence.ResourceCreateRequest, error) {
+func (h resourceLabHandler) resourceFormDefaults(ctx context.Context) (resourceFormDefaults, error) {
+	defaults := defaultResourceFormDefaults()
+	if h.db == nil {
+		return defaults, nil
+	}
+	clock, err := h.clock.Get(ctx)
+	if err != nil {
+		return resourceFormDefaults{}, err
+	}
+	parsed, err := time.Parse(time.RFC3339, clock.CurrentTime)
+	if err != nil {
+		return resourceFormDefaults{}, fmt.Errorf("parse simulator clock: %w", err)
+	}
+	return resourceFormDefaultsForTime(parsed), nil
+}
+
+func resourceCreateRequestFromForm(r *http.Request, defaults resourceFormDefaults) (persistence.ResourceCreateRequest, error) {
 	if err := r.ParseForm(); err != nil {
 		return persistence.ResourceCreateRequest{}, fmt.Errorf("parse resource form: %w", err)
 	}
@@ -416,7 +499,7 @@ func resourceCreateRequestFromForm(r *http.Request) (persistence.ResourceCreateR
 	status := strings.TrimSpace(r.PostForm.Get("status"))
 	startedAt := ""
 	if status != "planned" {
-		parsed, err := parseFormTimestamp(r.PostForm.Get("started_at"), defaultUsageStartRFC3339)
+		parsed, err := parseFormTimestamp(r.PostForm.Get("started_at"), defaults.UsageStartRFC3339)
 		if err != nil {
 			return persistence.ResourceCreateRequest{}, err
 		}
@@ -453,7 +536,7 @@ func resourceCreateRequestFromForm(r *http.Request) (persistence.ResourceCreateR
 	}, nil
 }
 
-func usageEventCreateRequestFromForm(r *http.Request) (persistence.UsageEventCreateRequest, error) {
+func usageEventCreateRequestFromForm(r *http.Request, defaults resourceFormDefaults) (persistence.UsageEventCreateRequest, error) {
 	if err := r.ParseForm(); err != nil {
 		return persistence.UsageEventCreateRequest{}, fmt.Errorf("parse usage form: %w", err)
 	}
@@ -461,11 +544,11 @@ func usageEventCreateRequestFromForm(r *http.Request) (persistence.UsageEventCre
 	if !ok {
 		return persistence.UsageEventCreateRequest{}, fmt.Errorf("unknown usage preset")
 	}
-	start, err := parseFormTimestamp(r.PostForm.Get("usage_start_time"), defaultUsageStartRFC3339)
+	start, err := parseFormTimestamp(r.PostForm.Get("usage_start_time"), defaults.UsageStartRFC3339)
 	if err != nil {
 		return persistence.UsageEventCreateRequest{}, err
 	}
-	end, err := parseFormTimestamp(r.PostForm.Get("usage_end_time"), defaultUsageEndRFC3339)
+	end, err := parseFormTimestamp(r.PostForm.Get("usage_end_time"), defaults.UsageEndRFC3339)
 	if err != nil {
 		return persistence.UsageEventCreateRequest{}, err
 	}
@@ -490,13 +573,13 @@ func usageEventCreateRequestFromForm(r *http.Request) (persistence.UsageEventCre
 	}, nil
 }
 
-func usageGenerationRequestFromForm(r *http.Request) (persistence.UsageGenerationRequest, error) {
+func usageGenerationRequestFromForm(r *http.Request, defaults resourceFormDefaults) (persistence.UsageGenerationRequest, error) {
 	if err := r.ParseForm(); err != nil {
 		return persistence.UsageGenerationRequest{}, fmt.Errorf("parse usage generation form: %w", err)
 	}
 	startDate := strings.TrimSpace(r.PostForm.Get("generation_start_date"))
 	if startDate == "" {
-		startDate = defaultGenerationStartDate
+		startDate = defaults.GenerationStartDate
 	}
 	days := defaultUsageGenerationDaySpan
 	if rawDays := strings.TrimSpace(r.PostForm.Get("generation_days")); rawDays != "" {
@@ -512,6 +595,24 @@ func usageGenerationRequestFromForm(r *http.Request) (persistence.UsageGeneratio
 		Pattern:    persistence.UsageGenerationPattern(r.PostForm.Get("generation_pattern")),
 		StartDate:  startDate,
 		Days:       days,
+	}, nil
+}
+
+func clockAdvanceRequestFromForm(r *http.Request) (persistence.SimulatorClockAdvanceRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return persistence.SimulatorClockAdvanceRequest{}, fmt.Errorf("parse clock form: %w", err)
+	}
+	amount := defaultClockAdvanceAmount
+	if rawAmount := strings.TrimSpace(r.PostForm.Get("clock_advance_amount")); rawAmount != "" {
+		parsedAmount, err := strconv.Atoi(rawAmount)
+		if err != nil {
+			return persistence.SimulatorClockAdvanceRequest{}, fmt.Errorf("clock advance amount must be a whole number: %w", err)
+		}
+		amount = parsedAmount
+	}
+	return persistence.SimulatorClockAdvanceRequest{
+		Amount: amount,
+		Unit:   persistence.SimulatorClockAdvanceUnit(r.PostForm.Get("clock_advance_unit")),
 	}, nil
 }
 
@@ -730,6 +831,58 @@ func usageGenerationPresets() []usageGenerationPreset {
 	return presets
 }
 
+func clockAdvanceUnitOptions() []clockAdvanceUnitView {
+	return []clockAdvanceUnitView{
+		{Key: persistence.SimulatorClockAdvanceHours, Label: "Hours"},
+		{Key: persistence.SimulatorClockAdvanceDays, Label: "Days"},
+		{Key: persistence.SimulatorClockAdvanceBillingPeriods, Label: "Billing Periods"},
+	}
+}
+
+func defaultResourceFormDefaults() resourceFormDefaults {
+	start, err := time.Parse(time.RFC3339, defaultUsageStartRFC3339)
+	if err != nil {
+		return resourceFormDefaults{
+			UsageStartLocal:     defaultUsageStartLocal,
+			UsageEndLocal:       defaultUsageEndLocal,
+			UsageStartRFC3339:   defaultUsageStartRFC3339,
+			UsageEndRFC3339:     defaultUsageEndRFC3339,
+			GenerationStartDate: defaultGenerationStartDate,
+		}
+	}
+	return resourceFormDefaultsForTime(start)
+}
+
+func resourceFormDefaultsForTime(value time.Time) resourceFormDefaults {
+	start := value.UTC().Truncate(time.Minute)
+	end := start.Add(time.Hour)
+	return resourceFormDefaults{
+		UsageStartLocal:     start.Format("2006-01-02T15:04"),
+		UsageEndLocal:       end.Format("2006-01-02T15:04"),
+		UsageStartRFC3339:   start.Format(time.RFC3339),
+		UsageEndRFC3339:     end.Format(time.RFC3339),
+		GenerationStartDate: start.Format(time.DateOnly),
+	}
+}
+
+func applyClockToResourcePageData(data *resourcePageData, clock persistence.SimulatorClock) {
+	data.ClockCurrentTime = clock.CurrentTime
+	data.ClockBillingPeriod = fmt.Sprintf(
+		"%s to %s (%d days)",
+		clock.BillingPeriodStart,
+		clock.BillingPeriodEnd,
+		clock.BillingPeriodDays,
+	)
+	parsed, err := time.Parse(time.RFC3339, clock.CurrentTime)
+	if err != nil {
+		return
+	}
+	defaults := resourceFormDefaultsForTime(parsed)
+	data.DefaultUsageStart = defaults.UsageStartLocal
+	data.DefaultUsageEnd = defaults.UsageEndLocal
+	data.DefaultGenerationStartDate = defaults.GenerationStartDate
+}
+
 func resourcePresetByKey(key string) (resourcePreset, bool) {
 	key = strings.TrimSpace(key)
 	for _, preset := range resourcePresets() {
@@ -936,6 +1089,25 @@ var resourcePageTemplate = template.Must(template.New("resource-page").Parse(`<!
 				<p>No workspace is open.</p>
 			</section>
 		{{else}}
+			<section class="clock-strip">
+				<div>
+					<h2>Simulator Clock</h2>
+					<strong>{{.ClockCurrentTime}}</strong>
+					<small>{{.ClockBillingPeriod}}</small>
+				</div>
+				<form method="post" action="/clock/advance" class="clock-form">
+					<label>Amount
+						<input name="clock_advance_amount" value="{{.DefaultClockAdvanceAmount}}" inputmode="numeric" required>
+					</label>
+					<label>Unit
+						<select name="clock_advance_unit">
+							{{range .ClockAdvanceUnits}}<option value="{{.Key}}">{{.Label}}</option>{{end}}
+						</select>
+					</label>
+					<button type="submit">Advance Clock</button>
+				</form>
+			</section>
+
 			<section class="form-grid">
 				<form method="post" action="/resources/create" class="panel">
 					<h2>Create Resource</h2>
@@ -1378,6 +1550,32 @@ small {
 	align-items: start;
 }
 
+.clock-strip {
+	display: flex;
+	align-items: end;
+	justify-content: space-between;
+	gap: 18px;
+	margin: 20px 0 16px;
+	padding: 16px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
+.clock-strip strong {
+	display: block;
+	margin-top: 8px;
+	font-size: 18px;
+}
+
+.clock-form {
+	display: grid;
+	grid-template-columns: 110px 180px auto;
+	gap: 12px;
+	align-items: end;
+	min-width: min(100%, 460px);
+}
+
 .panel,
 .empty {
 	background: var(--surface);
@@ -1514,9 +1712,13 @@ code {
 }
 
 @media (max-width: 980px) {
-	.topbar {
+	.topbar,
+	.clock-strip {
 		align-items: flex-start;
 		flex-direction: column;
+	}
+
+	.topbar {
 		padding: 14px 18px;
 	}
 
@@ -1526,7 +1728,8 @@ code {
 	}
 
 	.form-grid,
-	.fields {
+	.fields,
+	.clock-form {
 		grid-template-columns: 1fr;
 	}
 

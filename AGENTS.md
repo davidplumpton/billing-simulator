@@ -39,3 +39,5 @@ br sync               # Sync issues with version control
 - Track agent mistakes in `MIND_MAP.md` during each session (what went wrong, why, and prevention step)
 - Track user preferences in `MIND_MAP.md` during each session (things the user explicitly likes/dislikes)
 - Keep these mind-map notes concise and actionable so future sessions can apply them immediately
+- Never touch files outside the project directory
+

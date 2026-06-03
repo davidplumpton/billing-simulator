@@ -240,8 +240,17 @@ func (r ResourceUsageRepository) AddTag(ctx context.Context, request ResourceTag
 	return r.getTag(ctx, request.ID)
 }
 
-// RecordUsageEvent creates a usage event from a resource snapshot and its active tags.
+// RecordUsageEvent creates a learner usage event from a resource snapshot and its active tags.
 func (r ResourceUsageRepository) RecordUsageEvent(ctx context.Context, request UsageEventCreateRequest) (UsageEvent, error) {
+	return r.recordUsageEvent(ctx, request, "learner", false)
+}
+
+// RecordGeneratedUsageEvent creates or reuses a deterministic generator usage event.
+func (r ResourceUsageRepository) RecordGeneratedUsageEvent(ctx context.Context, request UsageEventCreateRequest) (UsageEvent, error) {
+	return r.recordUsageEvent(ctx, request, "generator", true)
+}
+
+func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request UsageEventCreateRequest, eventSource string, ignoreDuplicateID bool) (UsageEvent, error) {
 	if r.db == nil {
 		return UsageEvent{}, fmt.Errorf("database handle is required")
 	}
@@ -282,9 +291,7 @@ func (r ResourceUsageRepository) RecordUsageEvent(ctx context.Context, request U
 		return UsageEvent{}, fmt.Errorf("marshal tag snapshot: %w", err)
 	}
 
-	_, err = r.db.ExecContext(
-		ctx,
-		`INSERT INTO usage_events (
+	query := `INSERT INTO usage_events (
 			id,
 			resource_id,
 			account_id,
@@ -299,7 +306,15 @@ func (r ResourceUsageRepository) RecordUsageEvent(ctx context.Context, request U
 			attributes_json,
 			tag_snapshot_json,
 			event_source
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if ignoreDuplicateID {
+		query += `
+		ON CONFLICT(id) DO NOTHING`
+	}
+
+	_, err = r.db.ExecContext(
+		ctx,
+		query,
 		request.ID,
 		resource.ID,
 		resource.AccountID,
@@ -313,7 +328,7 @@ func (r ResourceUsageRepository) RecordUsageEvent(ctx context.Context, request U
 		request.UsageUnit,
 		attributesJSON,
 		tagSnapshotJSON,
-		"learner",
+		eventSource,
 	)
 	if err != nil {
 		return UsageEvent{}, fmt.Errorf("insert usage event %q: %w", request.ID, err)

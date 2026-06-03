@@ -170,12 +170,37 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 		t.Fatalf("usage response missing billable dimensions or estimate: %s", body)
 	}
 
+	resp, err = client.PostForm(server.URL+"/resources/generate", url.Values{
+		"resource_id":           {resourceID},
+		"generation_pattern":    {"daily_instance_hours"},
+		"generation_start_date": {"2026-02-02"},
+		"generation_days":       {"2"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/generate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/generate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated 2 usage events") || !strings.Contains(body, "2026-02-03T00:00:00Z") {
+		t.Fatalf("generator response missing flash or deterministic usage window: %s", body)
+	}
+
 	var usageCount int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE resource_id = ?`, resourceID).Scan(&usageCount); err != nil {
 		t.Fatalf("count usage events: %v", err)
 	}
-	if usageCount != 1 {
-		t.Fatalf("usage event count = %d, want 1", usageCount)
+	if usageCount != 3 {
+		t.Fatalf("usage event count = %d, want 3", usageCount)
+	}
+
+	var generatorCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE resource_id = ? AND event_source = 'generator'`, resourceID).Scan(&generatorCount); err != nil {
+		t.Fatalf("count generated usage events: %v", err)
+	}
+	if generatorCount != 2 {
+		t.Fatalf("generated usage event count = %d, want 2", generatorCount)
 	}
 }
 

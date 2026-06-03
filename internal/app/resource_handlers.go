@@ -17,11 +17,13 @@ import (
 )
 
 const (
-	defaultAccountID         = "111122223333"
-	defaultUsageStartLocal   = "2026-02-01T00:00"
-	defaultUsageEndLocal     = "2026-02-01T01:00"
-	defaultUsageStartRFC3339 = "2026-02-01T00:00:00Z"
-	defaultUsageEndRFC3339   = "2026-02-01T01:00:00Z"
+	defaultAccountID              = "111122223333"
+	defaultUsageStartLocal        = "2026-02-01T00:00"
+	defaultUsageEndLocal          = "2026-02-01T01:00"
+	defaultUsageStartRFC3339      = "2026-02-01T00:00:00Z"
+	defaultUsageEndRFC3339        = "2026-02-01T01:00:00Z"
+	defaultGenerationStartDate    = "2026-02-01"
+	defaultUsageGenerationDaySpan = 3
 )
 
 type resourceLabHandler struct {
@@ -51,20 +53,28 @@ type usagePreset struct {
 	Unit        string
 }
 
+type usageGenerationPreset struct {
+	Key   persistence.UsageGenerationPattern
+	Label string
+}
+
 type resourcePageData struct {
-	WorkspaceReady    bool
-	Flash             string
-	Error             string
-	DefaultAccountID  string
-	DefaultUsageStart string
-	DefaultUsageEnd   string
-	ResourcePresets   []resourcePreset
-	RegionOptions     []string
-	StatusOptions     []string
-	UsagePresets      []usagePreset
-	Resources         []resourceView
-	UsageEvents       []usageEventView
-	CatalogItems      []catalogItemView
+	WorkspaceReady             bool
+	Flash                      string
+	Error                      string
+	DefaultAccountID           string
+	DefaultUsageStart          string
+	DefaultUsageEnd            string
+	DefaultGenerationStartDate string
+	DefaultGenerationDays      int
+	ResourcePresets            []resourcePreset
+	RegionOptions              []string
+	StatusOptions              []string
+	UsagePresets               []usagePreset
+	UsageGenerationPresets     []usageGenerationPreset
+	Resources                  []resourceView
+	UsageEvents                []usageEventView
+	CatalogItems               []catalogItemView
 }
 
 type resourceView struct {
@@ -222,18 +232,48 @@ func (h resourceLabHandler) handleRecordUsage(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/resources?flash="+urlQueryEscape("Recorded "+formatQuantityMicros(event.UsageQuantityMicros)+" "+event.UsageUnit), http.StatusSeeOther)
 }
 
+func (h resourceLabHandler) handleGenerateUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before generating usage.", "")
+		return
+	}
+	request, err := usageGenerationRequestFromForm(r)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	result, err := h.resources.GenerateUsage(r.Context(), request)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	http.Redirect(
+		w,
+		r,
+		"/resources?flash="+urlQueryEscape("Generated "+strconv.Itoa(len(result.Events))+" usage events for "+displayResourceName(result.Resource)),
+		http.StatusSeeOther,
+	)
+}
+
 func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	data := resourcePageData{
-		WorkspaceReady:    h.db != nil,
-		Flash:             flashMessage,
-		Error:             errorMessage,
-		DefaultAccountID:  defaultAccountID,
-		DefaultUsageStart: defaultUsageStartLocal,
-		DefaultUsageEnd:   defaultUsageEndLocal,
-		ResourcePresets:   resourcePresets(),
-		RegionOptions:     []string{"us-east-1", "global"},
-		StatusOptions:     []string{"active", "planned", "stopped", "deleted"},
-		UsagePresets:      usagePresets(),
+		WorkspaceReady:             h.db != nil,
+		Flash:                      flashMessage,
+		Error:                      errorMessage,
+		DefaultAccountID:           defaultAccountID,
+		DefaultUsageStart:          defaultUsageStartLocal,
+		DefaultUsageEnd:            defaultUsageEndLocal,
+		DefaultGenerationStartDate: defaultGenerationStartDate,
+		DefaultGenerationDays:      defaultUsageGenerationDaySpan,
+		ResourcePresets:            resourcePresets(),
+		RegionOptions:              []string{"us-east-1", "global"},
+		StatusOptions:              []string{"active", "planned", "stopped", "deleted"},
+		UsagePresets:               usagePresets(),
+		UsageGenerationPresets:     usageGenerationPresets(),
 	}
 	if h.db != nil {
 		if err := h.loadResourcePageData(r.Context(), &data); err != nil {
@@ -364,6 +404,31 @@ func usageEventCreateRequestFromForm(r *http.Request) (persistence.UsageEventCre
 		Attributes: map[string]string{
 			"generation": preset.Label,
 		},
+	}, nil
+}
+
+func usageGenerationRequestFromForm(r *http.Request) (persistence.UsageGenerationRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return persistence.UsageGenerationRequest{}, fmt.Errorf("parse usage generation form: %w", err)
+	}
+	startDate := strings.TrimSpace(r.PostForm.Get("generation_start_date"))
+	if startDate == "" {
+		startDate = defaultGenerationStartDate
+	}
+	days := defaultUsageGenerationDaySpan
+	if rawDays := strings.TrimSpace(r.PostForm.Get("generation_days")); rawDays != "" {
+		parsedDays, err := strconv.Atoi(rawDays)
+		if err != nil {
+			return persistence.UsageGenerationRequest{}, fmt.Errorf("generation days must be a whole number: %w", err)
+		}
+		days = parsedDays
+	}
+
+	return persistence.UsageGenerationRequest{
+		ResourceID: r.PostForm.Get("resource_id"),
+		Pattern:    persistence.UsageGenerationPattern(r.PostForm.Get("generation_pattern")),
+		StartDate:  startDate,
+		Days:       days,
 	}, nil
 }
 
@@ -523,6 +588,18 @@ func usagePresets() []usagePreset {
 		{Key: "nat_data", Label: "NAT Gateway GB processed", ServiceCode: "AmazonVPCNATGateway", UsageType: "nat-gateway-data-processed-gb", Operation: "NatGatewayDataProcessing", Unit: "GB"},
 		{Key: "data_transfer_out", Label: "Internet data transfer GB", ServiceCode: "AWSDataTransfer", UsageType: "data-transfer-out-internet-gb", Operation: "DataTransferOut", RegionCode: "global", Unit: "GB"},
 	}
+}
+
+func usageGenerationPresets() []usageGenerationPreset {
+	options := persistence.UsageGenerationPatternOptions()
+	presets := make([]usageGenerationPreset, 0, len(options))
+	for _, option := range options {
+		presets = append(presets, usageGenerationPreset{
+			Key:   option.Key,
+			Label: option.Label,
+		})
+	}
+	return presets
 }
 
 func resourcePresetByKey(key string) (resourcePreset, bool) {
@@ -796,6 +873,29 @@ owner=web-platform</textarea>
 					<button type="submit">Generate Usage</button>
 				</form>
 
+				<form method="post" action="/resources/generate" class="panel compact">
+					<h2>Generate Pattern</h2>
+					<div class="fields">
+						<label>Resource
+							<select name="resource_id" required>
+								{{range .Resources}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+							</select>
+						</label>
+						<label>Pattern
+							<select name="generation_pattern">
+								{{range .UsageGenerationPresets}}<option value="{{.Key}}">{{.Label}}</option>{{end}}
+							</select>
+						</label>
+						<label>Start Date
+							<input type="date" name="generation_start_date" value="{{.DefaultGenerationStartDate}}">
+						</label>
+						<label>Days
+							<input name="generation_days" value="{{.DefaultGenerationDays}}" inputmode="numeric" required>
+						</label>
+					</div>
+					<button type="submit">Generate Pattern</button>
+				</form>
+
 				<form method="post" action="/resources/tags" class="panel compact">
 					<h2>Add Tag</h2>
 					<div class="fields">
@@ -1060,7 +1160,7 @@ small {
 
 .form-grid {
 	display: grid;
-	grid-template-columns: minmax(360px, 1.3fr) minmax(320px, 1fr) minmax(260px, 0.75fr);
+	grid-template-columns: minmax(360px, 1.3fr) repeat(3, minmax(240px, 1fr));
 	gap: 16px;
 	margin: 20px 0 30px;
 	align-items: start;

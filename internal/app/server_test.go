@@ -594,6 +594,126 @@ func TestResourcesUIMonthEndCloseIssuesBill(t *testing.T) {
 	}
 }
 
+func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-bills-ui-february",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "February bill web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(February) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-bills-ui-february",
+		ResourceID:          "resource-bills-ui-february",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(February) error = %v", err)
+	}
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-bills-ui-march",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "March bill web",
+		Status:       "active",
+		StartedAt:    "2026-03-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(March) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-bills-ui-march",
+		ResourceID:          "resource-bills-ui-march",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-03-02T00:00:00Z",
+		UsageEndTime:        "2026-03-02T01:00:00Z",
+		UsageQuantityMicros: 1_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(March) error = %v", err)
+	}
+	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-15T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+
+	insertBillsUIStoredBillState(t, ctx, db, "2025-10-01", "2025-11-01", "111122223333", "issued", "due", 1_000_000, 0, 0, 0)
+	insertBillsUIStoredBillState(t, ctx, db, "2025-11-01", "2025-12-01", "111122223333", "adjusted", "due", 3_000_000, 500_000, 0, 200_000)
+	insertBillsUIStoredBillState(t, ctx, db, "2025-12-01", "2026-01-01", "111122223333", "paid", "paid", 4_000_000, 0, 0, 0)
+	insertBillsUIStoredBillState(t, ctx, db, "2026-01-01", "2026-02-01", "111122223333", "past_due", "past_due", 5_000_000, 0, 0, 0)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/bills")
+	if err != nil {
+		t.Fatalf("GET /bills error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Bill States",
+		"Open",
+		"Pending Close",
+		"Issued",
+		"Adjusted",
+		"Paid",
+		"Past Due",
+		"open",
+		"pending-close",
+		"issued",
+		"adjusted",
+		"paid",
+		"past-due",
+		"Charges",
+		"Credits",
+		"Tax",
+		"Total",
+		"$0.0416",
+		"$0.0832",
+		"$2.70",
+		"not issued",
+		"SIM-INV-202511-ADJUSTED",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -740,4 +860,114 @@ func readOnlyResourceID(t *testing.T, db *sql.DB) string {
 		t.Fatalf("read resource ID: %v", err)
 	}
 	return resourceID
+}
+
+func insertBillsUIStoredBillState(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	periodStart string,
+	periodEnd string,
+	payerAccountID string,
+	billState string,
+	invoiceStatus string,
+	usageChargeMicros int64,
+	creditMicros int64,
+	refundMicros int64,
+	taxMicros int64,
+) {
+	t.Helper()
+
+	totalMicros := usageChargeMicros + taxMicros - creditMicros - refundMicros
+	if totalMicros < 0 {
+		totalMicros = 0
+	}
+	periodKey := strings.ReplaceAll(periodStart, "-", "")
+	stateKey := strings.ReplaceAll(billState, "_", "-")
+	amountDueMicros := totalMicros
+	amountPaidMicros := int64(0)
+	if invoiceStatus == "paid" {
+		amountDueMicros = 0
+		amountPaidMicros = totalMicros
+	}
+
+	if _, err := db.ExecContext(
+		ctx,
+		`INSERT INTO billing_period_closes (
+			id,
+			billing_period_start,
+			billing_period_end,
+			payer_account_id,
+			status,
+			metering_records_created,
+			bill_line_items_created,
+			finalized_line_item_count,
+			finalized_cost_micros,
+			currency_code,
+			summaries_refreshed
+		) VALUES (?, ?, ?, ?, 'closed', 0, 0, 1, ?, 'USD', 0)`,
+		"close-ui-"+periodKey+"-"+stateKey,
+		periodStart,
+		periodEnd,
+		payerAccountID,
+		totalMicros,
+	); err != nil {
+		t.Fatalf("insert billing_period_closes: %v", err)
+	}
+	billID := "bill-ui-" + periodKey + "-" + stateKey
+	if _, err := db.ExecContext(
+		ctx,
+		`INSERT INTO bills (
+			id,
+			close_id,
+			billing_period_start,
+			billing_period_end,
+			payer_account_id,
+			bill_state,
+			currency_code,
+			line_item_count,
+			usage_charge_micros,
+			credit_micros,
+			refund_micros,
+			tax_micros,
+			total_micros
+		) VALUES (?, ?, ?, ?, ?, ?, 'USD', 1, ?, ?, ?, ?, ?)`,
+		billID,
+		"close-ui-"+periodKey+"-"+stateKey,
+		periodStart,
+		periodEnd,
+		payerAccountID,
+		billState,
+		usageChargeMicros,
+		creditMicros,
+		refundMicros,
+		taxMicros,
+		totalMicros,
+	); err != nil {
+		t.Fatalf("insert bills: %v", err)
+	}
+	if _, err := db.ExecContext(
+		ctx,
+		`INSERT INTO invoice_obligations (
+			id,
+			bill_id,
+			invoice_id,
+			status,
+			amount_due_micros,
+			amount_paid_micros,
+			currency_code,
+			invoice_date,
+			due_date
+		) VALUES (?, ?, ?, ?, ?, ?, 'USD', ?, ?)`,
+		"iob-ui-"+periodKey+"-"+stateKey,
+		billID,
+		"SIM-INV-"+strings.ReplaceAll(periodStart[:7], "-", "")+"-"+strings.ToUpper(stateKey),
+		invoiceStatus,
+		amountDueMicros,
+		amountPaidMicros,
+		periodEnd,
+		periodEnd,
+	); err != nil {
+		t.Fatalf("insert invoice_obligations: %v", err)
+	}
 }

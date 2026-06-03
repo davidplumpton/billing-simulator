@@ -113,6 +113,7 @@ func (s *Server) Wait() error {
 // newMux wires the simulator's local browser UI and smoke-testable endpoints.
 func newMux(db *sql.DB) http.Handler {
 	resourceLab := newResourceLabHandler(db)
+	bills := newBillsHandler(db)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", resourceLab.handleRoot)
 	mux.HandleFunc("/assets/app.css", resourceLab.handleStylesheet)
@@ -125,6 +126,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/resources/daily-metering", resourceLab.handleRunDailyMeteringJob)
 	mux.HandleFunc("/resources/month-close", resourceLab.handleRunMonthEndClose)
 	mux.HandleFunc("/clock/advance", resourceLab.handleAdvanceClock)
+	mux.HandleFunc("/bills", bills.handleBills)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

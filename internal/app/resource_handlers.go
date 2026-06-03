@@ -1301,12 +1301,14 @@ func formatUSDMicros(value int64) string {
 	}
 	whole := value / 1_000_000
 	fraction := value % 1_000_000
-	formatted := fmt.Sprintf("%s$%d.%06d", sign, whole, fraction)
-	formatted = strings.TrimRight(formatted, "0")
-	if strings.HasSuffix(formatted, ".") {
-		formatted += "00"
+	if fraction == 0 {
+		return fmt.Sprintf("%s$%d.00", sign, whole)
 	}
-	return formatted
+	fractionText := strings.TrimRight(fmt.Sprintf("%06d", fraction), "0")
+	for len(fractionText) < 2 {
+		fractionText += "0"
+	}
+	return fmt.Sprintf("%s$%d.%s", sign, whole, fractionText)
 }
 
 func divideAndRoundInt64(value, divisor int64) int64 {
@@ -1347,7 +1349,7 @@ var resourcePageTemplate = template.Must(template.New("resource-page").Parse(`<!
 			<a class="active" href="/resources">Resources</a>
 			<span>Tags</span>
 			<span>Cost Explorer</span>
-			<span>Bills</span>
+			<a href="/bills">Bills</a>
 			<span>Scenarios</span>
 		</nav>
 	</header>
@@ -2038,6 +2040,34 @@ small {
 	min-width: min(100%, 460px);
 }
 
+.state-grid {
+	display: grid;
+	grid-template-columns: repeat(6, minmax(130px, 1fr));
+	gap: 12px;
+	margin: 20px 0 24px;
+}
+
+.state-card {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 14px;
+}
+
+.state-card span {
+	display: block;
+	color: var(--muted);
+	font-size: 12px;
+	font-weight: 650;
+	text-transform: uppercase;
+}
+
+.state-card strong {
+	display: block;
+	margin-top: 8px;
+	font-size: 20px;
+}
+
 .panel,
 .empty {
 	background: var(--surface);
@@ -2190,6 +2220,7 @@ code {
 	}
 
 	.form-grid,
+	.state-grid,
 	.fields,
 	.clock-form {
 		grid-template-columns: 1fr;

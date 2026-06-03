@@ -109,8 +109,8 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 6 {
-		t.Fatalf("schema_migrations count = %d, want 6", count)
+	if count != 7 {
+		t.Fatalf("schema_migrations count = %d, want 7", count)
 	}
 
 	assertMigrationRecorded(t, db, 1, "workspace_metadata")
@@ -119,6 +119,7 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	assertMigrationRecorded(t, db, 4, "price_catalog_lookup_identity")
 	assertMigrationRecorded(t, db, 5, "price_catalog_positive_rates")
 	assertMigrationRecorded(t, db, 6, "resource_usage_events")
+	assertMigrationRecorded(t, db, 7, "metering_records")
 
 	var schemaKind string
 	if err := db.QueryRowContext(
@@ -135,8 +136,8 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if userVersion != 6 {
-		t.Fatalf("user_version = %d, want 6", userVersion)
+	if userVersion != 7 {
+		t.Fatalf("user_version = %d, want 7", userVersion)
 	}
 }
 

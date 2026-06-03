@@ -87,8 +87,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("schema_migrations count = %d, want 10", count)
+	if count != 11 {
+		t.Fatalf("schema_migrations count = %d, want 11", count)
 	}
 
 	var catalogCount int
@@ -416,6 +416,78 @@ func TestResourcesUIDailyMeteringRunsOnDemandAndAfterClockAdvance(t *testing.T) 
 	}
 	if jobRunCount != 3 {
 		t.Fatalf("daily metering job run count = %d, want 3", jobRunCount)
+	}
+}
+
+func TestResourcesUIMonthEndCloseIssuesBill(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	clockRepo := persistence.NewSimulatorClockRepository(db)
+	resource, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-ui-month-close",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Closeable web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-ui-month-close",
+		ResourceID:          resource.ID,
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if _, err := clockRepo.Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.PostForm(server.URL+"/resources/month-close", url.Values{
+		"payer_account_id": {"999988887777"},
+		"invoice_due_days": {"10"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/month-close error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/month-close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Month-end close finalized 1 line items") ||
+		!strings.Contains(body, "Closed Billing Periods") ||
+		!strings.Contains(body, "Issued Bills") ||
+		!strings.Contains(body, "SIM-INV-202602-") ||
+		!strings.Contains(body, "999988887777") ||
+		!strings.Contains(body, "2026-03-11") ||
+		!strings.Contains(body, "final") ||
+		!strings.Contains(body, "due") {
+		t.Fatalf("month-end close response missing close, bill, or invoice details: %s", body)
 	}
 }
 

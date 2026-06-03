@@ -123,6 +123,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/resources/generate", resourceLab.handleGenerateUsage)
 	mux.HandleFunc("/resources/billing-pipeline", resourceLab.handleRunBillingPipeline)
 	mux.HandleFunc("/resources/daily-metering", resourceLab.handleRunDailyMeteringJob)
+	mux.HandleFunc("/resources/month-close", resourceLab.handleRunMonthEndClose)
 	mux.HandleFunc("/clock/advance", resourceLab.handleAdvanceClock)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

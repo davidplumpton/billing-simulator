@@ -35,6 +35,7 @@ type resourceLabHandler struct {
 	lineItems persistence.BillLineItemRepository
 	clock     persistence.SimulatorClockRepository
 	dailyJobs persistence.DailyMeteringJobRepository
+	monthEnd  persistence.MonthEndCloseRepository
 }
 
 type resourcePreset struct {
@@ -101,6 +102,8 @@ type resourcePageData struct {
 	BillLineItems              []billLineItemView
 	BillingPeriodSummaries     []billingPeriodSummaryView
 	DailyMeteringJobRuns       []dailyMeteringJobRunView
+	MonthEndCloses             []monthEndCloseView
+	IssuedBills                []issuedBillView
 	CatalogItems               []catalogItemView
 }
 
@@ -186,6 +189,37 @@ type dailyMeteringJobRunView struct {
 	CompletedAt            string
 }
 
+type monthEndCloseView struct {
+	ID                     string
+	Period                 string
+	PayerAccountID         string
+	Status                 string
+	MeteringRecordsCreated int
+	BillLineItemsCreated   int
+	FinalizedLineItems     int
+	FinalizedCost          string
+	SummariesRefreshed     int
+	ClosedAt               string
+}
+
+type issuedBillView struct {
+	ID               string
+	Period           string
+	PayerAccountID   string
+	BillState        string
+	LineItemCount    int
+	UsageCharge      string
+	Credits          string
+	Refunds          string
+	Tax              string
+	Total            string
+	InvoiceID        string
+	InvoiceStatus    string
+	InvoiceAmountDue string
+	InvoiceDate      string
+	InvoiceDueDate   string
+}
+
 type catalogItemView struct {
 	ServiceCode        string
 	UsageType          string
@@ -211,6 +245,7 @@ func newResourceLabHandler(db *sql.DB) resourceLabHandler {
 		lineItems: persistence.NewBillLineItemRepository(db),
 		clock:     persistence.NewSimulatorClockRepository(db),
 		dailyJobs: persistence.NewDailyMeteringJobRepository(db),
+		monthEnd:  persistence.NewMonthEndCloseRepository(db),
 	}
 }
 
@@ -427,6 +462,35 @@ func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *
 	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
 }
 
+// handleRunMonthEndClose finalizes the completed billing period before the current simulator clock.
+func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before closing a billing period.", "")
+		return
+	}
+	request, err := monthEndCloseRequestFromForm(r)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	result, err := h.monthEnd.ClosePreviousPeriod(r.Context(), request)
+	if err != nil {
+		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	flash := fmt.Sprintf(
+		"Month-end close finalized %d line items into bill %s for %s",
+		result.FinalizedLineItems,
+		result.Bill.ID,
+		formatUSDMicros(result.Bill.TotalMicros),
+	)
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
+}
+
 // handleAdvanceClock applies a learner-triggered deterministic time change.
 func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -557,6 +621,22 @@ func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *reso
 	}
 	for _, run := range runs {
 		data.DailyMeteringJobRuns = append(data.DailyMeteringJobRuns, dailyMeteringJobRunViewFromRun(run))
+	}
+
+	closes, err := h.monthEnd.ListRecentCloses(ctx, 10)
+	if err != nil {
+		return err
+	}
+	for _, close := range closes {
+		data.MonthEndCloses = append(data.MonthEndCloses, monthEndCloseViewFromClose(close))
+	}
+
+	issuedBills, err := h.monthEnd.ListIssuedBills(ctx, 10)
+	if err != nil {
+		return err
+	}
+	for _, issuedBill := range issuedBills {
+		data.IssuedBills = append(data.IssuedBills, issuedBillViewFromBill(issuedBill))
 	}
 
 	catalogItems, err := h.catalog.List(ctx)
@@ -732,6 +812,24 @@ func dailyMeteringJobRequestFromForm(r *http.Request, trigger persistence.DailyM
 	}, nil
 }
 
+func monthEndCloseRequestFromForm(r *http.Request) (persistence.MonthEndCloseRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return persistence.MonthEndCloseRequest{}, fmt.Errorf("parse month-end close form: %w", err)
+	}
+	dueDays := 0
+	if rawDueDays := strings.TrimSpace(r.PostForm.Get("invoice_due_days")); rawDueDays != "" {
+		parsedDueDays, err := strconv.Atoi(rawDueDays)
+		if err != nil {
+			return persistence.MonthEndCloseRequest{}, fmt.Errorf("invoice due days must be a whole number: %w", err)
+		}
+		dueDays = parsedDueDays
+	}
+	return persistence.MonthEndCloseRequest{
+		PayerAccountID: r.PostForm.Get("payer_account_id"),
+		InvoiceDueDays: dueDays,
+	}, nil
+}
+
 func resourceViewFromSummary(summary persistence.ResourceSummary) resourceView {
 	resource := summary.Resource
 	name := displayResourceName(resource)
@@ -812,6 +910,41 @@ func dailyMeteringJobRunViewFromRun(run persistence.DailyMeteringJobRun) dailyMe
 		BillLineItemsCreated:   run.BillLineItemsCreated,
 		SummariesRefreshed:     run.SummariesRefreshed,
 		CompletedAt:            run.CompletedAt,
+	}
+}
+
+func monthEndCloseViewFromClose(close persistence.BillingPeriodClose) monthEndCloseView {
+	return monthEndCloseView{
+		ID:                     close.ID,
+		Period:                 close.BillingPeriodStart + " to " + close.BillingPeriodEnd,
+		PayerAccountID:         close.PayerAccountID,
+		Status:                 close.Status,
+		MeteringRecordsCreated: close.MeteringRecordsCreated,
+		BillLineItemsCreated:   close.BillLineItemsCreated,
+		FinalizedLineItems:     close.FinalizedLineItemCount,
+		FinalizedCost:          formatUSDMicros(close.FinalizedCostMicros),
+		SummariesRefreshed:     close.SummariesRefreshed,
+		ClosedAt:               close.ClosedAt,
+	}
+}
+
+func issuedBillViewFromBill(issued persistence.BillWithInvoiceObligation) issuedBillView {
+	return issuedBillView{
+		ID:               issued.Bill.ID,
+		Period:           issued.Bill.BillingPeriodStart + " to " + issued.Bill.BillingPeriodEnd,
+		PayerAccountID:   issued.Bill.PayerAccountID,
+		BillState:        issued.Bill.BillState,
+		LineItemCount:    issued.Bill.LineItemCount,
+		UsageCharge:      formatUSDMicros(issued.Bill.UsageChargeMicros),
+		Credits:          formatUSDMicros(issued.Bill.CreditMicros),
+		Refunds:          formatUSDMicros(issued.Bill.RefundMicros),
+		Tax:              formatUSDMicros(issued.Bill.TaxMicros),
+		Total:            formatUSDMicros(issued.Bill.TotalMicros),
+		InvoiceID:        issued.Obligation.InvoiceID,
+		InvoiceStatus:    issued.Obligation.Status,
+		InvoiceAmountDue: formatUSDMicros(issued.Obligation.AmountDueMicros),
+		InvoiceDate:      issued.Obligation.InvoiceDate,
+		InvoiceDueDate:   issued.Obligation.DueDate,
 	}
 }
 
@@ -1367,6 +1500,19 @@ owner=web-platform</textarea>
 					</div>
 					<button type="submit">Run Daily Metering</button>
 				</form>
+
+				<form method="post" action="/resources/month-close" class="panel compact">
+					<h2>Month-End Close</h2>
+					<div class="fields">
+						<label>Payer Account ID
+							<input name="payer_account_id" value="{{.DefaultPayerAccountID}}">
+						</label>
+						<label>Invoice Due Days
+							<input name="invoice_due_days" value="14" inputmode="numeric" required>
+						</label>
+					</div>
+					<button type="submit">Close Previous Period</button>
+				</form>
 			</section>
 
 			<section>
@@ -1513,6 +1659,88 @@ owner=web-platform</textarea>
 								</tr>
 							{{else}}
 								<tr><td colspan="7" class="empty-cell">No daily metering jobs</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Closed Billing Periods</h2>
+					<span>{{len .MonthEndCloses}} closes</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Closed</th>
+								<th>Period</th>
+								<th>Payer</th>
+								<th>Status</th>
+								<th>Metering</th>
+								<th>Line Items</th>
+								<th>Final Cost</th>
+								<th>Summaries</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .MonthEndCloses}}
+								<tr>
+									<td><strong>{{.ClosedAt}}</strong><small>{{.ID}}</small></td>
+									<td>{{.Period}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td><span class="status">{{.Status}}</span></td>
+									<td>{{.MeteringRecordsCreated}}</td>
+									<td>{{.FinalizedLineItems}}<small>{{.BillLineItemsCreated}} new</small></td>
+									<td>{{.FinalizedCost}}</td>
+									<td>{{.SummariesRefreshed}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="8" class="empty-cell">No closed billing periods</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Issued Bills</h2>
+					<span>{{len .IssuedBills}} bills</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Bill</th>
+								<th>Period</th>
+								<th>Payer</th>
+								<th>State</th>
+								<th>Items</th>
+								<th>Charges</th>
+								<th>Tax</th>
+								<th>Total</th>
+								<th>Invoice</th>
+								<th>Due</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .IssuedBills}}
+								<tr>
+									<td><strong>{{.ID}}</strong><small>{{.InvoiceID}}</small></td>
+									<td>{{.Period}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td><span class="status">{{.BillState}}</span></td>
+									<td>{{.LineItemCount}}</td>
+									<td>{{.UsageCharge}}<small>Credits {{.Credits}} / refunds {{.Refunds}}</small></td>
+									<td>{{.Tax}}</td>
+									<td><strong>{{.Total}}</strong></td>
+									<td><span class="status">{{.InvoiceStatus}}</span><small>{{.InvoiceAmountDue}}</small></td>
+									<td>{{.InvoiceDueDate}}<small>{{.InvoiceDate}}</small></td>
+								</tr>
+							{{else}}
+								<tr><td colspan="10" class="empty-cell">No issued bills</td></tr>
 							{{end}}
 						</tbody>
 					</table>

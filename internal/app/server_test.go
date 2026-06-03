@@ -87,8 +87,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 11 {
-		t.Fatalf("schema_migrations count = %d, want 11", count)
+	if count != 12 {
+		t.Fatalf("schema_migrations count = %d, want 12", count)
 	}
 
 	var catalogCount int

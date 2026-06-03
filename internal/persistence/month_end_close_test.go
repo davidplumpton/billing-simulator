@@ -169,7 +169,7 @@ func TestMonthEndCloseRejectsCrossPeriodLineItems(t *testing.T) {
 	clockRepo := NewSimulatorClockRepository(db)
 	closeRepo := NewMonthEndCloseRepository(db)
 
-	recordAndPriceSingleUsage(t, ctx, db,
+	item := recordAndPriceSingleUsage(t, ctx, db,
 		ResourceCreateRequest{
 			ID:           "resource-month-close-cross-period",
 			AccountID:    "111122223333",
@@ -184,11 +184,18 @@ func TestMonthEndCloseRejectsCrossPeriodLineItems(t *testing.T) {
 			UsageType:           "instance-hours:t3.medium",
 			Operation:           "RunInstances",
 			UsageStartTime:      "2026-02-28T22:00:00Z",
-			UsageEndTime:        "2026-03-01T02:00:00Z",
-			UsageQuantityMicros: 4_000_000,
+			UsageEndTime:        "2026-03-01T00:00:00Z",
+			UsageQuantityMicros: 2_000_000,
 			UsageUnit:           "Hours",
 		},
 	)
+	// Simulate a legacy cross-period row that predates the period-bounds trigger.
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER reject_cross_period_bill_line_item_update`); err != nil {
+		t.Fatalf("DROP TRIGGER reject_cross_period_bill_line_item_update error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE bill_line_items SET usage_end_time = ? WHERE id = ?`, "2026-03-01T02:00:00Z", item.ID); err != nil {
+		t.Fatalf("make legacy cross-period bill line item: %v", err)
+	}
 	if _, err := clockRepo.Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
 		t.Fatalf("Set(clock) error = %v", err)
 	}

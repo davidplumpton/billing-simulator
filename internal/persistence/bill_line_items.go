@@ -266,7 +266,7 @@ func (r BillLineItemRepository) listUnpricedMeteringRecords(ctx context.Context,
 }
 
 func (r BillLineItemRepository) billLineItemFromMeteringRecord(ctx context.Context, request BillLineItemGenerationRequest, record MeteringRecord) (BillLineItem, error) {
-	period, err := billingPeriodForUsageStart(record.UsageStartTime)
+	period, err := billingPeriodForUsageWindow(record.UsageStartTime, record.UsageEndTime)
 	if err != nil {
 		return BillLineItem{}, fmt.Errorf("price metering record %q: %w", record.ID, err)
 	}
@@ -363,6 +363,9 @@ func validateBillLineItem(item BillLineItem) error {
 	if item.UsageStartTime == "" || item.UsageEndTime == "" {
 		return fmt.Errorf("bill line item usage window is required")
 	}
+	if err := validateBillLineItemUsageWindow(item); err != nil {
+		return err
+	}
 	if item.UsageQuantityMicros <= 0 {
 		return fmt.Errorf("bill line item usage quantity must be greater than zero")
 	}
@@ -403,6 +406,36 @@ func isBillLineItemStatus(value string) bool {
 	default:
 		return false
 	}
+}
+
+// validateBillLineItemUsageWindow ensures a persisted charge stays inside its declared billing period.
+func validateBillLineItemUsageWindow(item BillLineItem) error {
+	periodStart, err := time.Parse(time.DateOnly, item.BillingPeriodStart)
+	if err != nil {
+		return fmt.Errorf("bill line item billing period start must use YYYY-MM-DD: %w", err)
+	}
+	periodEnd, err := time.Parse(time.DateOnly, item.BillingPeriodEnd)
+	if err != nil {
+		return fmt.Errorf("bill line item billing period end must use YYYY-MM-DD: %w", err)
+	}
+	if !periodStart.Before(periodEnd) {
+		return fmt.Errorf("bill line item billing period start must be before end")
+	}
+	usageStart, err := time.Parse(time.RFC3339, item.UsageStartTime)
+	if err != nil {
+		return fmt.Errorf("bill line item usage start time must use RFC3339: %w", err)
+	}
+	usageEnd, err := time.Parse(time.RFC3339, item.UsageEndTime)
+	if err != nil {
+		return fmt.Errorf("bill line item usage end time must use RFC3339: %w", err)
+	}
+	if !usageStart.Before(usageEnd) {
+		return fmt.Errorf("bill line item usage start time must be before end time")
+	}
+	if usageStart.UTC().Before(periodStart.UTC()) || usageEnd.UTC().After(periodEnd.UTC()) {
+		return fmt.Errorf("bill line item usage window %s to %s crosses billing period %s to %s", usageStart.UTC().Format(time.RFC3339), usageEnd.UTC().Format(time.RFC3339), item.BillingPeriodStart, item.BillingPeriodEnd)
+	}
+	return nil
 }
 
 func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (bool, error) {
@@ -544,15 +577,31 @@ type billLineItemBillingPeriod struct {
 	UsageDate string
 }
 
-func billingPeriodForUsageStart(value string) (billLineItemBillingPeriod, error) {
-	usageStart, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+// billingPeriodForUsageWindow derives the usage-start period and rejects windows spilling past it.
+func billingPeriodForUsageWindow(startValue, endValue string) (billLineItemBillingPeriod, error) {
+	usageStart, err := time.Parse(time.RFC3339, strings.TrimSpace(startValue))
 	if err != nil {
 		return billLineItemBillingPeriod{}, fmt.Errorf("usage start time must use RFC3339: %w", err)
 	}
+	usageEnd, err := time.Parse(time.RFC3339, strings.TrimSpace(endValue))
+	if err != nil {
+		return billLineItemBillingPeriod{}, fmt.Errorf("usage end time must use RFC3339: %w", err)
+	}
 	usageStart = usageStart.UTC()
+	usageEnd = usageEnd.UTC()
+	if !usageStart.Before(usageEnd) {
+		return billLineItemBillingPeriod{}, fmt.Errorf("usage start time must be before end time")
+	}
 	period, err := BillingPeriodForTime(usageStart)
 	if err != nil {
 		return billLineItemBillingPeriod{}, err
+	}
+	periodEnd, err := time.Parse(time.DateOnly, period.End)
+	if err != nil {
+		return billLineItemBillingPeriod{}, fmt.Errorf("parse billing period end: %w", err)
+	}
+	if usageEnd.After(periodEnd.UTC()) {
+		return billLineItemBillingPeriod{}, fmt.Errorf("usage window %s to %s crosses billing period %s to %s", usageStart.Format(time.RFC3339), usageEnd.Format(time.RFC3339), period.Start, period.End)
 	}
 	return billLineItemBillingPeriod{
 		Start:     period.Start,

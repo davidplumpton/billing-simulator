@@ -211,6 +211,95 @@ func TestBillLineItemRepositoryProratesStorageByBillingPeriodDays(t *testing.T) 
 	}
 }
 
+func TestBillLineItemRepositoryRejectsCrossBillingPeriodUsage(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	meteringRepo := NewMeteringRepository(db)
+	lineItemRepo := NewBillLineItemRepository(db)
+
+	resource, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-bill-line-cross-period",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonEC2,
+		ResourceType: "ec2_instance",
+		Status:       "active",
+		StartedAt:    "2026-02-28T22:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-bill-line-cross-period",
+		ResourceID:          resource.ID,
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-28T22:00:00Z",
+		UsageEndTime:        "2026-03-01T02:00:00Z",
+		UsageQuantityMicros: 4_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	metering, err := meteringRepo.GenerateMeteringRecords(ctx)
+	if err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+
+	_, err = lineItemRepo.GenerateBillLineItems(ctx, BillLineItemGenerationRequest{})
+	if err == nil {
+		t.Fatal("GenerateBillLineItems(cross-period usage) error = nil, want rejection")
+	}
+	if !strings.Contains(err.Error(), "crosses billing period") || !strings.Contains(err.Error(), metering.Records[0].ID) {
+		t.Fatalf("GenerateBillLineItems(cross-period usage) error = %q, want metering context and cross-period message", err.Error())
+	}
+	items, listErr := lineItemRepo.ListBillLineItems(ctx, 10)
+	if listErr != nil {
+		t.Fatalf("ListBillLineItems() error = %v", listErr)
+	}
+	if len(items) != 0 {
+		t.Fatalf("bill line items after cross-period rejection = %+v, want none", items)
+	}
+}
+
+func TestBillLineItemSchemaRejectsCrossPeriodPersistence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-bill-line-trigger",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			Status:       "active",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-bill-line-trigger",
+			ResourceID:          "resource-bill-line-trigger",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-28T22:00:00Z",
+			UsageEndTime:        "2026-03-01T00:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+
+	_, err := db.ExecContext(ctx, `UPDATE bill_line_items SET usage_end_time = ? WHERE id = ?`, "2026-03-01T00:00:01Z", item.ID)
+	if err == nil {
+		t.Fatal("UPDATE bill_line_items(cross-period usage) error = nil, want trigger rejection")
+	}
+	if !strings.Contains(err.Error(), "crosses billing period") {
+		t.Fatalf("UPDATE bill_line_items(cross-period usage) error = %q, want cross-period trigger message", err.Error())
+	}
+}
+
 func TestBillLineItemRepositoryPricesBoundaryScenarios(t *testing.T) {
 	t.Parallel()
 
@@ -221,42 +310,6 @@ func TestBillLineItemRepositoryPricesBoundaryScenarios(t *testing.T) {
 		usage    UsageEventCreateRequest
 		want     billLineItemBoundaryWant
 	}{
-		{
-			name: "hourly instance usage starting before month boundary stays in start period",
-			resource: ResourceCreateRequest{
-				ID:           "resource-boundary-ec2-active",
-				AccountID:    "111122223333",
-				RegionCode:   "us-east-1",
-				ServiceCode:  serviceAmazonEC2,
-				ResourceType: "ec2_instance",
-				Status:       "active",
-				StartedAt:    "2026-02-28T22:00:00Z",
-			},
-			usage: UsageEventCreateRequest{
-				ID:                  "usage-boundary-ec2-active",
-				ResourceID:          "resource-boundary-ec2-active",
-				UsageType:           "instance-hours:t3.medium",
-				Operation:           "RunInstances",
-				UsageStartTime:      "2026-02-28T22:00:00Z",
-				UsageEndTime:        "2026-03-01T02:00:00Z",
-				UsageQuantityMicros: 4_000_000,
-				UsageUnit:           "Hours",
-			},
-			want: billLineItemBoundaryWant{
-				BillingPeriodStart:    "2026-02-01",
-				BillingPeriodEnd:      "2026-03-01",
-				BillingPeriodDays:     28,
-				UsageStartTime:        "2026-02-28T22:00:00Z",
-				UsageEndTime:          "2026-03-01T02:00:00Z",
-				UsageQuantityMicros:   4_000_000,
-				UsageUnit:             "Hours",
-				PricingUnit:           "InstanceHour",
-				PricingQuantityMicros: 4_000_000,
-				UnblendedRateMicros:   41_600,
-				UnblendedCostMicros:   166_400,
-				PriceCatalogSKU:       "SIM-EC2-T3-MEDIUM-HR",
-			},
-		},
 		{
 			name: "stopped instance charges recorded hours through stop time",
 			resource: ResourceCreateRequest{

@@ -113,11 +113,117 @@ func TestBillsRepositoryAddsEmptyOpenSummaryForFreshWorkspace(t *testing.T) {
 	}
 }
 
+func TestBillsRepositoryListsChargeBreakdowns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	ec2Item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-charge-breakdown-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Checkout web",
+			Status:       "active",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-charge-breakdown-ec2",
+			ResourceID:          "resource-charge-breakdown-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	s3Item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-charge-breakdown-s3",
+			AccountID:    "222233334444",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonS3,
+			ResourceType: "s3_bucket",
+			ResourceName: "Receipts bucket",
+			Status:       "active",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-charge-breakdown-s3",
+			ResourceID:          "resource-charge-breakdown-s3",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	)
+	supportResult, err := NewSupportChargeRepository(db).GenerateSupportCharges(ctx, SupportChargeGenerationRequest{
+		PayerAccountID: "111122223333",
+		PeriodStart:    "2026-02-01",
+		PeriodEnd:      "2026-03-01",
+		LineItemStatus: billLineItemStatusEstimated,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSupportCharges() error = %v", err)
+	}
+	if supportResult.ItemsCreated != 1 || len(supportResult.Items) != 1 {
+		t.Fatalf("GenerateSupportCharges() = %+v, want one support item", supportResult)
+	}
+	supportItem := supportResult.Items[0]
+
+	breakdowns, err := NewBillsRepository(db).ListChargeBreakdowns(ctx, BillChargeBreakdownRequest{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListChargeBreakdowns() error = %v", err)
+	}
+
+	ec2Summary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAmazonEC2, "111122223333", "111122223333", "instance-hours:t3.medium")
+	if ec2Summary.ServiceName != "Amazon EC2" ||
+		ec2Summary.RegionCode != "us-east-1" ||
+		ec2Summary.LineItemStatus != billLineItemStatusEstimated ||
+		ec2Summary.LineItemCount != 1 ||
+		ec2Summary.ResourceCount != 1 ||
+		ec2Summary.ChargeMicros != ec2Item.UnblendedCostMicros ||
+		ec2Summary.TotalMicros != ec2Item.UnblendedCostMicros {
+		t.Fatalf("EC2 charge summary = %+v, want source line item total", ec2Summary)
+	}
+	s3Summary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAmazonS3, "222233334444", "222233334444", "requests:put-1k")
+	if s3Summary.ChargeMicros != s3Item.UnblendedCostMicros || s3Summary.TotalMicros != 7_500 {
+		t.Fatalf("S3 charge summary = %+v, want PUT request total from account 222233334444", s3Summary)
+	}
+	supportSummary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAWSSupport, "111122223333", "111122223333", supportBusinessUsageType)
+	if supportSummary.RegionCode != supportRegionGlobal ||
+		supportSummary.ResourceCount != 0 ||
+		supportSummary.ChargeMicros != supportBusinessMinimumCostMicros ||
+		supportSummary.TotalMicros != supportItem.UnblendedCostMicros {
+		t.Fatalf("Support charge summary = %+v, want period-level fee total", supportSummary)
+	}
+
+	ec2Resource := requireBillResourceChargeSummary(t, breakdowns.Resources, "resource-charge-breakdown-ec2", serviceAmazonEC2)
+	if ec2Resource.ResourceName != "Checkout web" ||
+		ec2Resource.LineItemCount != 1 ||
+		ec2Resource.TotalMicros != ec2Item.UnblendedCostMicros {
+		t.Fatalf("EC2 resource drilldown = %+v, want named resource cost", ec2Resource)
+	}
+	supportResource := requireBillResourceChargeSummary(t, breakdowns.Resources, "", serviceAWSSupport)
+	if supportResource.ResourceName != "" ||
+		supportResource.Description == "" ||
+		supportResource.TotalMicros != supportItem.UnblendedCostMicros {
+		t.Fatalf("Support resource drilldown = %+v, want period-level support cost", supportResource)
+	}
+}
+
 func TestBillsRepositoryRejectsNilDB(t *testing.T) {
 	t.Parallel()
 
 	if _, err := NewBillsRepository(nil).ListBillStateSummaries(context.Background(), BillStateSummaryRequest{}); err == nil {
 		t.Fatal("ListBillStateSummaries(nil DB) error = nil, want database handle validation error")
+	}
+	if _, err := NewBillsRepository(nil).ListChargeBreakdowns(context.Background(), BillChargeBreakdownRequest{}); err == nil {
+		t.Fatal("ListChargeBreakdowns(nil DB) error = nil, want database handle validation error")
 	}
 }
 
@@ -196,4 +302,31 @@ func requireBillStateSummary(t *testing.T, summaries []BillStateSummary, state, 
 	}
 	t.Fatalf("summaries = %+v, want state %s for period %s", summaries, state, periodStart)
 	return BillStateSummary{}
+}
+
+func requireBillChargeSummary(t *testing.T, summaries []BillChargeSummary, serviceCode, payerAccountID, usageAccountID, usageType string) BillChargeSummary {
+	t.Helper()
+
+	for _, summary := range summaries {
+		if summary.ServiceCode == serviceCode &&
+			summary.PayerAccountID == payerAccountID &&
+			summary.UsageAccountID == usageAccountID &&
+			summary.UsageType == usageType {
+			return summary
+		}
+	}
+	t.Fatalf("charge summaries = %+v, want service %s payer %s usage account %s usage type %s", summaries, serviceCode, payerAccountID, usageAccountID, usageType)
+	return BillChargeSummary{}
+}
+
+func requireBillResourceChargeSummary(t *testing.T, summaries []BillResourceChargeSummary, resourceID, serviceCode string) BillResourceChargeSummary {
+	t.Helper()
+
+	for _, summary := range summaries {
+		if summary.ResourceID == resourceID && summary.ServiceCode == serviceCode {
+			return summary
+		}
+	}
+	t.Fatalf("resource charge summaries = %+v, want resource %q service %s", summaries, resourceID, serviceCode)
+	return BillResourceChargeSummary{}
 }

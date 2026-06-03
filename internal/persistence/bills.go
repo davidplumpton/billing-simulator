@@ -11,6 +11,8 @@ import (
 const (
 	defaultBillStateSummaryLimit = 25
 	maxBillStateSummaryLimit     = 100
+	defaultBillChargeLimit       = 50
+	maxBillChargeLimit           = 200
 	billStateOpen                = "open"
 	billStatePendingClose        = "pending-close"
 )
@@ -42,6 +44,63 @@ type BillStateSummary struct {
 	InvoiceDate             string
 	InvoiceDueDate          string
 	UpdatedAt               string
+}
+
+// BillChargeBreakdownRequest configures service/account charge breakdown rows.
+type BillChargeBreakdownRequest struct {
+	Limit int
+}
+
+// BillChargeBreakdowns groups service/account totals and resource drilldown rows.
+type BillChargeBreakdowns struct {
+	Summaries []BillChargeSummary
+	Resources []BillResourceChargeSummary
+}
+
+// BillChargeSummary stores one service/account/region/usage-type charge rollup.
+type BillChargeSummary struct {
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	PayerAccountID     string
+	UsageAccountID     string
+	ServiceCode        string
+	ServiceName        string
+	RegionCode         string
+	UsageType          string
+	LineItemStatus     string
+	CurrencyCode       string
+	LineItemCount      int
+	ResourceCount      int
+	ChargeMicros       int64
+	CreditMicros       int64
+	RefundMicros       int64
+	TaxMicros          int64
+	TotalMicros        int64
+	UpdatedAt          string
+}
+
+// BillResourceChargeSummary stores a resource-level drilldown row for charge rollups.
+type BillResourceChargeSummary struct {
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	PayerAccountID     string
+	UsageAccountID     string
+	ServiceCode        string
+	ServiceName        string
+	RegionCode         string
+	UsageType          string
+	LineItemStatus     string
+	CurrencyCode       string
+	ResourceID         string
+	ResourceName       string
+	Description        string
+	LineItemCount      int
+	ChargeMicros       int64
+	CreditMicros       int64
+	RefundMicros       int64
+	TaxMicros          int64
+	TotalMicros        int64
+	UpdatedAt          string
 }
 
 // BillsRepository reads derived and issued bill summaries for the Bills page.
@@ -94,6 +153,164 @@ func (r BillsRepository) ListBillStateSummaries(ctx context.Context, request Bil
 	summaries = append(summaries, openSummaries...)
 	summaries = append(summaries, pendingSummaries...)
 	summaries = append(summaries, issuedSummaries...)
+	return summaries, nil
+}
+
+// ListChargeBreakdowns returns charge rollups and resource drilldowns from source line items.
+func (r BillsRepository) ListChargeBreakdowns(ctx context.Context, request BillChargeBreakdownRequest) (BillChargeBreakdowns, error) {
+	if r.db == nil {
+		return BillChargeBreakdowns{}, fmt.Errorf("database handle is required")
+	}
+	request = normalizeBillChargeBreakdownRequest(request)
+
+	summaries, err := r.listBillChargeSummaries(ctx, request.Limit)
+	if err != nil {
+		return BillChargeBreakdowns{}, err
+	}
+	resources, err := r.listBillResourceChargeSummaries(ctx, request.Limit)
+	if err != nil {
+		return BillChargeBreakdowns{}, err
+	}
+	return BillChargeBreakdowns{
+		Summaries: summaries,
+		Resources: resources,
+	}, nil
+}
+
+func (r BillsRepository) listBillChargeSummaries(ctx context.Context, limit int) ([]BillChargeSummary, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			li.billing_period_start,
+			li.billing_period_end,
+			li.payer_account_id,
+			li.usage_account_id,
+			li.service_code,
+			li.service_name,
+			li.region_code,
+			li.usage_type,
+			li.line_item_status,
+			li.currency_code,
+			COUNT(*),
+			COUNT(DISTINCT CASE
+				WHEN li.resource_id IS NULL OR trim(li.resource_id) = '' THEN NULL
+				ELSE li.resource_id
+			END),
+			COALESCE(SUM(CASE WHEN li.line_item_type IN ('Usage', 'Fee') THEN li.unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN li.line_item_type = 'Credit' THEN li.unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN li.line_item_type = 'Refund' THEN li.unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN li.line_item_type = 'Tax' THEN li.unblended_cost_micros ELSE 0 END), 0),
+			MAX(li.created_at)
+		 FROM bill_line_items li
+		 GROUP BY
+			li.billing_period_start,
+			li.billing_period_end,
+			li.payer_account_id,
+			li.usage_account_id,
+			li.service_code,
+			li.service_name,
+			li.region_code,
+			li.usage_type,
+			li.line_item_status,
+			li.currency_code
+		 ORDER BY
+			li.billing_period_start DESC,
+			li.payer_account_id,
+			li.usage_account_id,
+			li.service_code,
+			li.region_code,
+			li.usage_type,
+			li.line_item_status,
+			li.currency_code
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list bill charge summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var summaries []BillChargeSummary
+	for rows.Next() {
+		summary, err := scanBillChargeSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bill charge summaries: %w", err)
+	}
+	return summaries, nil
+}
+
+func (r BillsRepository) listBillResourceChargeSummaries(ctx context.Context, limit int) ([]BillResourceChargeSummary, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			li.billing_period_start,
+			li.billing_period_end,
+			li.payer_account_id,
+			li.usage_account_id,
+			li.service_code,
+			li.service_name,
+			li.region_code,
+			li.usage_type,
+			li.line_item_status,
+			li.currency_code,
+			COALESCE(li.resource_id, ''),
+			COALESCE(NULLIF(r.resource_name, ''), ''),
+			MAX(li.description),
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN li.line_item_type IN ('Usage', 'Fee') THEN li.unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN li.line_item_type = 'Credit' THEN li.unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN li.line_item_type = 'Refund' THEN li.unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN li.line_item_type = 'Tax' THEN li.unblended_cost_micros ELSE 0 END), 0),
+			MAX(li.created_at)
+		 FROM bill_line_items li
+		 LEFT JOIN resources r ON r.id = li.resource_id
+		 GROUP BY
+			li.billing_period_start,
+			li.billing_period_end,
+			li.payer_account_id,
+			li.usage_account_id,
+			li.service_code,
+			li.service_name,
+			li.region_code,
+			li.usage_type,
+			li.line_item_status,
+			li.currency_code,
+			li.resource_id,
+			r.resource_name
+		 ORDER BY
+			li.billing_period_start DESC,
+			li.payer_account_id,
+			li.usage_account_id,
+			li.service_code,
+			li.region_code,
+			li.usage_type,
+			li.resource_id,
+			li.line_item_status,
+			li.currency_code
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list bill resource charge summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var summaries []BillResourceChargeSummary
+	for rows.Next() {
+		summary, err := scanBillResourceChargeSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bill resource charge summaries: %w", err)
+	}
 	return summaries, nil
 }
 
@@ -245,6 +462,66 @@ func (r BillsRepository) listIssuedBillStateSummaries(ctx context.Context, limit
 	return summaries, nil
 }
 
+type billChargeSummaryRow interface {
+	Scan(dest ...any) error
+}
+
+func scanBillChargeSummary(row billChargeSummaryRow) (BillChargeSummary, error) {
+	var summary BillChargeSummary
+	if err := row.Scan(
+		&summary.BillingPeriodStart,
+		&summary.BillingPeriodEnd,
+		&summary.PayerAccountID,
+		&summary.UsageAccountID,
+		&summary.ServiceCode,
+		&summary.ServiceName,
+		&summary.RegionCode,
+		&summary.UsageType,
+		&summary.LineItemStatus,
+		&summary.CurrencyCode,
+		&summary.LineItemCount,
+		&summary.ResourceCount,
+		&summary.ChargeMicros,
+		&summary.CreditMicros,
+		&summary.RefundMicros,
+		&summary.TaxMicros,
+		&summary.UpdatedAt,
+	); err != nil {
+		return BillChargeSummary{}, fmt.Errorf("scan bill charge summary: %w", err)
+	}
+	summary.TotalMicros = billChargeTotalMicros(summary.ChargeMicros, summary.CreditMicros, summary.RefundMicros, summary.TaxMicros)
+	return summary, nil
+}
+
+func scanBillResourceChargeSummary(row billChargeSummaryRow) (BillResourceChargeSummary, error) {
+	var summary BillResourceChargeSummary
+	if err := row.Scan(
+		&summary.BillingPeriodStart,
+		&summary.BillingPeriodEnd,
+		&summary.PayerAccountID,
+		&summary.UsageAccountID,
+		&summary.ServiceCode,
+		&summary.ServiceName,
+		&summary.RegionCode,
+		&summary.UsageType,
+		&summary.LineItemStatus,
+		&summary.CurrencyCode,
+		&summary.ResourceID,
+		&summary.ResourceName,
+		&summary.Description,
+		&summary.LineItemCount,
+		&summary.ChargeMicros,
+		&summary.CreditMicros,
+		&summary.RefundMicros,
+		&summary.TaxMicros,
+		&summary.UpdatedAt,
+	); err != nil {
+		return BillResourceChargeSummary{}, fmt.Errorf("scan bill resource charge summary: %w", err)
+	}
+	summary.TotalMicros = billChargeTotalMicros(summary.ChargeMicros, summary.CreditMicros, summary.RefundMicros, summary.TaxMicros)
+	return summary, nil
+}
+
 type lineItemBillSummaryRow interface {
 	Scan(dest ...any) error
 }
@@ -294,8 +571,26 @@ func normalizeBillStateSummaryRequest(request BillStateSummaryRequest) BillState
 	return request
 }
 
+func normalizeBillChargeBreakdownRequest(request BillChargeBreakdownRequest) BillChargeBreakdownRequest {
+	if request.Limit <= 0 {
+		request.Limit = defaultBillChargeLimit
+	}
+	if request.Limit > maxBillChargeLimit {
+		request.Limit = maxBillChargeLimit
+	}
+	return request
+}
+
 func billStateSummaryTotalMicros(summary BillStateSummary) int64 {
 	total := summary.UsageChargeMicros + summary.TaxMicros - summary.CreditMicros - summary.RefundMicros
+	if total < 0 {
+		return 0
+	}
+	return total
+}
+
+func billChargeTotalMicros(chargeMicros, creditMicros, refundMicros, taxMicros int64) int64 {
+	total := chargeMicros + taxMicros - creditMicros - refundMicros
 	if total < 0 {
 		return 0
 	}

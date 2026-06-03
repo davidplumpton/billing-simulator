@@ -19,12 +19,14 @@ type billsHandler struct {
 }
 
 type billsPageData struct {
-	WorkspaceReady     bool
-	Error              string
-	ClockCurrentTime   string
-	ClockBillingPeriod string
-	StateCards         []billStateCardView
-	BillSummaries      []billSummaryView
+	WorkspaceReady           bool
+	Error                    string
+	ClockCurrentTime         string
+	ClockBillingPeriod       string
+	StateCards               []billStateCardView
+	BillSummaries            []billSummaryView
+	ChargeBreakdowns         []billChargeBreakdownView
+	ResourceChargeBreakdowns []billResourceChargeBreakdownView
 }
 
 type billStateCardView struct {
@@ -52,6 +54,45 @@ type billSummaryView struct {
 	InvoiceDate      string
 	InvoiceDueDate   string
 	UpdatedAt        string
+}
+
+type billChargeBreakdownView struct {
+	Period         string
+	PayerAccountID string
+	UsageAccountID string
+	ServiceCode    string
+	ServiceName    string
+	RegionCode     string
+	UsageType      string
+	Status         string
+	ResourceCount  int
+	LineItemCount  int
+	Charges        string
+	Credits        string
+	Refunds        string
+	Tax            string
+	Total          string
+	UpdatedAt      string
+}
+
+type billResourceChargeBreakdownView struct {
+	Resource       string
+	ResourceID     string
+	Period         string
+	PayerAccountID string
+	UsageAccountID string
+	ServiceCode    string
+	ServiceName    string
+	RegionCode     string
+	UsageType      string
+	Status         string
+	LineItemCount  int
+	Charges        string
+	Credits        string
+	Refunds        string
+	Tax            string
+	Total          string
+	Description    string
 }
 
 type billStateDefinition struct {
@@ -121,6 +162,19 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	for _, summary := range summaries {
 		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary))
 	}
+
+	breakdowns, err := h.bills.ListChargeBreakdowns(ctx, persistence.BillChargeBreakdownRequest{
+		Limit: 75,
+	})
+	if err != nil {
+		return err
+	}
+	for _, summary := range breakdowns.Summaries {
+		data.ChargeBreakdowns = append(data.ChargeBreakdowns, billChargeBreakdownViewFromSummary(summary))
+	}
+	for _, summary := range breakdowns.Resources {
+		data.ResourceChargeBreakdowns = append(data.ResourceChargeBreakdowns, billResourceChargeBreakdownViewFromSummary(summary))
+	}
 	return nil
 }
 
@@ -143,6 +197,56 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummar
 		InvoiceDate:      summary.InvoiceDate,
 		InvoiceDueDate:   summary.InvoiceDueDate,
 		UpdatedAt:        summary.UpdatedAt,
+	}
+}
+
+func billChargeBreakdownViewFromSummary(summary persistence.BillChargeSummary) billChargeBreakdownView {
+	return billChargeBreakdownView{
+		Period:         summary.BillingPeriodStart + " to " + summary.BillingPeriodEnd,
+		PayerAccountID: summary.PayerAccountID,
+		UsageAccountID: summary.UsageAccountID,
+		ServiceCode:    summary.ServiceCode,
+		ServiceName:    summary.ServiceName,
+		RegionCode:     summary.RegionCode,
+		UsageType:      summary.UsageType,
+		Status:         displayBillState(summary.LineItemStatus),
+		ResourceCount:  summary.ResourceCount,
+		LineItemCount:  summary.LineItemCount,
+		Charges:        formatUSDMicros(summary.ChargeMicros),
+		Credits:        formatUSDMicros(summary.CreditMicros),
+		Refunds:        formatUSDMicros(summary.RefundMicros),
+		Tax:            formatUSDMicros(summary.TaxMicros),
+		Total:          formatUSDMicros(summary.TotalMicros),
+		UpdatedAt:      summary.UpdatedAt,
+	}
+}
+
+func billResourceChargeBreakdownViewFromSummary(summary persistence.BillResourceChargeSummary) billResourceChargeBreakdownView {
+	resource := strings.TrimSpace(summary.ResourceName)
+	if resource == "" {
+		resource = strings.TrimSpace(summary.ResourceID)
+	}
+	if resource == "" {
+		resource = "Period level"
+	}
+	return billResourceChargeBreakdownView{
+		Resource:       resource,
+		ResourceID:     summary.ResourceID,
+		Period:         summary.BillingPeriodStart + " to " + summary.BillingPeriodEnd,
+		PayerAccountID: summary.PayerAccountID,
+		UsageAccountID: summary.UsageAccountID,
+		ServiceCode:    summary.ServiceCode,
+		ServiceName:    summary.ServiceName,
+		RegionCode:     summary.RegionCode,
+		UsageType:      summary.UsageType,
+		Status:         displayBillState(summary.LineItemStatus),
+		LineItemCount:  summary.LineItemCount,
+		Charges:        formatUSDMicros(summary.ChargeMicros),
+		Credits:        formatUSDMicros(summary.CreditMicros),
+		Refunds:        formatUSDMicros(summary.RefundMicros),
+		Tax:            formatUSDMicros(summary.TaxMicros),
+		Total:          formatUSDMicros(summary.TotalMicros),
+		Description:    summary.Description,
 	}
 }
 
@@ -237,6 +341,110 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctyp
 						<small>{{.Count}} bills</small>
 					</div>
 				{{end}}
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Charges by Service and Account</h2>
+					<span>{{len .ChargeBreakdowns}} groups</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Period</th>
+								<th>Payer</th>
+								<th>Usage Account</th>
+								<th>Service</th>
+								<th>Region</th>
+								<th>Usage Type</th>
+								<th>Status</th>
+								<th>Resources</th>
+								<th>Items</th>
+								<th>Charges</th>
+								<th>Credits</th>
+								<th>Refunds</th>
+								<th>Tax</th>
+								<th>Total</th>
+								<th>Updated</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .ChargeBreakdowns}}
+								<tr>
+									<td>{{.Period}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td>{{.UsageAccountID}}</td>
+									<td><strong>{{.ServiceName}}</strong><small>{{.ServiceCode}}</small></td>
+									<td>{{.RegionCode}}</td>
+									<td><code>{{.UsageType}}</code></td>
+									<td><span class="status">{{.Status}}</span></td>
+									<td>{{.ResourceCount}}</td>
+									<td>{{.LineItemCount}}</td>
+									<td>{{.Charges}}</td>
+									<td>{{.Credits}}</td>
+									<td>{{.Refunds}}</td>
+									<td>{{.Tax}}</td>
+									<td><strong>{{.Total}}</strong></td>
+									<td>{{.UpdatedAt}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="15" class="empty-cell">No charges</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Resource Charge Drilldown</h2>
+					<span>{{len .ResourceChargeBreakdowns}} rows</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Resource</th>
+								<th>Period</th>
+								<th>Payer</th>
+								<th>Usage Account</th>
+								<th>Service</th>
+								<th>Region</th>
+								<th>Usage Type</th>
+								<th>Status</th>
+								<th>Items</th>
+								<th>Charges</th>
+								<th>Credits</th>
+								<th>Refunds</th>
+								<th>Tax</th>
+								<th>Total</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .ResourceChargeBreakdowns}}
+								<tr>
+									<td><strong>{{.Resource}}</strong><small>{{.ResourceID}}</small></td>
+									<td>{{.Period}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td>{{.UsageAccountID}}</td>
+									<td><strong>{{.ServiceName}}</strong><small>{{.ServiceCode}}</small></td>
+									<td>{{.RegionCode}}</td>
+									<td><code>{{.UsageType}}</code><small>{{.Description}}</small></td>
+									<td><span class="status">{{.Status}}</span></td>
+									<td>{{.LineItemCount}}</td>
+									<td>{{.Charges}}</td>
+									<td>{{.Credits}}</td>
+									<td>{{.Refunds}}</td>
+									<td>{{.Tax}}</td>
+									<td><strong>{{.Total}}</strong></td>
+								</tr>
+							{{else}}
+								<tr><td colspan="14" class="empty-cell">No resource charges</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
 			</section>
 
 			<section>

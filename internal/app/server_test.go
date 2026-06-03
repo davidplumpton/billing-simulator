@@ -657,6 +657,30 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordUsageEvent(March) error = %v", err)
 	}
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-bills-ui-s3",
+		AccountID:    "222233334444",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonS3",
+		ResourceType: "s3_bucket",
+		ResourceName: "Receipts bucket",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(S3) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-bills-ui-s3-put",
+		ResourceID:          "resource-bills-ui-s3",
+		UsageType:           "requests:put-1k",
+		Operation:           "PutObject",
+		UsageStartTime:      "2026-02-02T00:00:00Z",
+		UsageEndTime:        "2026-02-03T00:00:00Z",
+		UsageQuantityMicros: 1_500_000_000,
+		UsageUnit:           "Request",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(S3) error = %v", err)
+	}
 	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
 		t.Fatalf("GenerateMeteringRecords() error = %v", err)
 	}
@@ -692,6 +716,8 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 		"Adjusted",
 		"Paid",
 		"Past Due",
+		"Charges by Service and Account",
+		"Resource Charge Drilldown",
 		"open",
 		"pending-close",
 		"issued",
@@ -704,7 +730,13 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 		"Total",
 		"$0.0416",
 		"$0.0832",
+		"$0.0075",
 		"$2.70",
+		"Amazon S3",
+		"requests:put-1k",
+		"222233334444",
+		"Receipts bucket",
+		"February bill web",
 		"not issued",
 		"SIM-INV-202511-ADJUSTED",
 	} {

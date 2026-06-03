@@ -14,6 +14,7 @@ const (
 	defaultBillLineItemLimit    = 25
 	maxBillLineItemLimit        = 100
 	billLineItemTypeUsage       = "Usage"
+	billLineItemTypeFee         = "Fee"
 	billLineItemStatusEstimated = "estimated"
 	billLineItemStatusFinal     = "final"
 	defaultBillLineItemStatus   = billLineItemStatusEstimated
@@ -330,14 +331,16 @@ func validateBillLineItem(item BillLineItem) error {
 	if item.ID == "" {
 		return fmt.Errorf("bill line item ID is required")
 	}
-	if item.MeteringRecordID == "" {
-		return fmt.Errorf("bill line item metering record ID is required")
-	}
-	if item.UsageEventID == "" {
-		return fmt.Errorf("bill line item usage event ID is required")
-	}
-	if item.ResourceID == "" {
-		return fmt.Errorf("bill line item resource ID is required")
+	if item.LineItemType == billLineItemTypeUsage {
+		if item.MeteringRecordID == "" {
+			return fmt.Errorf("bill line item metering record ID is required")
+		}
+		if item.UsageEventID == "" {
+			return fmt.Errorf("bill line item usage event ID is required")
+		}
+		if item.ResourceID == "" {
+			return fmt.Errorf("bill line item resource ID is required")
+		}
 	}
 	if item.BillingPeriodStart == "" || item.BillingPeriodEnd == "" || item.BillingPeriodDays <= 0 {
 		return fmt.Errorf("bill line item billing period is required")
@@ -392,7 +395,7 @@ func validateBillLineItem(item BillLineItem) error {
 
 func isBillLineItemType(value string) bool {
 	switch value {
-	case "Usage", "Credit", "Tax", "Fee", "Refund":
+	case billLineItemTypeUsage, "Credit", "Tax", billLineItemTypeFee, "Refund":
 		return true
 	default:
 		return false
@@ -526,11 +529,12 @@ type billLineItemRow interface {
 func scanBillLineItem(row billLineItemRow) (BillLineItem, error) {
 	var item BillLineItem
 	var tagSnapshotJSON string
+	var meteringRecordID, usageEventID, resourceID sql.NullString
 	if err := row.Scan(
 		&item.ID,
-		&item.MeteringRecordID,
-		&item.UsageEventID,
-		&item.ResourceID,
+		&meteringRecordID,
+		&usageEventID,
+		&resourceID,
 		&item.BillingPeriodStart,
 		&item.BillingPeriodEnd,
 		&item.BillingPeriodDays,
@@ -561,6 +565,10 @@ func scanBillLineItem(row billLineItemRow) (BillLineItem, error) {
 	); err != nil {
 		return BillLineItem{}, fmt.Errorf("scan bill line item: %w", err)
 	}
+
+	item.MeteringRecordID = nullStringValue(meteringRecordID)
+	item.UsageEventID = nullStringValue(usageEventID)
+	item.ResourceID = nullStringValue(resourceID)
 
 	var err error
 	item.TagSnapshot, err = unmarshalStringMap(tagSnapshotJSON)

@@ -77,6 +77,7 @@ type DailyMeteringJobRepository struct {
 	clock     SimulatorClockRepository
 	metering  MeteringRepository
 	lineItems BillLineItemRepository
+	support   SupportChargeRepository
 }
 
 // NewDailyMeteringJobRepository creates a daily metering job repository backed by a workspace database.
@@ -86,6 +87,7 @@ func NewDailyMeteringJobRepository(db *sql.DB) DailyMeteringJobRepository {
 		clock:     NewSimulatorClockRepository(db),
 		metering:  NewMeteringRepository(db),
 		lineItems: NewBillLineItemRepository(db),
+		support:   NewSupportChargeRepository(db),
 	}
 }
 
@@ -114,22 +116,41 @@ func (r DailyMeteringJobRepository) Run(ctx context.Context, request DailyMeteri
 	if err != nil {
 		return DailyMeteringJobResult{}, err
 	}
+
+	periodRefs := billingPeriodRefsForDailyJob(clock, lineItemResult.Items)
+	var supportItems []BillLineItem
+	var supportItemsCreated int
+	for _, period := range periodRefs {
+		supportResult, err := r.support.GenerateSupportCharges(ctx, SupportChargeGenerationRequest{
+			PayerAccountID: request.PayerAccountID,
+			PeriodStart:    period.Start,
+			PeriodEnd:      period.End,
+			LineItemStatus: billLineItemStatusEstimated,
+		})
+		if err != nil {
+			return DailyMeteringJobResult{}, err
+		}
+		supportItemsCreated += supportResult.ItemsCreated
+		supportItems = append(supportItems, supportResult.Items...)
+	}
+
 	var summaries []BillingPeriodServiceSummary
-	for _, period := range billingPeriodRefsForDailyJob(clock, lineItemResult.Items) {
+	for _, period := range billingPeriodRefsForDailyJob(clock, append(lineItemResult.Items, supportItems...)) {
 		refreshed, err := r.RefreshBillingPeriodServiceSummaries(ctx, period.Start, period.End)
 		if err != nil {
 			return DailyMeteringJobResult{}, err
 		}
 		summaries = append(summaries, refreshed...)
 	}
-	run, err := r.insertRun(ctx, request, clock, meteringResult.RecordsCreated, lineItemResult.ItemsCreated, len(summaries))
+	billLineItemsCreated := lineItemResult.ItemsCreated + supportItemsCreated
+	run, err := r.insertRun(ctx, request, clock, meteringResult.RecordsCreated, billLineItemsCreated, len(summaries))
 	if err != nil {
 		return DailyMeteringJobResult{}, err
 	}
 	return DailyMeteringJobResult{
 		Run:                    run,
 		MeteringRecordsCreated: meteringResult.RecordsCreated,
-		BillLineItemsCreated:   lineItemResult.ItemsCreated,
+		BillLineItemsCreated:   billLineItemsCreated,
 		Summaries:              summaries,
 	}, nil
 }

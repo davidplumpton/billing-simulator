@@ -64,47 +64,50 @@ func TestMonthEndCloseFinalizesPeriodAndCreatesBill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClosePreviousPeriod() error = %v", err)
 	}
-	if result.MeteringRecordsCreated != 1 || result.BillLineItemsCreated != 1 || result.FinalizedLineItems != 1 {
-		t.Fatalf("ClosePreviousPeriod() = %+v, want one metered, priced, and finalized item", result)
+	if result.MeteringRecordsCreated != 1 || result.BillLineItemsCreated != 2 || result.FinalizedLineItems != 2 {
+		t.Fatalf("ClosePreviousPeriod() = %+v, want one usage item plus Support finalized", result)
 	}
 	if result.Close.BillingPeriodStart != "2026-02-01" ||
 		result.Close.BillingPeriodEnd != "2026-03-01" ||
 		result.Close.PayerAccountID != "999988887777" ||
 		result.Close.Status != billingPeriodCloseStatusClosed ||
-		result.Close.FinalizedCostMicros != 83_200 ||
-		result.Close.SummariesRefreshed != 1 ||
+		result.Close.FinalizedCostMicros != 1_083_200 ||
+		result.Close.SummariesRefreshed != 2 ||
 		result.Close.ClosedAt == "" {
 		t.Fatalf("close = %+v, want February closed snapshot", result.Close)
 	}
 	if result.Bill.CloseID != result.Close.ID ||
 		result.Bill.BillState != billStateIssued ||
-		result.Bill.LineItemCount != 1 ||
-		result.Bill.UsageChargeMicros != 83_200 ||
-		result.Bill.TotalMicros != 83_200 ||
+		result.Bill.LineItemCount != 2 ||
+		result.Bill.UsageChargeMicros != 1_083_200 ||
+		result.Bill.TotalMicros != 1_083_200 ||
 		result.Bill.CurrencyCode != "USD" ||
 		result.Bill.IssuedAt == "" {
 		t.Fatalf("bill = %+v, want issued bill reconciled to line item", result.Bill)
 	}
 	if result.InvoiceObligation.BillID != result.Bill.ID ||
 		result.InvoiceObligation.Status != invoiceObligationStatusDue ||
-		result.InvoiceObligation.AmountDueMicros != 83_200 ||
+		result.InvoiceObligation.AmountDueMicros != 1_083_200 ||
 		result.InvoiceObligation.InvoiceDate != "2026-03-01" ||
 		result.InvoiceObligation.DueDate != "2026-03-11" ||
 		!strings.HasPrefix(result.InvoiceObligation.InvoiceID, "SIM-INV-202602-") {
 		t.Fatalf("invoice obligation = %+v, want due invoice obligation", result.InvoiceObligation)
 	}
-	if len(result.Summaries) != 1 ||
-		result.Summaries[0].LineItemStatus != billLineItemStatusFinal ||
-		result.Summaries[0].UnblendedCostMicros != 83_200 {
-		t.Fatalf("summaries = %+v, want final February service summary", result.Summaries)
+	if len(result.Summaries) != 2 ||
+		requireBillingPeriodSummary(t, result.Summaries, serviceAmazonEC2).LineItemStatus != billLineItemStatusFinal ||
+		requireBillingPeriodSummary(t, result.Summaries, serviceAmazonEC2).UnblendedCostMicros != 83_200 ||
+		requireBillingPeriodSummary(t, result.Summaries, serviceAWSSupport).UnblendedCostMicros != supportBusinessMinimumCostMicros {
+		t.Fatalf("summaries = %+v, want final February service and Support summaries", result.Summaries)
 	}
 
 	items, err := NewBillLineItemRepository(db).ListBillLineItems(ctx, 10)
 	if err != nil {
 		t.Fatalf("ListBillLineItems() error = %v", err)
 	}
-	if len(items) != 1 || items[0].LineItemStatus != billLineItemStatusFinal {
-		t.Fatalf("bill line items = %+v, want only finalized February item", items)
+	if len(items) != 2 ||
+		requireBillLineItemByService(t, items, serviceAmazonEC2).LineItemStatus != billLineItemStatusFinal ||
+		requireBillLineItemByService(t, items, serviceAWSSupport).LineItemStatus != billLineItemStatusFinal {
+		t.Fatalf("bill line items = %+v, want finalized February usage and Support items", items)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE bill_line_items SET description = description WHERE id = ?`, items[0].ID); err == nil {
 		t.Fatal("updating a closed-period line item error = nil, want freeze trigger error")

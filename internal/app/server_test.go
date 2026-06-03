@@ -87,8 +87,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 12 {
-		t.Fatalf("schema_migrations count = %d, want 12", count)
+	if count != 13 {
+		t.Fatalf("schema_migrations count = %d, want 13", count)
 	}
 
 	var catalogCount int
@@ -496,16 +496,17 @@ func TestResourcesUIDailyMeteringRunsOnDemandAndAfterClockAdvance(t *testing.T) 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /resources/daily-metering final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
-	if !strings.Contains(body, "Daily metering created 1 metering records, 1 bill line items, and refreshed 1 summaries") ||
+	if !strings.Contains(body, "Daily metering created 1 metering records, 2 bill line items, and refreshed 2 summaries") ||
 		!strings.Contains(body, "Current Billing Summary") ||
 		!strings.Contains(body, "Daily Metering Jobs") ||
+		!strings.Contains(body, "AWSSupport") ||
 		!strings.Contains(body, "estimated") ||
 		!strings.Contains(body, "999988887777") {
 		t.Fatalf("daily metering response missing summary/job details: %s", body)
 	}
 
 	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceHours))
-	if !strings.Contains(body, "daily metering created 1 metering records and 1 bill line items") ||
+	if !strings.Contains(body, "daily metering created 1 metering records and 2 bill line items") ||
 		!strings.Contains(body, "clock_advance") ||
 		!strings.Contains(body, "on_demand") {
 		t.Fatalf("clock advance response missing triggered daily metering details: %s", body)
@@ -580,9 +581,10 @@ func TestResourcesUIMonthEndCloseIssuesBill(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /resources/month-close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
-	if !strings.Contains(body, "Month-end close finalized 1 line items") ||
+	if !strings.Contains(body, "Month-end close finalized 2 line items") ||
 		!strings.Contains(body, "Closed Billing Periods") ||
 		!strings.Contains(body, "Issued Bills") ||
+		!strings.Contains(body, "AWSSupport") ||
 		!strings.Contains(body, "SIM-INV-202602-") ||
 		!strings.Contains(body, "999988887777") ||
 		!strings.Contains(body, "2026-03-11") ||

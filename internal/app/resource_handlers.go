@@ -869,6 +869,9 @@ func billLineItemViewFromItem(item persistence.BillLineItem, resourceName string
 	if resourceName == "" {
 		resourceName = item.ResourceID
 	}
+	if resourceName == "" {
+		resourceName = item.ServiceName
+	}
 	return billLineItemView{
 		ResourceName:     resourceName,
 		Period:           item.BillingPeriodStart + " to " + item.BillingPeriodEnd,

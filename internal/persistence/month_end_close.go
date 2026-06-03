@@ -104,6 +104,7 @@ type MonthEndCloseRepository struct {
 	metering  MeteringRepository
 	lineItems BillLineItemRepository
 	dailyJobs DailyMeteringJobRepository
+	support   SupportChargeRepository
 }
 
 // NewMonthEndCloseRepository creates a month-end close repository backed by a workspace database.
@@ -114,6 +115,7 @@ func NewMonthEndCloseRepository(db *sql.DB) MonthEndCloseRepository {
 		metering:  NewMeteringRepository(db),
 		lineItems: NewBillLineItemRepository(db),
 		dailyJobs: NewDailyMeteringJobRepository(db),
+		support:   NewSupportChargeRepository(db),
 	}
 }
 
@@ -159,9 +161,14 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 	if err != nil {
 		return MonthEndCloseResult{}, err
 	}
+	supportCatalogItem, err := r.support.supportCatalogItem(ctx, period)
+	if err != nil {
+		return MonthEndCloseResult{}, err
+	}
 
 	var close BillingPeriodClose
 	var summariesRefreshed int
+	var supportResult SupportChargeGenerationResult
 	createdClose := false
 	err = WithTransaction(ctx, r.db, func(tx *sql.Tx) error {
 		existing, found, err := findCloseByPeriodPayer(ctx, tx, request.PeriodStart, request.PeriodEnd, request.PayerAccountID)
@@ -178,6 +185,15 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 		if _, err := finalizeEstimatedLineItems(ctx, tx, request); err != nil {
 			return err
 		}
+		supportResult, err = r.support.generateSupportChargesInTx(ctx, tx, SupportChargeGenerationRequest{
+			PayerAccountID: request.PayerAccountID,
+			PeriodStart:    request.PeriodStart,
+			PeriodEnd:      request.PeriodEnd,
+			LineItemStatus: billLineItemStatusFinal,
+		}, period, supportCatalogItem)
+		if err != nil {
+			return err
+		}
 		aggregate, err := aggregateFinalBill(ctx, tx, request)
 		if err != nil {
 			return err
@@ -187,7 +203,7 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 			return err
 		}
 
-		close = billingPeriodCloseFromAggregate(request, meteringResult.RecordsCreated, lineItemResult.ItemsCreated, summariesRefreshed, aggregate)
+		close = billingPeriodCloseFromAggregate(request, meteringResult.RecordsCreated, lineItemResult.ItemsCreated+supportResult.ItemsCreated, summariesRefreshed, aggregate)
 		if err := insertBillingPeriodClose(ctx, tx, close); err != nil {
 			return err
 		}
@@ -215,7 +231,7 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 	if !found {
 		return MonthEndCloseResult{}, fmt.Errorf("month-end close was not persisted for %s to %s payer %s", request.PeriodStart, request.PeriodEnd, request.PayerAccountID)
 	}
-	return r.resultForClose(ctx, storedClose, meteringResult.RecordsCreated, lineItemResult.ItemsCreated)
+	return r.resultForClose(ctx, storedClose, meteringResult.RecordsCreated, lineItemResult.ItemsCreated+supportResult.ItemsCreated)
 }
 
 // ListRecentCloses reads recent period-close audit records in newest-first order.

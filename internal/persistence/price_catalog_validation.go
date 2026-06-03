@@ -137,6 +137,9 @@ func validatePriceCatalogItems(items []PriceCatalogItem) error {
 		if item.CurrencyCode != "USD" {
 			problems = append(problems, fmt.Sprintf("%s currency = %q, want USD", label, item.CurrencyCode))
 		}
+		if item.RateMicros <= 0 {
+			problems = append(problems, fmt.Sprintf("%s rate_micros must be positive", label))
+		}
 		if item.EffectiveDate == "" {
 			problems = append(problems, fmt.Sprintf("%s effective date is required", label))
 		} else if _, err := time.Parse(time.DateOnly, item.EffectiveDate); err != nil {

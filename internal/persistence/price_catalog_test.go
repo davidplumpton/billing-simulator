@@ -187,6 +187,22 @@ func TestValidatePriceCatalogItemsRejectsFormulaUnitMismatch(t *testing.T) {
 	}
 }
 
+func TestValidatePriceCatalogItemsRejectsNonPositiveRate(t *testing.T) {
+	t.Parallel()
+
+	item := validPriceCatalogTestItem()
+	item.SKU = "SIM-ZERO-RATE"
+	item.RateMicros = 0
+
+	err := validatePriceCatalogItems([]PriceCatalogItem{item})
+	if err == nil {
+		t.Fatal("validatePriceCatalogItems() error = nil, want rate validation error")
+	}
+	if want := `SKU "SIM-ZERO-RATE" rate_micros must be positive`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("validatePriceCatalogItems() error = %q, want to contain %q", err.Error(), want)
+	}
+}
+
 func TestPriceCatalogLookupMapsMeteringRecordToCatalogItem(t *testing.T) {
 	t.Parallel()
 
@@ -305,6 +321,22 @@ func TestPriceCatalogLookupIdentityUniqueIndexRejectsAmbiguousRates(t *testing.T
 
 	if err := insertPriceCatalogTestItemRow(ctx, db, ambiguous); err == nil {
 		t.Fatal("ambiguous same-date lookup identity insert error = nil, want unique constraint violation")
+	}
+}
+
+func TestPriceCatalogRateMicrosConstraintRejectsZeroRate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	zeroRate := validPriceCatalogTestItem()
+	zeroRate.SKU = "SIM-ZERO-RATE"
+	zeroRate.UsageType = "instance-hours:zero-rate-test"
+	zeroRate.RateMicros = 0
+
+	if err := insertPriceCatalogTestItemRow(ctx, db, zeroRate); err == nil {
+		t.Fatal("zero-rate catalog insert error = nil, want check constraint violation")
 	}
 }
 

@@ -55,6 +55,45 @@ func TestStartServesHealthCheck(t *testing.T) {
 	}
 }
 
+func TestStartOpensBrowserAtDashboardURL(t *testing.T) {
+	originalOpenBrowserURL := openBrowserURL
+	t.Cleanup(func() {
+		openBrowserURL = originalOpenBrowserURL
+	})
+
+	var openedURLs []string
+	openBrowserURL = func(url string) error {
+		openedURLs = append(openedURLs, url)
+		return nil
+	}
+
+	cfg := DefaultConfig()
+	cfg.OpenBrowser = true
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	if len(openedURLs) != 1 {
+		t.Fatalf("opened URLs = %v, want one dashboard URL", openedURLs)
+	}
+	if openedURLs[0] != server.URL() {
+		t.Fatalf("opened URL = %q, want %q", openedURLs[0], server.URL())
+	}
+}
+
 func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	t.Parallel()
 

@@ -13,12 +13,13 @@ type Config struct {
 	HTTPAddr      string
 	WorkspacePath string
 	StatePath     string
+	OpenBrowser   bool
 }
 
 // DefaultConfig returns conservative local-only defaults for the simulator.
 func DefaultConfig() Config {
 	return Config{
-		HTTPAddr: "127.0.0.1:8080",
+		HTTPAddr: "127.0.0.1:0",
 	}
 }
 

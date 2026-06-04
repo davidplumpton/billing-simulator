@@ -2,6 +2,18 @@ package app
 
 import "testing"
 
+func TestDefaultConfigUsesAvailableLoopbackPort(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	if cfg.HTTPAddr != "127.0.0.1:0" {
+		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, "127.0.0.1:0")
+	}
+	if cfg.OpenBrowser {
+		t.Fatal("OpenBrowser = true, want false for library/test startup")
+	}
+}
+
 func TestConfigValidateRequiresLocalHTTPAddress(t *testing.T) {
 	t.Parallel()
 

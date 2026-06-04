@@ -58,6 +58,12 @@ func Start(cfg Config, logger *slog.Logger) (*Server, error) {
 		server.done <- err
 	}()
 
+	if cfg.OpenBrowser {
+		if err := openBrowserURL(server.URL()); err != nil {
+			logger.Warn("could not open browser", "url", server.URL(), "error", err)
+		}
+	}
+
 	return server, nil
 }
 

@@ -238,6 +238,19 @@ func TestReusableUITemplatePartialsRenderAcrossPages(t *testing.T) {
 		t.Fatalf("GET /resources missing shared empty state: %s", body)
 	}
 
+	resp, err = workspaceClient.Get(workspaceMux.URL + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, `<section class="empty">`) ||
+		!strings.Contains(body, `<a class="button-link" href="/workspaces">Open Workspace</a>`) {
+		t.Fatalf("GET /organization missing shared empty state: %s", body)
+	}
+
 	ctx := context.Background()
 	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
 	if err != nil {
@@ -331,6 +344,11 @@ func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
 			path:       "/workspaces",
 			title:      "<title>Workspaces - AWS Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/workspaces">Workspaces</a>`,
+		},
+		{
+			path:       "/organization",
+			title:      "<title>Organization - AWS Billing Simulator</title>",
+			activeLink: `<a class="active" aria-current="page" href="/organization">Organization</a>`,
 		},
 		{
 			path:       "/resources",

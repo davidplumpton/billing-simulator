@@ -124,9 +124,11 @@ func (s *Server) Wait() error {
 func newMux(db *sql.DB) http.Handler {
 	resourceLab := newResourceLabHandler(db)
 	bills := newBillsHandler(db)
+	organization := newOrganizationHandler(db)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", resourceLab.handleRoot)
 	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
+	mux.HandleFunc("/organization", organization.handleOrganization)
 	mux.HandleFunc("/resources", resourceLab.handleResources)
 	mux.HandleFunc("/resources/create", resourceLab.handleCreateResource)
 	mux.HandleFunc("/resources/tags", resourceLab.handleAddTag)

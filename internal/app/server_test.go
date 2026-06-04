@@ -366,6 +366,56 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	}
 }
 
+func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+
+	resp, err := server.Client().Get(server.URL + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	for _, want := range []string{
+		"<h1>Organization</h1>",
+		"AnyCompany Retail",
+		"Management account",
+		"Root - ou_anycompany_root",
+		"Security - ou_anycompany_security",
+		"Workloads - ou_anycompany_workloads",
+		"Storefront Prod",
+		"Deprecated Prototype",
+		`<span class="status status-suspended">Suspended</span>`,
+		"13 accounts",
+		"12 active, 1 suspended, 0 closed",
+		"Account Detail",
+		"Billing Role",
+		`href="/resources?account_id=111122223333"`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333"`,
+		`href="/bills?payer_account_id=999988887777">Bills</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /organization body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestResourcesUIStorageEstimatesUseBillingPeriodDays(t *testing.T) {
 	t.Parallel()
 

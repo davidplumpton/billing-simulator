@@ -78,6 +78,7 @@ func serveAppStylesheet(w http.ResponseWriter, r *http.Request) {
 func pageNavItems(active string) []pageNavItem {
 	items := []pageNavItem{
 		{Key: "workspaces", Label: "Workspaces", Path: "/workspaces"},
+		{Key: "organization", Label: "Organization", Path: "/organization"},
 		{Key: "resources", Label: "Resources", Path: "/resources"},
 		{Key: "tags", Label: "Tags"},
 		{Key: "cost-explorer", Label: "Cost Explorer"},

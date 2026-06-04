@@ -91,6 +91,7 @@ type MonthEndCloseResult struct {
 	Close                  BillingPeriodClose
 	Bill                   Bill
 	InvoiceObligation      InvoiceObligation
+	InvoiceDocument        InvoiceDocument
 	MeteringRecordsCreated int
 	BillLineItemsCreated   int
 	FinalizedLineItems     int
@@ -213,6 +214,13 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 		}
 		obligation := invoiceObligationFromBill(bill, request.InvoiceDueDays)
 		if err := insertInvoiceObligation(ctx, tx, obligation); err != nil {
+			return err
+		}
+		document, err := invoiceDocumentFromBill(bill, obligation)
+		if err != nil {
+			return err
+		}
+		if err := insertInvoiceDocument(ctx, tx, document); err != nil {
 			return err
 		}
 		createdClose = true
@@ -364,6 +372,10 @@ func (r MonthEndCloseRepository) resultForClose(ctx context.Context, close Billi
 	if err != nil {
 		return MonthEndCloseResult{}, err
 	}
+	document, err := NewInvoiceDocumentRepository(r.db).GetByBillID(ctx, bill.ID)
+	if err != nil {
+		return MonthEndCloseResult{}, err
+	}
 	summaries, err := r.dailyJobs.ListBillingPeriodServiceSummaries(ctx, close.BillingPeriodStart, close.BillingPeriodEnd)
 	if err != nil {
 		return MonthEndCloseResult{}, err
@@ -372,6 +384,7 @@ func (r MonthEndCloseRepository) resultForClose(ctx context.Context, close Billi
 		Close:                  close,
 		Bill:                   bill,
 		InvoiceObligation:      obligation,
+		InvoiceDocument:        document,
 		MeteringRecordsCreated: meteringRecordsCreated,
 		BillLineItemsCreated:   billLineItemsCreated,
 		FinalizedLineItems:     close.FinalizedLineItemCount,

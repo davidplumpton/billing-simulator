@@ -1,0 +1,101 @@
+CREATE TABLE invoice_documents (
+	invoice_id TEXT PRIMARY KEY,
+	bill_id TEXT NOT NULL UNIQUE REFERENCES bills(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+	invoice_obligation_id TEXT NOT NULL UNIQUE REFERENCES invoice_obligations(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+	document_version INTEGER NOT NULL CHECK (document_version > 0),
+	status TEXT NOT NULL CHECK (status IN ('issued', 'void', 'superseded')),
+	billing_period_start TEXT NOT NULL,
+	billing_period_end TEXT NOT NULL,
+	invoice_date TEXT NOT NULL,
+	due_date TEXT NOT NULL,
+	seller_of_record TEXT NOT NULL,
+	seller_address TEXT NOT NULL,
+	seller_tax_registration TEXT NOT NULL DEFAULT '',
+	payer_account_id TEXT NOT NULL,
+	bill_to_name TEXT NOT NULL,
+	bill_to_email TEXT NOT NULL,
+	bill_to_address TEXT NOT NULL,
+	bill_to_tax_registration TEXT NOT NULL DEFAULT '',
+	currency_code TEXT NOT NULL CHECK (length(currency_code) = 3),
+	line_item_count INTEGER NOT NULL CHECK (line_item_count >= 0),
+	usage_charge_micros INTEGER NOT NULL CHECK (usage_charge_micros >= 0),
+	credit_micros INTEGER NOT NULL CHECK (credit_micros >= 0),
+	refund_micros INTEGER NOT NULL CHECK (refund_micros >= 0),
+	tax_micros INTEGER NOT NULL CHECK (tax_micros >= 0),
+	total_micros INTEGER NOT NULL CHECK (total_micros >= 0),
+	created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+	updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+	CHECK (trim(invoice_id) <> ''),
+	CHECK (trim(bill_id) <> ''),
+	CHECK (trim(invoice_obligation_id) <> ''),
+	CHECK (billing_period_start < billing_period_end),
+	CHECK (invoice_date <= due_date),
+	CHECK (trim(seller_of_record) <> ''),
+	CHECK (trim(seller_address) <> ''),
+	CHECK (trim(payer_account_id) <> ''),
+	CHECK (trim(bill_to_name) <> ''),
+	CHECK (trim(bill_to_email) <> ''),
+	CHECK (trim(bill_to_address) <> '')
+);
+
+CREATE INDEX idx_invoice_documents_period_payer
+ON invoice_documents (billing_period_start, billing_period_end, payer_account_id);
+
+CREATE INDEX idx_invoice_documents_recent
+ON invoice_documents (invoice_date DESC, invoice_id DESC);
+
+INSERT INTO invoice_documents (
+	invoice_id,
+	bill_id,
+	invoice_obligation_id,
+	document_version,
+	status,
+	billing_period_start,
+	billing_period_end,
+	invoice_date,
+	due_date,
+	seller_of_record,
+	seller_address,
+	seller_tax_registration,
+	payer_account_id,
+	bill_to_name,
+	bill_to_email,
+	bill_to_address,
+	bill_to_tax_registration,
+	currency_code,
+	line_item_count,
+	usage_charge_micros,
+	credit_micros,
+	refund_micros,
+	tax_micros,
+	total_micros
+)
+SELECT
+	o.invoice_id,
+	b.id,
+	o.id,
+	1,
+	'issued',
+	b.billing_period_start,
+	b.billing_period_end,
+	o.invoice_date,
+	o.due_date,
+	'AWS Billing Simulator',
+	'Local synthetic invoice lab',
+	'',
+	b.payer_account_id,
+	'AnyCompany Retail',
+	'billing@anycompany.example',
+	'100 AnyCompany Way, Example City',
+	'',
+	b.currency_code,
+	b.line_item_count,
+	b.usage_charge_micros,
+	b.credit_micros,
+	b.refund_micros,
+	b.tax_micros,
+	b.total_micros
+FROM bills b
+JOIN invoice_obligations o ON o.bill_id = b.id;
+
+PRAGMA user_version = 14;

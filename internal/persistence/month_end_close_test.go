@@ -93,6 +93,7 @@ func TestMonthEndCloseFinalizesPeriodAndCreatesBill(t *testing.T) {
 		!strings.HasPrefix(result.InvoiceObligation.InvoiceID, "SIM-INV-202602-") {
 		t.Fatalf("invoice obligation = %+v, want due invoice obligation", result.InvoiceObligation)
 	}
+	requireInvoiceDocumentMatchesBill(t, result.InvoiceDocument, result.Bill, result.InvoiceObligation)
 	if len(result.Summaries) != 2 ||
 		requireBillingPeriodSummary(t, result.Summaries, serviceAmazonEC2).LineItemStatus != billLineItemStatusFinal ||
 		requireBillingPeriodSummary(t, result.Summaries, serviceAmazonEC2).UnblendedCostMicros != 83_200 ||
@@ -123,6 +124,7 @@ func TestMonthEndCloseFinalizesPeriodAndCreatesBill(t *testing.T) {
 	if replay.Close.ID != result.Close.ID ||
 		replay.Bill.ID != result.Bill.ID ||
 		replay.InvoiceObligation.ID != result.InvoiceObligation.ID ||
+		replay.InvoiceDocument.InvoiceID != result.InvoiceDocument.InvoiceID ||
 		replay.MeteringRecordsCreated != 0 ||
 		replay.BillLineItemsCreated != 0 {
 		t.Fatalf("ClosePreviousPeriod(replay) = %+v, want existing close artifacts without new work", replay)

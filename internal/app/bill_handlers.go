@@ -25,6 +25,7 @@ type billsPageData struct {
 	ClockBillingPeriod       string
 	StateCards               []billStateCardView
 	BillSummaries            []billSummaryView
+	BillReconciliations      []billReconciliationView
 	ChargeBreakdowns         []billChargeBreakdownView
 	ResourceChargeBreakdowns []billResourceChargeBreakdownView
 }
@@ -95,6 +96,26 @@ type billResourceChargeBreakdownView struct {
 	Description    string
 }
 
+type billReconciliationView struct {
+	BillID           string
+	Period           string
+	PayerAccountID   string
+	State            string
+	Status           string
+	CurrencyCode     string
+	BillLineItems    int
+	SourceLineItems  int
+	LineItemResidual int
+	BillTotal        string
+	SourceTotal      string
+	RoundingResidual string
+	ChargeResidual   string
+	CreditResidual   string
+	RefundResidual   string
+	TaxResidual      string
+	UpdatedAt        string
+}
+
 type billStateDefinition struct {
 	Key   string
 	Label string
@@ -161,6 +182,16 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	data.StateCards = billStateCards(summaries)
 	for _, summary := range summaries {
 		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary))
+	}
+
+	reconciliations, err := h.bills.ListBillReconciliations(ctx, persistence.BillReconciliationRequest{
+		Limit: 50,
+	})
+	if err != nil {
+		return err
+	}
+	for _, reconciliation := range reconciliations {
+		data.BillReconciliations = append(data.BillReconciliations, billReconciliationViewFromSummary(reconciliation))
 	}
 
 	breakdowns, err := h.bills.ListChargeBreakdowns(ctx, persistence.BillChargeBreakdownRequest{
@@ -247,6 +278,28 @@ func billResourceChargeBreakdownViewFromSummary(summary persistence.BillResource
 		Tax:            formatUSDMicros(summary.TaxMicros),
 		Total:          formatUSDMicros(summary.TotalMicros),
 		Description:    summary.Description,
+	}
+}
+
+func billReconciliationViewFromSummary(reconciliation persistence.BillReconciliation) billReconciliationView {
+	return billReconciliationView{
+		BillID:           reconciliation.BillID,
+		Period:           reconciliation.BillingPeriodStart + " to " + reconciliation.BillingPeriodEnd,
+		PayerAccountID:   reconciliation.PayerAccountID,
+		State:            displayBillState(reconciliation.BillState),
+		Status:           displayBillState(reconciliation.Status),
+		CurrencyCode:     reconciliation.CurrencyCode,
+		BillLineItems:    reconciliation.BillLineItemCount,
+		SourceLineItems:  reconciliation.SourceLineItemCount,
+		LineItemResidual: reconciliation.LineItemCountResidual,
+		BillTotal:        formatUSDMicros(reconciliation.BillTotalMicros),
+		SourceTotal:      formatUSDMicros(reconciliation.SourceTotalMicros),
+		RoundingResidual: formatUSDMicros(reconciliation.TotalResidualMicros),
+		ChargeResidual:   formatUSDMicros(reconciliation.UsageChargeResidualMicros),
+		CreditResidual:   formatUSDMicros(reconciliation.CreditResidualMicros),
+		RefundResidual:   formatUSDMicros(reconciliation.RefundResidualMicros),
+		TaxResidual:      formatUSDMicros(reconciliation.TaxResidualMicros),
+		UpdatedAt:        reconciliation.UpdatedAt,
 	}
 }
 
@@ -341,6 +394,61 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctyp
 						<small>{{.Count}} bills</small>
 					</div>
 				{{end}}
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Bill Reconciliation</h2>
+					<span>{{len .BillReconciliations}} bills</span>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Bill</th>
+								<th>Period</th>
+								<th>Payer</th>
+								<th>State</th>
+								<th>Status</th>
+								<th>Bill Items</th>
+								<th>Source Items</th>
+								<th>Item Delta</th>
+								<th>Bill Total</th>
+								<th>Source Total</th>
+								<th>Rounding Residual</th>
+								<th>Charge Residual</th>
+								<th>Credit Residual</th>
+								<th>Refund Residual</th>
+								<th>Tax Residual</th>
+								<th>Updated</th>
+							</tr>
+						</thead>
+						<tbody>
+							{{range .BillReconciliations}}
+								<tr>
+									<td><strong>{{.BillID}}</strong><small>{{.CurrencyCode}}</small></td>
+									<td>{{.Period}}</td>
+									<td>{{.PayerAccountID}}</td>
+									<td><span class="status">{{.State}}</span></td>
+									<td><span class="status">{{.Status}}</span></td>
+									<td>{{.BillLineItems}}</td>
+									<td>{{.SourceLineItems}}</td>
+									<td>{{.LineItemResidual}}</td>
+									<td>{{.BillTotal}}</td>
+									<td>{{.SourceTotal}}</td>
+									<td><strong>{{.RoundingResidual}}</strong></td>
+									<td>{{.ChargeResidual}}</td>
+									<td>{{.CreditResidual}}</td>
+									<td>{{.RefundResidual}}</td>
+									<td>{{.TaxResidual}}</td>
+									<td>{{.UpdatedAt}}</td>
+								</tr>
+							{{else}}
+								<tr><td colspan="16" class="empty-cell">No issued bills to reconcile</td></tr>
+							{{end}}
+						</tbody>
+					</table>
+				</div>
 			</section>
 
 			<section>

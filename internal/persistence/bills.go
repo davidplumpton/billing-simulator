@@ -13,8 +13,12 @@ const (
 	maxBillStateSummaryLimit     = 100
 	defaultBillChargeLimit       = 50
 	maxBillChargeLimit           = 200
+	defaultBillReconcileLimit    = 25
+	maxBillReconcileLimit        = 100
 	billStateOpen                = "open"
 	billStatePendingClose        = "pending-close"
+	billReconcileStatusBalanced  = "balanced"
+	billReconcileStatusResidual  = "residual"
 )
 
 // BillStateSummaryRequest configures the bill-period state rows returned for the UI.
@@ -103,6 +107,41 @@ type BillResourceChargeSummary struct {
 	UpdatedAt          string
 }
 
+// BillReconciliationRequest configures persisted-bill to source-line-item reconciliation rows.
+type BillReconciliationRequest struct {
+	Limit int
+}
+
+// BillReconciliation compares one persisted bill with a fresh aggregate of its final source line items.
+type BillReconciliation struct {
+	BillID                    string
+	BillingPeriodStart        string
+	BillingPeriodEnd          string
+	PayerAccountID            string
+	BillState                 string
+	Status                    string
+	CurrencyCode              string
+	BillLineItemCount         int
+	SourceLineItemCount       int
+	LineItemCountResidual     int
+	BillUsageChargeMicros     int64
+	SourceUsageChargeMicros   int64
+	UsageChargeResidualMicros int64
+	BillCreditMicros          int64
+	SourceCreditMicros        int64
+	CreditResidualMicros      int64
+	BillRefundMicros          int64
+	SourceRefundMicros        int64
+	RefundResidualMicros      int64
+	BillTaxMicros             int64
+	SourceTaxMicros           int64
+	TaxResidualMicros         int64
+	BillTotalMicros           int64
+	SourceTotalMicros         int64
+	TotalResidualMicros       int64
+	UpdatedAt                 string
+}
+
 // BillsRepository reads derived and issued bill summaries for the Bills page.
 type BillsRepository struct {
 	db    *sql.DB
@@ -175,6 +214,81 @@ func (r BillsRepository) ListChargeBreakdowns(ctx context.Context, request BillC
 		Summaries: summaries,
 		Resources: resources,
 	}, nil
+}
+
+// ListBillReconciliations compares stored bills to final bill line items for the same period, payer, and currency.
+func (r BillsRepository) ListBillReconciliations(ctx context.Context, request BillReconciliationRequest) ([]BillReconciliation, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	request = normalizeBillReconciliationRequest(request)
+
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			b.id,
+			b.billing_period_start,
+			b.billing_period_end,
+			b.payer_account_id,
+			b.bill_state,
+			b.currency_code,
+			b.line_item_count,
+			b.usage_charge_micros,
+			b.credit_micros,
+			b.refund_micros,
+			b.tax_micros,
+			b.total_micros,
+			COALESCE(src.line_item_count, 0),
+			COALESCE(src.usage_charge_micros, 0),
+			COALESCE(src.credit_micros, 0),
+			COALESCE(src.refund_micros, 0),
+			COALESCE(src.tax_micros, 0),
+			b.issued_at
+		 FROM bills b
+		 LEFT JOIN (
+			SELECT
+				billing_period_start,
+				billing_period_end,
+				payer_account_id,
+				currency_code,
+				COUNT(*) AS line_item_count,
+				COALESCE(SUM(CASE WHEN line_item_type IN ('Usage', 'Fee') THEN unblended_cost_micros ELSE 0 END), 0) AS usage_charge_micros,
+				COALESCE(SUM(CASE WHEN line_item_type = 'Credit' THEN unblended_cost_micros ELSE 0 END), 0) AS credit_micros,
+				COALESCE(SUM(CASE WHEN line_item_type = 'Refund' THEN unblended_cost_micros ELSE 0 END), 0) AS refund_micros,
+				COALESCE(SUM(CASE WHEN line_item_type = 'Tax' THEN unblended_cost_micros ELSE 0 END), 0) AS tax_micros
+			 FROM bill_line_items
+			 WHERE line_item_status = ?
+			 GROUP BY
+				billing_period_start,
+				billing_period_end,
+				payer_account_id,
+				currency_code
+		 ) src ON src.billing_period_start = b.billing_period_start
+			AND src.billing_period_end = b.billing_period_end
+			AND src.payer_account_id = b.payer_account_id
+			AND src.currency_code = b.currency_code
+		 ORDER BY b.billing_period_start DESC, b.issued_at DESC, b.id DESC
+		 LIMIT ?`,
+		billLineItemStatusFinal,
+		request.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list bill reconciliations: %w", err)
+	}
+	defer rows.Close()
+
+	var reconciliations []BillReconciliation
+	for rows.Next() {
+		reconciliation, err := scanBillReconciliation(rows)
+		if err != nil {
+			return nil, err
+		}
+		reconciliations = append(reconciliations, reconciliation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bill reconciliations: %w", err)
+	}
+	return reconciliations, nil
 }
 
 func (r BillsRepository) listBillChargeSummaries(ctx context.Context, limit int) ([]BillChargeSummary, error) {
@@ -581,6 +695,16 @@ func normalizeBillChargeBreakdownRequest(request BillChargeBreakdownRequest) Bil
 	return request
 }
 
+func normalizeBillReconciliationRequest(request BillReconciliationRequest) BillReconciliationRequest {
+	if request.Limit <= 0 {
+		request.Limit = defaultBillReconcileLimit
+	}
+	if request.Limit > maxBillReconcileLimit {
+		request.Limit = maxBillReconcileLimit
+	}
+	return request
+}
+
 func billStateSummaryTotalMicros(summary BillStateSummary) int64 {
 	total := summary.UsageChargeMicros + summary.TaxMicros - summary.CreditMicros - summary.RefundMicros
 	if total < 0 {
@@ -599,4 +723,56 @@ func billChargeTotalMicros(chargeMicros, creditMicros, refundMicros, taxMicros i
 
 func billStateSummaryID(state, periodStart, periodEnd, payerAccountID, currencyCode string) string {
 	return stableBillingID("bsv", state, periodStart, periodEnd, payerAccountID, currencyCode)
+}
+
+func scanBillReconciliation(row billChargeSummaryRow) (BillReconciliation, error) {
+	var reconciliation BillReconciliation
+	if err := row.Scan(
+		&reconciliation.BillID,
+		&reconciliation.BillingPeriodStart,
+		&reconciliation.BillingPeriodEnd,
+		&reconciliation.PayerAccountID,
+		&reconciliation.BillState,
+		&reconciliation.CurrencyCode,
+		&reconciliation.BillLineItemCount,
+		&reconciliation.BillUsageChargeMicros,
+		&reconciliation.BillCreditMicros,
+		&reconciliation.BillRefundMicros,
+		&reconciliation.BillTaxMicros,
+		&reconciliation.BillTotalMicros,
+		&reconciliation.SourceLineItemCount,
+		&reconciliation.SourceUsageChargeMicros,
+		&reconciliation.SourceCreditMicros,
+		&reconciliation.SourceRefundMicros,
+		&reconciliation.SourceTaxMicros,
+		&reconciliation.UpdatedAt,
+	); err != nil {
+		return BillReconciliation{}, fmt.Errorf("scan bill reconciliation: %w", err)
+	}
+	reconciliation.SourceTotalMicros = billChargeTotalMicros(
+		reconciliation.SourceUsageChargeMicros,
+		reconciliation.SourceCreditMicros,
+		reconciliation.SourceRefundMicros,
+		reconciliation.SourceTaxMicros,
+	)
+	reconciliation.LineItemCountResidual = reconciliation.BillLineItemCount - reconciliation.SourceLineItemCount
+	reconciliation.UsageChargeResidualMicros = reconciliation.BillUsageChargeMicros - reconciliation.SourceUsageChargeMicros
+	reconciliation.CreditResidualMicros = reconciliation.BillCreditMicros - reconciliation.SourceCreditMicros
+	reconciliation.RefundResidualMicros = reconciliation.BillRefundMicros - reconciliation.SourceRefundMicros
+	reconciliation.TaxResidualMicros = reconciliation.BillTaxMicros - reconciliation.SourceTaxMicros
+	reconciliation.TotalResidualMicros = reconciliation.BillTotalMicros - reconciliation.SourceTotalMicros
+	reconciliation.Status = billReconciliationStatus(reconciliation)
+	return reconciliation, nil
+}
+
+func billReconciliationStatus(reconciliation BillReconciliation) string {
+	if reconciliation.LineItemCountResidual == 0 &&
+		reconciliation.UsageChargeResidualMicros == 0 &&
+		reconciliation.CreditResidualMicros == 0 &&
+		reconciliation.RefundResidualMicros == 0 &&
+		reconciliation.TaxResidualMicros == 0 &&
+		reconciliation.TotalResidualMicros == 0 {
+		return billReconcileStatusBalanced
+	}
+	return billReconcileStatusResidual
 }

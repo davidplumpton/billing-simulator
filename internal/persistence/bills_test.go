@@ -216,6 +216,72 @@ func TestBillsRepositoryListsChargeBreakdowns(t *testing.T) {
 	}
 }
 
+func TestBillsRepositoryReconcilesBillsToFinalLineItems(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-bill-reconciliation-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			Status:       "active",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-bill-reconciliation-ec2",
+			ResourceID:          "resource-bill-reconciliation-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	if _, err := NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+
+	reconciliations, err := NewBillsRepository(db).ListBillReconciliations(ctx, BillReconciliationRequest{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListBillReconciliations() error = %v", err)
+	}
+	balanced := requireBillReconciliation(t, reconciliations, closeResult.Bill.ID)
+	if balanced.Status != billReconcileStatusBalanced ||
+		balanced.BillLineItemCount != 2 ||
+		balanced.SourceLineItemCount != 2 ||
+		balanced.BillTotalMicros != 1_083_200 ||
+		balanced.SourceTotalMicros != 1_083_200 ||
+		balanced.TotalResidualMicros != 0 {
+		t.Fatalf("balanced reconciliation = %+v, want bill total proven from final line items", balanced)
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE bills SET total_micros = total_micros + 37 WHERE id = ?`, closeResult.Bill.ID); err != nil {
+		t.Fatalf("add bill rounding residual: %v", err)
+	}
+	reconciliations, err = NewBillsRepository(db).ListBillReconciliations(ctx, BillReconciliationRequest{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListBillReconciliations(residual) error = %v", err)
+	}
+	residual := requireBillReconciliation(t, reconciliations, closeResult.Bill.ID)
+	if residual.Status != billReconcileStatusResidual ||
+		residual.SourceTotalMicros != 1_083_200 ||
+		residual.TotalResidualMicros != 37 ||
+		residual.UsageChargeResidualMicros != 0 {
+		t.Fatalf("residual reconciliation = %+v, want stored total residual against source lines", residual)
+	}
+}
+
 func TestBillsRepositoryRejectsNilDB(t *testing.T) {
 	t.Parallel()
 
@@ -224,6 +290,9 @@ func TestBillsRepositoryRejectsNilDB(t *testing.T) {
 	}
 	if _, err := NewBillsRepository(nil).ListChargeBreakdowns(context.Background(), BillChargeBreakdownRequest{}); err == nil {
 		t.Fatal("ListChargeBreakdowns(nil DB) error = nil, want database handle validation error")
+	}
+	if _, err := NewBillsRepository(nil).ListBillReconciliations(context.Background(), BillReconciliationRequest{}); err == nil {
+		t.Fatal("ListBillReconciliations(nil DB) error = nil, want database handle validation error")
 	}
 }
 
@@ -329,4 +398,16 @@ func requireBillResourceChargeSummary(t *testing.T, summaries []BillResourceChar
 	}
 	t.Fatalf("resource charge summaries = %+v, want resource %q service %s", summaries, resourceID, serviceCode)
 	return BillResourceChargeSummary{}
+}
+
+func requireBillReconciliation(t *testing.T, reconciliations []BillReconciliation, billID string) BillReconciliation {
+	t.Helper()
+
+	for _, reconciliation := range reconciliations {
+		if reconciliation.BillID == billID {
+			return reconciliation
+		}
+	}
+	t.Fatalf("bill reconciliations = %+v, want bill %s", reconciliations, billID)
+	return BillReconciliation{}
 }

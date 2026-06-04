@@ -716,6 +716,9 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 		"Adjusted",
 		"Paid",
 		"Past Due",
+		"Bill Reconciliation",
+		"Source Total",
+		"Rounding Residual",
 		"Charges by Service and Account",
 		"Resource Charge Drilldown",
 		"open",
@@ -724,6 +727,7 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 		"adjusted",
 		"paid",
 		"past-due",
+		"residual",
 		"Charges",
 		"Credits",
 		"Tax",
@@ -853,6 +857,22 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	}
 	if dueInvoices != 1 {
 		t.Fatalf("due invoice count = %d, want 1", dueInvoices)
+	}
+
+	resp, err = client.Get(server.URL + "/bills")
+	if err != nil {
+		t.Fatalf("GET /bills after close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills after close status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Bill Reconciliation") ||
+		!strings.Contains(body, "balanced") ||
+		!strings.Contains(body, "$1.0832") ||
+		!strings.Contains(body, "$0.00") ||
+		!strings.Contains(body, "Rounding Residual") {
+		t.Fatalf("GET /bills after close missing balanced reconciliation: %s", body)
 	}
 }
 

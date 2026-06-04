@@ -27,6 +27,22 @@ func TestAnyCompanyRetailOrganizationFixtureSeeded(t *testing.T) {
 		t.Fatalf("organization = %+v, want AnyCompany Retail seed header", organization)
 	}
 
+	roots, err := repo.ListRoots(ctx, organization.ID)
+	if err != nil {
+		t.Fatalf("ListRoots() error = %v", err)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("root count = %d, want 1: %+v", len(roots), roots)
+	}
+	root := roots[0]
+	if root.ID != "ou_anycompany_root" ||
+		root.OrganizationID != organization.ID ||
+		root.Name != "Root" ||
+		root.Path != "Root" ||
+		root.CreatedAt != "2026-01-01T00:00:00Z" {
+		t.Fatalf("root = %+v, want AnyCompany root seeded from hierarchy", root)
+	}
+
 	units, err := repo.ListUnits(ctx, organization.ID)
 	if err != nil {
 		t.Fatalf("ListUnits() error = %v", err)
@@ -107,6 +123,9 @@ func TestOrganizationRepositoryRejectsBlankInputs(t *testing.T) {
 	if _, err := repo.GetOrganizationByTemplate(ctx, " "); err == nil {
 		t.Fatal("GetOrganizationByTemplate(blank) error = nil, want validation error")
 	}
+	if _, err := repo.ListRoots(ctx, " "); err == nil {
+		t.Fatal("ListRoots(blank) error = nil, want validation error")
+	}
 	if _, err := repo.ListUnits(ctx, ""); err == nil {
 		t.Fatal("ListUnits(blank) error = nil, want validation error")
 	}
@@ -134,6 +153,43 @@ func TestOrganizationRepositoryReportsMissingRows(t *testing.T) {
 	}
 }
 
+func TestOrganizationSchemaRejectsMismatchedManagementFlag(t *testing.T) {
+	t.Parallel()
+
+	db := openTestWorkspace(t)
+	assertExecFails(t, db, `INSERT INTO accounts (
+		id,
+		organization_id,
+		parent_unit_id,
+		name,
+		email,
+		account_type,
+		status,
+		created_at,
+		joined_at,
+		payment_responsibility,
+		payer_account_id,
+		billing_visibility_role,
+		sort_order,
+		is_management_account
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"777788889999",
+		AnyCompanyRetailOrganizationID,
+		"ou_anycompany_sandbox",
+		"Flag Mismatch",
+		"flag-mismatch@anycompany.example",
+		accountTypeMember,
+		AccountStatusActive,
+		"2026-01-01T00:00:00Z",
+		"2026-01-01T00:00:00Z",
+		"management_account",
+		AnyCompanyRetailManagementAccountID,
+		"member-account",
+		130,
+		1,
+	)
+}
+
 func assertSeedAccount(t *testing.T, account OrganizationAccount, wantID, wantUnitPath, wantType, wantStatus string) {
 	t.Helper()
 
@@ -146,8 +202,12 @@ func assertSeedAccount(t *testing.T, account OrganizationAccount, wantID, wantUn
 	if account.CreatedAt != "2026-01-01T00:00:00Z" || account.JoinedAt != "2026-01-01T00:00:00Z" || account.LeftAt != "" {
 		t.Fatalf("%s dates = created %q joined %q left %q, want deterministic active membership dates", account.Name, account.CreatedAt, account.JoinedAt, account.LeftAt)
 	}
-	if account.AccountType != wantType || account.Status != wantStatus {
+	if account.AccountType != wantType || string(account.Status) != wantStatus {
 		t.Fatalf("%s type/status = %q/%q, want %q/%q", account.Name, account.AccountType, account.Status, wantType, wantStatus)
+	}
+	wantManagementFlag := wantType == accountTypeManagement
+	if account.IsManagementAccount != wantManagementFlag {
+		t.Fatalf("%s IsManagementAccount = %v, want %v", account.Name, account.IsManagementAccount, wantManagementFlag)
 	}
 	if account.PaymentResponsibility != "management_account" {
 		t.Fatalf("%s payment responsibility = %q, want management_account", account.Name, account.PaymentResponsibility)
@@ -160,8 +220,11 @@ func assertSeedAccount(t *testing.T, account OrganizationAccount, wantID, wantUn
 		t.Fatalf("%s payer/role = %q/%q, want management payer and member role", account.Name, account.PayerAccountID, account.BillingVisibilityRole)
 	}
 
-	if unitPath := anyCompanyRetailUnitPath(account.ParentUnitID); unitPath != wantUnitPath {
-		t.Fatalf("%s unit path = %q, want %q", account.Name, unitPath, wantUnitPath)
+	if account.OUPath != wantUnitPath {
+		t.Fatalf("%s OUPath = %q, want %q", account.Name, account.OUPath, wantUnitPath)
+	}
+	if unitPath := anyCompanyRetailUnitPath(account.ParentUnitID); unitPath != account.OUPath {
+		t.Fatalf("%s parent unit path lookup = %q, want repository OUPath %q", account.Name, unitPath, account.OUPath)
 	}
 }
 

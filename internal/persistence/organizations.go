@@ -23,6 +23,15 @@ const (
 	accountTypeMember     = "member"
 )
 
+// AccountStatus names the supported organization account lifecycle states.
+type AccountStatus string
+
+const (
+	AccountStatusActive    AccountStatus = "active"
+	AccountStatusSuspended AccountStatus = "suspended"
+	AccountStatusClosed    AccountStatus = "closed"
+)
+
 type anyCompanyRetailAccountReference struct {
 	Name string
 	ID   string
@@ -54,6 +63,16 @@ type Organization struct {
 	CreatedAt           string
 }
 
+// OrganizationRoot stores the top-level root node for an organization tree.
+type OrganizationRoot struct {
+	ID             string
+	OrganizationID string
+	Name           string
+	Path           string
+	SortOrder      int
+	CreatedAt      string
+}
+
 // OrganizationUnit stores one OU in the simulated organization tree.
 type OrganizationUnit struct {
 	ID             string
@@ -70,16 +89,18 @@ type OrganizationAccount struct {
 	ID                    string
 	OrganizationID        string
 	ParentUnitID          string
+	OUPath                string
 	Name                  string
 	Email                 string
 	AccountType           string
-	Status                string
+	Status                AccountStatus
 	CreatedAt             string
 	JoinedAt              string
 	LeftAt                string
 	PaymentResponsibility string
 	PayerAccountID        string
 	BillingVisibilityRole string
+	IsManagementAccount   bool
 	SortOrder             int
 }
 
@@ -120,6 +141,43 @@ func (r OrganizationRepository) GetOrganizationByTemplate(ctx context.Context, t
 		return Organization{}, fmt.Errorf("get organization template %q: %w", templateKey, err)
 	}
 	return organization, nil
+}
+
+// ListRoots returns the top-level root nodes for an organization in deterministic order.
+func (r OrganizationRepository) ListRoots(ctx context.Context, organizationID string) ([]OrganizationRoot, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" {
+		return nil, fmt.Errorf("organization ID is required")
+	}
+
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT id, organization_id, name, path, sort_order, created_at
+		   FROM organization_roots
+		  WHERE organization_id = ?
+		  ORDER BY sort_order, path`,
+		organizationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list organization roots for %q: %w", organizationID, err)
+	}
+	defer rows.Close()
+
+	var roots []OrganizationRoot
+	for rows.Next() {
+		root, err := scanOrganizationRoot(rows)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate organization roots for %q: %w", organizationID, err)
+	}
+	return roots, nil
 }
 
 // ListUnits returns all OUs for an organization in deterministic tree order.
@@ -174,6 +232,7 @@ func (r OrganizationRepository) ListAccounts(ctx context.Context, organizationID
 		`SELECT id,
 				organization_id,
 				parent_unit_id,
+				ou_path,
 				name,
 				email,
 				account_type,
@@ -184,8 +243,9 @@ func (r OrganizationRepository) ListAccounts(ctx context.Context, organizationID
 				payment_responsibility,
 				payer_account_id,
 				billing_visibility_role,
+				is_management_account,
 				sort_order
-		   FROM accounts
+		   FROM organization_account_hierarchy
 		  WHERE organization_id = ?
 		  ORDER BY sort_order, name`,
 		organizationID,
@@ -224,6 +284,7 @@ func (r OrganizationRepository) GetAccount(ctx context.Context, accountID string
 		`SELECT id,
 				organization_id,
 				parent_unit_id,
+				ou_path,
 				name,
 				email,
 				account_type,
@@ -234,8 +295,9 @@ func (r OrganizationRepository) GetAccount(ctx context.Context, accountID string
 				payment_responsibility,
 				payer_account_id,
 				billing_visibility_role,
+				is_management_account,
 				sort_order
-		   FROM accounts
+		   FROM organization_account_hierarchy
 		  WHERE id = ?`,
 		accountID,
 	))
@@ -273,6 +335,25 @@ func AnyCompanyRetailAccountNames() []string {
 	return names
 }
 
+type organizationRootRow interface {
+	Scan(dest ...any) error
+}
+
+func scanOrganizationRoot(row organizationRootRow) (OrganizationRoot, error) {
+	var root OrganizationRoot
+	if err := row.Scan(
+		&root.ID,
+		&root.OrganizationID,
+		&root.Name,
+		&root.Path,
+		&root.SortOrder,
+		&root.CreatedAt,
+	); err != nil {
+		return OrganizationRoot{}, fmt.Errorf("scan organization root: %w", err)
+	}
+	return root, nil
+}
+
 type organizationUnitRow interface {
 	Scan(dest ...any) error
 }
@@ -302,10 +383,12 @@ type organizationAccountRow interface {
 func scanOrganizationAccount(row organizationAccountRow) (OrganizationAccount, error) {
 	var account OrganizationAccount
 	var leftAt sql.NullString
+	var isManagementAccount int
 	if err := row.Scan(
 		&account.ID,
 		&account.OrganizationID,
 		&account.ParentUnitID,
+		&account.OUPath,
 		&account.Name,
 		&account.Email,
 		&account.AccountType,
@@ -316,11 +399,13 @@ func scanOrganizationAccount(row organizationAccountRow) (OrganizationAccount, e
 		&account.PaymentResponsibility,
 		&account.PayerAccountID,
 		&account.BillingVisibilityRole,
+		&isManagementAccount,
 		&account.SortOrder,
 	); err != nil {
 		return OrganizationAccount{}, fmt.Errorf("scan organization account: %w", err)
 	}
 	account.LeftAt = nullStringValue(leftAt)
+	account.IsManagementAccount = isManagementAccount == 1
 	return account, nil
 }
 

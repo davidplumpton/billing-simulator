@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -136,6 +138,58 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	}
 	if catalogCount != 18 {
 		t.Fatalf("price_catalog_items count = %d, want 18", catalogCount)
+	}
+}
+
+func TestRunStartedServerClosesWorkspaceAfterUnexpectedServeExit(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Close(shutdownCtx)
+	})
+
+	workspaceDB := server.workspace.DB()
+	if workspaceDB == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- runStartedServer(context.Background(), server)
+	}()
+
+	if err := server.listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("runStartedServer() error = nil, want unexpected serve error")
+		}
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("runStartedServer() error = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runStartedServer() did not return after listener close")
+	}
+
+	if db := server.workspace.DB(); db != nil {
+		t.Fatal("workspace database remained active after unexpected serve exit")
+	}
+	if err := workspaceDB.PingContext(context.Background()); err == nil {
+		t.Fatal("closed workspace database still accepted PingContext")
 	}
 }
 

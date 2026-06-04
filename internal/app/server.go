@@ -73,7 +73,11 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	return runStartedServer(ctx, server)
+}
 
+// runStartedServer owns shutdown after Start so every Run exit closes resources.
+func runStartedServer(ctx context.Context, server *Server) error {
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -83,6 +87,14 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		}
 		return server.Wait()
 	case err := <-server.done:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if closeErr := server.Close(shutdownCtx); closeErr != nil {
+			if err == nil {
+				return closeErr
+			}
+			return fmt.Errorf("%w; close server after serve exit: %v", err, closeErr)
+		}
 		return err
 	}
 }

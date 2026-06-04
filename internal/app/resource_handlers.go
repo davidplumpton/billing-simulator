@@ -381,12 +381,22 @@ func (h resourceLabHandler) handleGenerateUsage(w http.ResponseWriter, r *http.R
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
-	http.Redirect(
-		w,
-		r,
-		"/resources?flash="+urlQueryEscape("Generated "+strconv.Itoa(len(result.Events))+" usage events for "+displayResourceName(result.Resource)),
-		http.StatusSeeOther,
-	)
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(usageGenerationFlash(result)), http.StatusSeeOther)
+}
+
+// usageGenerationFlash summarizes whether deterministic generation inserted or reused rows.
+func usageGenerationFlash(result persistence.UsageGenerationResult) string {
+	resourceName := displayResourceName(result.Resource)
+	switch {
+	case result.EventsCreated > 0 && result.EventsReused > 0:
+		return "Generated " + strconv.Itoa(result.EventsCreated) + " new usage events and reused " + strconv.Itoa(result.EventsReused) + " existing usage events for " + resourceName
+	case result.EventsCreated > 0:
+		return "Generated " + strconv.Itoa(result.EventsCreated) + " usage events for " + resourceName
+	case result.EventsReused > 0:
+		return "Reused " + strconv.Itoa(result.EventsReused) + " existing usage events for " + resourceName
+	default:
+		return "No usage events generated for " + resourceName
+	}
 }
 
 // handleRunBillingPipeline converts pending usage into metering records and priced bill line items.

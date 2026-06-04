@@ -62,10 +62,12 @@ type UsageGenerationRequest struct {
 	ScenarioEventSequence int
 }
 
-// UsageGenerationResult returns the resource snapshot and generated usage events.
+// UsageGenerationResult reports the deterministic usage rows affected by one generator run.
 type UsageGenerationResult struct {
-	Resource Resource
-	Events   []UsageEvent
+	Resource      Resource
+	Events        []UsageEvent
+	EventsCreated int
+	EventsReused  int
 }
 
 type generatedUsageSpec struct {
@@ -127,9 +129,14 @@ func (r ResourceUsageRepository) GenerateUsage(ctx context.Context, request Usag
 		createRequest.ScenarioRunID = request.ScenarioRunID
 		createRequest.ScenarioEventID = request.ScenarioEventID
 		createRequest.ScenarioEventSequence = request.ScenarioEventSequence
-		event, err := r.RecordGeneratedUsageEvent(ctx, createRequest)
+		event, inserted, err := r.recordUsageEvent(ctx, createRequest, "generator", true)
 		if err != nil {
 			return UsageGenerationResult{}, err
+		}
+		if inserted {
+			result.EventsCreated++
+		} else {
+			result.EventsReused++
 		}
 		result.Events = append(result.Events, event)
 	}

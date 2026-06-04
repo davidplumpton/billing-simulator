@@ -231,7 +231,7 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		}
 		audit.ResourceID = generated.Resource.ID
 		audit.GeneratedUsageEventCount = len(generated.Events)
-		audit.UsageEventsCreated = len(generated.Events)
+		audit.UsageEventsCreated = generated.EventsCreated
 		if len(generated.Events) > 0 {
 			audit.UsageEventID = generated.Events[0].ID
 		}

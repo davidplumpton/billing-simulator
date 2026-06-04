@@ -299,6 +299,29 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 		t.Fatalf("generated usage event count = %d, want 2", generatorCount)
 	}
 
+	resp, err = client.PostForm(server.URL+"/resources/generate", url.Values{
+		"resource_id":           {resourceID},
+		"generation_pattern":    {"daily_instance_hours"},
+		"generation_start_date": {"2026-02-02"},
+		"generation_days":       {"2"},
+	})
+	if err != nil {
+		t.Fatalf("repeat POST /resources/generate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("repeat POST /resources/generate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Reused 2 existing usage events") || !strings.Contains(body, "2026-02-03T00:00:00Z") {
+		t.Fatalf("repeat generator response missing reuse flash or deterministic usage window: %s", body)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE resource_id = ?`, resourceID).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage events after repeat generation: %v", err)
+	}
+	if usageCount != 3 {
+		t.Fatalf("usage event count after repeat generation = %d, want 3", usageCount)
+	}
+
 	resp, err = client.PostForm(server.URL+"/resources/billing-pipeline", url.Values{
 		"payer_account_id": {"999988887777"},
 	})

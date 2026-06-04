@@ -275,42 +275,44 @@ func (r ResourceUsageRepository) AddTag(ctx context.Context, request ResourceTag
 
 // RecordUsageEvent creates a learner usage event from a resource snapshot and tags active at usage start.
 func (r ResourceUsageRepository) RecordUsageEvent(ctx context.Context, request UsageEventCreateRequest) (UsageEvent, error) {
-	return r.recordUsageEvent(ctx, request, "learner", false)
+	event, _, err := r.recordUsageEvent(ctx, request, "learner", false)
+	return event, err
 }
 
 // RecordGeneratedUsageEvent creates or reuses a deterministic generator usage event.
 func (r ResourceUsageRepository) RecordGeneratedUsageEvent(ctx context.Context, request UsageEventCreateRequest) (UsageEvent, error) {
-	return r.recordUsageEvent(ctx, request, "generator", true)
+	event, _, err := r.recordUsageEvent(ctx, request, "generator", true)
+	return event, err
 }
 
-func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request UsageEventCreateRequest, eventSource string, ignoreDuplicateID bool) (UsageEvent, error) {
+func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request UsageEventCreateRequest, eventSource string, ignoreDuplicateID bool) (UsageEvent, bool, error) {
 	if r.db == nil {
-		return UsageEvent{}, fmt.Errorf("database handle is required")
+		return UsageEvent{}, false, fmt.Errorf("database handle is required")
 	}
 	request = normalizeUsageEventCreateRequest(request)
 	if request.EventSource == "" {
 		request.EventSource = eventSource
 	}
 	if err := validateUsageEventCreateRequest(request); err != nil {
-		return UsageEvent{}, err
+		return UsageEvent{}, false, err
 	}
 	if request.ID == "" {
 		id, err := newRepositoryID("use")
 		if err != nil {
-			return UsageEvent{}, err
+			return UsageEvent{}, false, err
 		}
 		request.ID = id
 	}
 
 	resource, err := r.GetResource(ctx, request.ResourceID)
 	if err != nil {
-		return UsageEvent{}, err
+		return UsageEvent{}, false, err
 	}
 	if request.ServiceCode != "" && request.ServiceCode != resource.ServiceCode {
-		return UsageEvent{}, fmt.Errorf("usage service %q does not match resource service %q", request.ServiceCode, resource.ServiceCode)
+		return UsageEvent{}, false, fmt.Errorf("usage service %q does not match resource service %q", request.ServiceCode, resource.ServiceCode)
 	}
 	if err := validateResourceUsageWindow(resource, request); err != nil {
-		return UsageEvent{}, err
+		return UsageEvent{}, false, err
 	}
 	regionCode := request.RegionCode
 	if regionCode == "" {
@@ -319,15 +321,15 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 
 	attributesJSON, err := marshalStringMap(request.Attributes)
 	if err != nil {
-		return UsageEvent{}, fmt.Errorf("marshal usage attributes: %w", err)
+		return UsageEvent{}, false, fmt.Errorf("marshal usage attributes: %w", err)
 	}
 	tagSnapshot, err := r.tagSnapshotAtUsageStart(ctx, resource.ID, request.UsageStartTime)
 	if err != nil {
-		return UsageEvent{}, err
+		return UsageEvent{}, false, err
 	}
 	tagSnapshotJSON, err := marshalStringMap(tagSnapshot)
 	if err != nil {
-		return UsageEvent{}, fmt.Errorf("marshal tag snapshot: %w", err)
+		return UsageEvent{}, false, fmt.Errorf("marshal tag snapshot: %w", err)
 	}
 
 	query := `INSERT INTO usage_events (
@@ -354,7 +356,7 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 		ON CONFLICT(id) DO NOTHING`
 	}
 
-	_, err = r.db.ExecContext(
+	insertResult, err := r.db.ExecContext(
 		ctx,
 		query,
 		request.ID,
@@ -376,10 +378,18 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 		nullIntArg(request.ScenarioEventSequence),
 	)
 	if err != nil {
-		return UsageEvent{}, fmt.Errorf("insert usage event %q: %w", request.ID, err)
+		return UsageEvent{}, false, fmt.Errorf("insert usage event %q: %w", request.ID, err)
+	}
+	rowsAffected, err := insertResult.RowsAffected()
+	if err != nil {
+		return UsageEvent{}, false, fmt.Errorf("read usage event insert result for %q: %w", request.ID, err)
 	}
 
-	return r.getUsageEvent(ctx, request.ID)
+	event, err := r.getUsageEvent(ctx, request.ID)
+	if err != nil {
+		return UsageEvent{}, false, err
+	}
+	return event, rowsAffected > 0, nil
 }
 
 // GetResource reads one resource by ID.

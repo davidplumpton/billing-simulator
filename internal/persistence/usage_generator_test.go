@@ -178,6 +178,9 @@ func TestResourceUsageRepositoryGeneratesDeterministicUsagePatterns(t *testing.T
 			if len(first.Events) != tt.wantCount {
 				t.Fatalf("GenerateUsage() event count = %d, want %d", len(first.Events), tt.wantCount)
 			}
+			if first.EventsCreated != tt.wantCount || first.EventsReused != 0 {
+				t.Fatalf("GenerateUsage() created/reused = %d/%d, want %d/0", first.EventsCreated, first.EventsReused, tt.wantCount)
+			}
 			if first.Resource.ID != resource.ID {
 				t.Fatalf("GenerateUsage() resource ID = %q, want %q", first.Resource.ID, resource.ID)
 			}
@@ -187,6 +190,9 @@ func TestResourceUsageRepositoryGeneratesDeterministicUsagePatterns(t *testing.T
 				t.Fatalf("GenerateUsage() repeat error = %v", err)
 			}
 			assertSameUsageEventIDs(t, second.Events, first.Events)
+			if second.EventsCreated != 0 || second.EventsReused != tt.wantCount {
+				t.Fatalf("GenerateUsage() repeat created/reused = %d/%d, want 0/%d", second.EventsCreated, second.EventsReused, tt.wantCount)
+			}
 			if count := countUsageEventsForResource(t, db, resource.ID); count != tt.wantCount {
 				t.Fatalf("usage event count after repeat = %d, want %d", count, tt.wantCount)
 			}

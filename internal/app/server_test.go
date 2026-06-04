@@ -967,6 +967,41 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		!strings.Contains(body, "Rounding Residual") {
 		t.Fatalf("GET /bills after close missing balanced reconciliation: %s", body)
 	}
+
+	var invoiceID string
+	if err := db.QueryRowContext(ctx, `SELECT invoice_id FROM invoice_documents LIMIT 1`).Scan(&invoiceID); err != nil {
+		t.Fatalf("read invoice document ID: %v", err)
+	}
+	if !strings.Contains(body, "/invoices/"+invoiceID) {
+		t.Fatalf("GET /bills after close missing printable invoice link %q: %s", invoiceID, body)
+	}
+	resp, err = client.Get(server.URL + "/invoices/" + url.PathEscape(invoiceID))
+	if err != nil {
+		t.Fatalf("GET /invoices/{id} error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /invoices/{id} status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Invoice " + invoiceID,
+		"AnyCompany Retail",
+		"Service Detail",
+		"Account Detail",
+		"Invoice Lines",
+		"Workflow web",
+		"AWSSupport",
+		"AWS Support Business",
+		"Usage",
+		"Fee",
+		"$1.0832",
+		"$1.00",
+		"due",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /invoices/{id} body missing %q: %s", want, body)
+		}
+	}
 }
 
 func postClockAdvance(t *testing.T, client *http.Client, serverURL, amount, unit string) string {

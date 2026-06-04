@@ -48,6 +48,121 @@ func TestInvoiceDocumentRepositoryCreatesDocumentForIssuedBill(t *testing.T) {
 	}
 }
 
+func TestInvoiceDocumentRepositoryBuildsPrintableInvoice(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	if _, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-printable-invoice-ec2",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonEC2,
+		ResourceType: "ec2_instance",
+		ResourceName: "Invoice web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(EC2) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-printable-invoice-ec2",
+		ResourceID:          "resource-printable-invoice-ec2",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(EC2) error = %v", err)
+	}
+	if _, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-printable-invoice-s3",
+		AccountID:    "222233334444",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonS3,
+		ResourceType: "s3_bucket",
+		ResourceName: "Invoice receipts",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(S3) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-printable-invoice-s3",
+		ResourceID:          "resource-printable-invoice-s3",
+		UsageType:           "requests:put-1k",
+		Operation:           "PutObject",
+		UsageStartTime:      "2026-02-02T00:00:00Z",
+		UsageEndTime:        "2026-02-03T00:00:00Z",
+		UsageQuantityMicros: 1_500_000_000,
+		UsageUnit:           "Request",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(S3) error = %v", err)
+	}
+	if _, err := NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: "999988887777",
+		InvoiceDueDays: 10,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+
+	printable, err := NewInvoiceDocumentRepository(db).GetPrintableByInvoiceID(ctx, closeResult.InvoiceDocument.InvoiceID)
+	if err != nil {
+		t.Fatalf("GetPrintableByInvoiceID() error = %v", err)
+	}
+	if printable.Document.InvoiceID != closeResult.InvoiceDocument.InvoiceID ||
+		printable.Document.BillID != closeResult.Bill.ID ||
+		printable.Obligation.Status != invoiceObligationStatusDue ||
+		printable.Obligation.AmountDueMicros != 1_090_700 ||
+		printable.Document.TotalMicros != 1_090_700 {
+		t.Fatalf("printable invoice header/payment = %+v / %+v, want issued due document", printable.Document, printable.Obligation)
+	}
+	if len(printable.LineItems) != 3 || printable.Document.LineItemCount != 3 {
+		t.Fatalf("printable invoice line count = %d document count %d, want three final line items", len(printable.LineItems), printable.Document.LineItemCount)
+	}
+
+	ec2 := requireInvoiceServiceSummary(t, printable.ServiceSummaries, serviceAmazonEC2)
+	if ec2.LineItemCount != 1 || ec2.ChargeMicros != 83_200 || ec2.TotalMicros != 83_200 {
+		t.Fatalf("EC2 invoice summary = %+v, want two t3.medium hours", ec2)
+	}
+	s3 := requireInvoiceServiceSummary(t, printable.ServiceSummaries, serviceAmazonS3)
+	if s3.LineItemCount != 1 || s3.ChargeMicros != 7_500 || s3.TotalMicros != 7_500 {
+		t.Fatalf("S3 invoice summary = %+v, want PUT request charge", s3)
+	}
+	support := requireInvoiceServiceSummary(t, printable.ServiceSummaries, serviceAWSSupport)
+	if support.LineItemCount != 1 || support.ChargeMicros != 1_000_000 || support.TotalMicros != 1_000_000 {
+		t.Fatalf("Support invoice summary = %+v, want minimum Business Support fee", support)
+	}
+
+	account1111 := requireInvoiceAccountSummary(t, printable.AccountSummaries, "111122223333")
+	if account1111.LineItemCount != 1 || account1111.TotalMicros != 83_200 {
+		t.Fatalf("account 111122223333 summary = %+v, want EC2 charge only", account1111)
+	}
+	account2222 := requireInvoiceAccountSummary(t, printable.AccountSummaries, "222233334444")
+	if account2222.LineItemCount != 1 || account2222.TotalMicros != 7_500 {
+		t.Fatalf("account 222233334444 summary = %+v, want S3 charge only", account2222)
+	}
+	payerAccount := requireInvoiceAccountSummary(t, printable.AccountSummaries, "999988887777")
+	if payerAccount.LineItemCount != 1 || payerAccount.TotalMicros != 1_000_000 {
+		t.Fatalf("payer account summary = %+v, want period-level Support fee", payerAccount)
+	}
+
+	supportLine := requireInvoiceLineItem(t, printable.LineItems, serviceAWSSupport)
+	if supportLine.ResourceID != "" ||
+		supportLine.LineItemType != billLineItemTypeFee ||
+		supportLine.UsageAccountID != "999988887777" ||
+		!strings.Contains(supportLine.Description, "AWS Support Business") {
+		t.Fatalf("support invoice line = %+v, want period-level Support fee detail", supportLine)
+	}
+}
+
 func TestInvoiceDocumentSchemaRejectsInvalidRows(t *testing.T) {
 	t.Parallel()
 
@@ -90,6 +205,9 @@ func TestInvoiceDocumentRepositoryRejectsNilDB(t *testing.T) {
 	}
 	if _, err := repo.ListRecent(context.Background(), 10); err == nil {
 		t.Fatal("ListRecent(nil DB) error = nil, want database handle validation error")
+	}
+	if _, err := repo.GetPrintableByInvoiceID(context.Background(), "SIM-INV-1"); err == nil {
+		t.Fatal("GetPrintableByInvoiceID(nil DB) error = nil, want database handle validation error")
 	}
 }
 
@@ -169,4 +287,40 @@ func requireInvoiceDocumentMatchesBill(t *testing.T, document InvoiceDocument, b
 		strings.TrimSpace(document.BillToAddress) == "" {
 		t.Fatalf("document profile fields = %+v, want seller and bill-to defaults", document)
 	}
+}
+
+func requireInvoiceServiceSummary(t *testing.T, summaries []InvoiceChargeSummary, serviceCode string) InvoiceChargeSummary {
+	t.Helper()
+
+	for _, summary := range summaries {
+		if summary.ServiceCode == serviceCode {
+			return summary
+		}
+	}
+	t.Fatalf("invoice service summaries = %+v, want service %s", summaries, serviceCode)
+	return InvoiceChargeSummary{}
+}
+
+func requireInvoiceAccountSummary(t *testing.T, summaries []InvoiceAccountChargeSummary, usageAccountID string) InvoiceAccountChargeSummary {
+	t.Helper()
+
+	for _, summary := range summaries {
+		if summary.UsageAccountID == usageAccountID {
+			return summary
+		}
+	}
+	t.Fatalf("invoice account summaries = %+v, want account %s", summaries, usageAccountID)
+	return InvoiceAccountChargeSummary{}
+}
+
+func requireInvoiceLineItem(t *testing.T, items []InvoiceLineItem, serviceCode string) InvoiceLineItem {
+	t.Helper()
+
+	for _, item := range items {
+		if item.ServiceCode == serviceCode {
+			return item
+		}
+	}
+	t.Fatalf("invoice line items = %+v, want service %s", items, serviceCode)
+	return InvoiceLineItem{}
 }

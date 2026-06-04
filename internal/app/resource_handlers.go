@@ -2251,9 +2251,84 @@ code {
 	text-align: center;
 }
 
+.invoice-document {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.invoice-title-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 24px;
+	padding: 22px;
+	border-bottom: 1px solid var(--line);
+}
+
+.invoice-title-row span,
+.invoice-total-grid span {
+	display: block;
+	color: var(--muted);
+	font-size: 12px;
+	font-weight: 650;
+	text-transform: uppercase;
+}
+
+.invoice-title-row strong {
+	display: block;
+	margin-top: 5px;
+	font-size: 24px;
+	line-height: 1.1;
+	overflow-wrap: anywhere;
+}
+
+.invoice-title-row > div:last-child {
+	text-align: right;
+}
+
+.invoice-meta-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	border-bottom: 1px solid var(--line);
+}
+
+.invoice-meta-grid .detail-list {
+	border-bottom: 0;
+	border-right: 1px solid var(--line);
+	padding: 16px;
+}
+
+.invoice-meta-grid .detail-list:last-child {
+	border-right: 0;
+}
+
+.invoice-total-grid {
+	display: grid;
+	grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.invoice-total-grid div {
+	min-height: 74px;
+	padding: 14px 16px;
+	border-right: 1px solid var(--line);
+}
+
+.invoice-total-grid div:last-child {
+	border-right: 0;
+}
+
+.invoice-total-grid strong {
+	display: block;
+	margin-top: 6px;
+	font-size: 18px;
+}
+
 @media (max-width: 980px) {
 	.topbar,
-	.clock-strip {
+	.clock-strip,
+	.invoice-title-row {
 		align-items: flex-start;
 		flex-direction: column;
 	}
@@ -2270,8 +2345,25 @@ code {
 	.form-grid,
 	.state-grid,
 	.fields,
-	.clock-form {
+	.clock-form,
+	.invoice-meta-grid,
+	.invoice-total-grid {
 		grid-template-columns: 1fr;
+	}
+
+	.invoice-title-row > div:last-child {
+		text-align: left;
+	}
+
+	.invoice-meta-grid .detail-list,
+	.invoice-total-grid div {
+		border-right: 0;
+		border-bottom: 1px solid var(--line);
+	}
+
+	.invoice-meta-grid .detail-list:last-child,
+	.invoice-total-grid div:last-child {
+		border-bottom: 0;
 	}
 
 	.page-heading,

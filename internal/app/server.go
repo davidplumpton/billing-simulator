@@ -137,6 +137,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/resources/month-close", resourceLab.handleRunMonthEndClose)
 	mux.HandleFunc("/clock/advance", resourceLab.handleAdvanceClock)
 	mux.HandleFunc("/bills", bills.handleBills)
+	mux.HandleFunc("/invoices/", bills.handleInvoice)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

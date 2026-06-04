@@ -1346,6 +1346,7 @@ var resourcePageTemplate = template.Must(template.New("resource-page").Parse(`<!
 	<header class="topbar">
 		<div class="brand">AWS Billing Simulator</div>
 		<nav aria-label="Primary">
+			<a href="/workspaces">Workspaces</a>
 			<a class="active" href="/resources">Resources</a>
 			<span>Tags</span>
 			<span>Cost Explorer</span>
@@ -1368,6 +1369,7 @@ var resourcePageTemplate = template.Must(template.New("resource-page").Parse(`<!
 			<section class="empty">
 				<h2>Workspace Required</h2>
 				<p>No workspace is open.</p>
+				<a class="button-link" href="/workspaces">Open Workspace</a>
 			</section>
 		{{else}}
 			<section class="clock-strip">
@@ -2135,6 +2137,52 @@ button {
 
 button:hover {
 	background: var(--accent-strong);
+}
+
+.button-link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	background: var(--accent);
+	color: #ffffff;
+	font-weight: 700;
+	padding: 8px 12px;
+	text-decoration: none;
+}
+
+.button-link:hover {
+	background: var(--accent-strong);
+}
+
+.workspace-panel {
+	max-width: 760px;
+}
+
+.workspace-form {
+	display: grid;
+	gap: 1rem;
+	margin-top: 1.25rem;
+}
+
+.detail-list {
+	border-bottom: 1px solid var(--line);
+	display: grid;
+	gap: 0.35rem;
+	padding: 0.75rem 0;
+}
+
+.detail-list span {
+	color: var(--muted);
+	font-size: 0.75rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.detail-list strong {
+	color: var(--text);
+	overflow-wrap: anywhere;
 }
 
 section {

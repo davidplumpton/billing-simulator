@@ -355,6 +355,7 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctyp
 	<header class="topbar">
 		<div class="brand">AWS Billing Simulator</div>
 		<nav aria-label="Primary">
+			<a href="/workspaces">Workspaces</a>
 			<a href="/resources">Resources</a>
 			<span>Tags</span>
 			<span>Cost Explorer</span>
@@ -376,6 +377,7 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctyp
 			<section class="empty">
 				<h2>Workspace Required</h2>
 				<p>No workspace is open.</p>
+				<a class="button-link" href="/workspaces">Open Workspace</a>
 			</section>
 		{{else}}
 			<section class="clock-strip">

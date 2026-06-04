@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -10,6 +12,7 @@ import (
 type Config struct {
 	HTTPAddr      string
 	WorkspacePath string
+	StatePath     string
 }
 
 // DefaultConfig returns conservative local-only defaults for the simulator.
@@ -17,6 +20,15 @@ func DefaultConfig() Config {
 	return Config{
 		HTTPAddr: "127.0.0.1:8080",
 	}
+}
+
+// DefaultStatePath returns the per-user app state file used by the CLI.
+func DefaultStatePath() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(configDir, "aws-billing-simulator", "state.json")
 }
 
 // Validate rejects unsafe or incomplete runtime configuration before startup.

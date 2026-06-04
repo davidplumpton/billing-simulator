@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aws-billing-simulator/internal/persistence"
 )
 
 const maxDefinitionBytes = 1024 * 1024
@@ -445,13 +447,13 @@ func validateScenarioAccountReference(path, organizationTemplate, explicitID, na
 	if strings.TrimSpace(explicitID) != "" || strings.TrimSpace(name) == "" {
 		return
 	}
-	if scenarioLookupKey(organizationTemplate) != scenarioLookupKey("anycompany-retail") {
+	if !persistence.IsAnyCompanyRetailTemplate(organizationTemplate) {
 		return
 	}
-	if anyCompanyRetailAccountAliases()[scenarioLookupKey(name)] != "" {
+	if _, ok := persistence.AnyCompanyRetailAccountIDForName(name); ok {
 		return
 	}
-	problems.add("%s %q is not in organization_template %q; use account_id or one of: %s", path, name, organizationTemplate, strings.Join(anyCompanyRetailAccountNames(), ", "))
+	problems.add("%s %q is not in organization_template %q; use account_id or one of: %s", path, name, organizationTemplate, strings.Join(persistence.AnyCompanyRetailAccountNames(), ", "))
 }
 
 func validateScenarioEventService(path string, event Event, problems *validationProblems) {

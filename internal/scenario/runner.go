@@ -829,50 +829,12 @@ func resolveScenarioAccountID(template, explicitID, name string) string {
 	if name == "" {
 		return ""
 	}
-	if scenarioLookupKey(template) == scenarioLookupKey("anycompany-retail") {
-		if accountID := anyCompanyRetailAccountAliases()[scenarioLookupKey(name)]; accountID != "" {
+	if persistence.IsAnyCompanyRetailTemplate(template) {
+		if accountID, ok := persistence.AnyCompanyRetailAccountIDForName(name); ok {
 			return accountID
 		}
 	}
 	return stableScenarioID("acct", name)
-}
-
-func anyCompanyRetailAccountAliases() map[string]string {
-	return map[string]string{
-		scenarioLookupKey("Management"):           "999988887777",
-		scenarioLookupKey("Management Account"):   "999988887777",
-		scenarioLookupKey("Log Archive"):          "000011112222",
-		scenarioLookupKey("Audit"):                "000011112223",
-		scenarioLookupKey("Shared Networking"):    "222233334444",
-		scenarioLookupKey("Platform Services"):    "222233334445",
-		scenarioLookupKey("Developer Sandbox 1"):  "333344445555",
-		scenarioLookupKey("Developer Sandbox 2"):  "333344445556",
-		scenarioLookupKey("Storefront Dev"):       "111122223332",
-		scenarioLookupKey("Storefront Prod"):      "111122223333",
-		scenarioLookupKey("Payments Dev"):         "444455556665",
-		scenarioLookupKey("Payments Prod"):        "444455556666",
-		scenarioLookupKey("Analytics Prod"):       "555566667777",
-		scenarioLookupKey("Deprecated Prototype"): "666677778888",
-	}
-}
-
-func anyCompanyRetailAccountNames() []string {
-	return []string{
-		"Management",
-		"Management Account",
-		"Log Archive",
-		"Audit",
-		"Shared Networking",
-		"Platform Services",
-		"Developer Sandbox 1",
-		"Developer Sandbox 2",
-		"Storefront Dev",
-		"Storefront Prod",
-		"Payments Dev",
-		"Payments Prod",
-		"Analytics Prod",
-		"Deprecated Prototype",
-	}
 }
 
 func scenarioLookupKey(value string) string {

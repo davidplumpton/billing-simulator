@@ -263,6 +263,107 @@ func TestResourceUsageRepositoryRejectsUnsupportedUsageGeneration(t *testing.T) 
 	}
 }
 
+func TestResourceUsageRepositoryRejectsGeneratedUsageOutsideResourceLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewResourceUsageRepository(db)
+
+	tests := []struct {
+		name        string
+		resource    ResourceCreateRequest
+		startDate   string
+		days        int
+		wantMessage string
+	}{
+		{
+			name: "planned resource",
+			resource: ResourceCreateRequest{
+				ID:           "resource-generator-lifecycle-planned",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEC2,
+				ResourceType: "ec2_instance",
+				Status:       "planned",
+			},
+			startDate:   "2026-02-01",
+			days:        1,
+			wantMessage: "planned",
+		},
+		{
+			name: "before started_at",
+			resource: ResourceCreateRequest{
+				ID:           "resource-generator-lifecycle-before-start",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEC2,
+				ResourceType: "ec2_instance",
+				Status:       "active",
+				StartedAt:    "2026-02-02T00:00:00Z",
+			},
+			startDate:   "2026-02-01",
+			days:        1,
+			wantMessage: "starts before resource",
+		},
+		{
+			name: "after stopped_at",
+			resource: ResourceCreateRequest{
+				ID:           "resource-generator-lifecycle-after-stop",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEC2,
+				ResourceType: "ec2_instance",
+				Status:       "stopped",
+				StartedAt:    "2026-02-01T00:00:00Z",
+				StoppedAt:    "2026-02-02T00:00:00Z",
+			},
+			startDate:   "2026-02-01",
+			days:        2,
+			wantMessage: "stopped_at",
+		},
+		{
+			name: "after deleted_at",
+			resource: ResourceCreateRequest{
+				ID:           "resource-generator-lifecycle-after-delete",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  serviceAmazonEC2,
+				ResourceType: "ec2_instance",
+				Status:       "deleted",
+				StartedAt:    "2026-02-01T00:00:00Z",
+				DeletedAt:    "2026-02-02T00:00:00Z",
+			},
+			startDate:   "2026-02-01",
+			days:        2,
+			wantMessage: "deleted_at",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			resource, err := repo.CreateResource(ctx, tt.resource)
+			if err != nil {
+				t.Fatalf("CreateResource() error = %v", err)
+			}
+
+			_, err = repo.GenerateUsage(ctx, UsageGenerationRequest{
+				ResourceID: resource.ID,
+				Pattern:    UsageGenerationDailyInstanceHours,
+				StartDate:  tt.startDate,
+				Days:       tt.days,
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("GenerateUsage() error = %v, want message containing %q", err, tt.wantMessage)
+			}
+			if count := countUsageEventsForResource(t, db, resource.ID); count != 0 {
+				t.Fatalf("usage event count after rejected generation = %d, want 0", count)
+			}
+		})
+	}
+}
+
 func assertGeneratedEvent(t *testing.T, event UsageEvent, want wantedGeneratedEvent) {
 	t.Helper()
 	if event.UsageType != want.UsageType ||

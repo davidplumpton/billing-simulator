@@ -540,6 +540,7 @@ func TestResourcesUIDailyMeteringRunsOnDemandAndAfterClockAdvance(t *testing.T) 
 		"size":           {"t3.medium"},
 		"resource_name":  {"Daily metered web"},
 		"status":         {"active"},
+		"started_at":     {"2026-02-01T00:00"},
 	})
 	if err != nil {
 		t.Fatalf("POST /resources/create error = %v", err)

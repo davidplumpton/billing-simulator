@@ -309,6 +309,9 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 	if request.ServiceCode != "" && request.ServiceCode != resource.ServiceCode {
 		return UsageEvent{}, fmt.Errorf("usage service %q does not match resource service %q", request.ServiceCode, resource.ServiceCode)
 	}
+	if err := validateResourceUsageWindow(resource, request); err != nil {
+		return UsageEvent{}, err
+	}
 	regionCode := request.RegionCode
 	if regionCode == "" {
 		regionCode = resource.RegionCode
@@ -926,6 +929,49 @@ func validateUsageEventCreateRequest(request UsageEventCreateRequest) error {
 	}
 	if err := validateEventSourceProvenance("usage event", request.EventSource, request.ScenarioRunID, request.ScenarioEventID, request.ScenarioEventSequence); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateResourceUsageWindow prevents impossible charges outside the resource lifecycle.
+func validateResourceUsageWindow(resource Resource, request UsageEventCreateRequest) error {
+	start, err := time.Parse(time.RFC3339, request.UsageStartTime)
+	if err != nil {
+		return fmt.Errorf("usage event start time must use RFC3339: %w", err)
+	}
+	end, err := time.Parse(time.RFC3339, request.UsageEndTime)
+	if err != nil {
+		return fmt.Errorf("usage event end time must use RFC3339: %w", err)
+	}
+	if resource.Status == "planned" {
+		return fmt.Errorf("resource %q is planned and cannot accept usage before it is active", resource.ID)
+	}
+	if resource.StartedAt != "" {
+		startedAt, err := time.Parse(time.RFC3339, resource.StartedAt)
+		if err != nil {
+			return fmt.Errorf("resource %q started_at must use RFC3339: %w", resource.ID, err)
+		}
+		if start.Before(startedAt) {
+			return fmt.Errorf("usage event starts before resource %q started_at %s", resource.ID, resource.StartedAt)
+		}
+	}
+	if resource.StoppedAt != "" {
+		stoppedAt, err := time.Parse(time.RFC3339, resource.StoppedAt)
+		if err != nil {
+			return fmt.Errorf("resource %q stopped_at must use RFC3339: %w", resource.ID, err)
+		}
+		if end.After(stoppedAt) {
+			return fmt.Errorf("usage event ends after resource %q stopped_at %s", resource.ID, resource.StoppedAt)
+		}
+	}
+	if resource.DeletedAt != "" {
+		deletedAt, err := time.Parse(time.RFC3339, resource.DeletedAt)
+		if err != nil {
+			return fmt.Errorf("resource %q deleted_at must use RFC3339: %w", resource.ID, err)
+		}
+		if end.After(deletedAt) {
+			return fmt.Errorf("usage event ends after resource %q deleted_at %s", resource.ID, resource.DeletedAt)
+		}
 	}
 	return nil
 }

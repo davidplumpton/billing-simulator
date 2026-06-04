@@ -321,3 +321,145 @@ func TestResourceUsageRepositoryRejectsInvalidUsage(t *testing.T) {
 		t.Fatalf("RecordUsageEvent(invalid window) error = %v, want window error", err)
 	}
 }
+
+func TestResourceUsageRepositoryRejectsUsageOutsideResourceLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewResourceUsageRepository(db)
+
+	tests := []struct {
+		name        string
+		resource    ResourceCreateRequest
+		usageStart  string
+		usageEnd    string
+		wantMessage string
+	}{
+		{
+			name: "planned resource",
+			resource: ResourceCreateRequest{
+				ID:           "resource-lifecycle-planned",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  "AmazonEC2",
+				ResourceType: "ec2_instance",
+				Status:       "planned",
+			},
+			usageStart:  "2026-02-01T00:00:00Z",
+			usageEnd:    "2026-02-01T01:00:00Z",
+			wantMessage: "planned",
+		},
+		{
+			name: "before started_at",
+			resource: ResourceCreateRequest{
+				ID:           "resource-lifecycle-before-start",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  "AmazonEC2",
+				ResourceType: "ec2_instance",
+				Status:       "active",
+				StartedAt:    "2026-02-01T00:00:00Z",
+			},
+			usageStart:  "2026-01-31T23:00:00Z",
+			usageEnd:    "2026-02-01T01:00:00Z",
+			wantMessage: "starts before resource",
+		},
+		{
+			name: "after stopped_at",
+			resource: ResourceCreateRequest{
+				ID:           "resource-lifecycle-after-stop",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  "AmazonEC2",
+				ResourceType: "ec2_instance",
+				Status:       "stopped",
+				StartedAt:    "2026-02-01T00:00:00Z",
+				StoppedAt:    "2026-02-01T02:00:00Z",
+			},
+			usageStart:  "2026-02-01T01:00:00Z",
+			usageEnd:    "2026-02-01T03:00:00Z",
+			wantMessage: "stopped_at",
+		},
+		{
+			name: "after deleted_at",
+			resource: ResourceCreateRequest{
+				ID:           "resource-lifecycle-after-delete",
+				AccountID:    "111122223333",
+				RegionCode:   "us-east-1",
+				ServiceCode:  "AmazonEC2",
+				ResourceType: "ec2_instance",
+				Status:       "deleted",
+				StartedAt:    "2026-02-01T00:00:00Z",
+				DeletedAt:    "2026-02-01T02:00:00Z",
+			},
+			usageStart:  "2026-02-01T01:00:00Z",
+			usageEnd:    "2026-02-01T03:00:00Z",
+			wantMessage: "deleted_at",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			resource, err := repo.CreateResource(ctx, tt.resource)
+			if err != nil {
+				t.Fatalf("CreateResource() error = %v", err)
+			}
+
+			_, err = repo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+				ResourceID:          resource.ID,
+				ServiceCode:         "AmazonEC2",
+				UsageType:           "instance-hours:t3.medium",
+				Operation:           "RunInstances",
+				UsageStartTime:      tt.usageStart,
+				UsageEndTime:        tt.usageEnd,
+				UsageQuantityMicros: 1_000_000,
+				UsageUnit:           "Hours",
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("RecordUsageEvent() error = %v, want message containing %q", err, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestResourceUsageRepositoryAllowsUsageThroughStopTime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewResourceUsageRepository(db)
+
+	resource, err := repo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-lifecycle-through-stop",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		Status:       "stopped",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		StoppedAt:    "2026-02-01T02:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+
+	event, err := repo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-lifecycle-through-stop",
+		ResourceID:          resource.ID,
+		ServiceCode:         "AmazonEC2",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	})
+	if err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if event.UsageEndTime != resource.StoppedAt {
+		t.Fatalf("usage end time = %q, want bounded stop time %q", event.UsageEndTime, resource.StoppedAt)
+	}
+}

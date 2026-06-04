@@ -111,6 +111,11 @@ func (r ResourceUsageRepository) GenerateUsage(ctx context.Context, request Usag
 	if err != nil {
 		return UsageGenerationResult{}, err
 	}
+	for _, spec := range specs {
+		if err := validateResourceUsageWindow(resource, spec.createRequest(resource.ID, request.Pattern)); err != nil {
+			return UsageGenerationResult{}, err
+		}
+	}
 
 	result := UsageGenerationResult{
 		Resource: resource,

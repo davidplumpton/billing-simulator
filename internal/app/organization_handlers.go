@@ -325,7 +325,7 @@ func organizationDepthClass(depth int) string {
 	return "depth-" + string(rune('0'+depth))
 }
 
-// organizationResourcePath builds the account-scoped resource link for future filtering.
+// organizationResourcePath builds the account-scoped resource filter link.
 func organizationResourcePath(accountID string) string {
 	query := url.Values{}
 	query.Set("account_id", accountID)

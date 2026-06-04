@@ -55,6 +55,18 @@ func renderPage(w http.ResponseWriter, status int, options pageLayoutOptions, co
 	_, _ = page.WriteTo(w)
 }
 
+// renderPageFragment writes one trusted template block for fetch-based page refreshes.
+func renderPageFragment(w http.ResponseWriter, status int, content *template.Template, fragmentName string, data any, renderContext string) {
+	var body bytes.Buffer
+	if err := content.ExecuteTemplate(&body, fragmentName, data); err != nil {
+		http.Error(w, renderContext+": "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = body.WriteTo(w)
+}
+
 // serveAppStylesheet serves the embedded no-build stylesheet shared by all pages.
 func serveAppStylesheet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -72,6 +84,30 @@ func serveAppStylesheet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(stylesheet)
 	}
+}
+
+// serveAppScript serves the embedded vanilla progressive-enhancement script.
+func serveAppScript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+
+	script, err := appAssets.ReadFile("assets/app.js")
+	if err != nil {
+		http.Error(w, "read script: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(script)
+	}
+}
+
+// wantsPageFragment matches the named fragment requested by the browser enhancer.
+func wantsPageFragment(r *http.Request, fragmentName string) bool {
+	return r.Header.Get("X-AWS-Billing-Simulator-Fragment") == fragmentName
 }
 
 // pageNavItems centralizes the shared top navigation and active-page state.
@@ -116,6 +152,7 @@ var pageLayoutTemplate = template.Must(template.New("page-layout").Parse(`<!doct
 	<main class="page{{if .MainClass}} {{.MainClass}}{{end}}">
 		{{.Body}}
 	</main>
+	<script src="/assets/app.js" defer></script>
 </body>
 </html>
 `))

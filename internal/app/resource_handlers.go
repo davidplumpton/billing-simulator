@@ -80,6 +80,7 @@ type resourcePageData struct {
 	WorkspaceReady             bool
 	Flash                      string
 	Error                      string
+	Filters                    resourceFilterView
 	Notices                    []uiNoticeView
 	WorkspaceEmptyState        uiEmptyStateView
 	ClockCurrentTime           string
@@ -124,6 +125,14 @@ type resourceTablesView struct {
 	PriceDimensions        uiTableView
 }
 
+type resourceFilterView struct {
+	AccountID   string
+	ServiceCode string
+	HasFilters  bool
+	ApplyButton uiSubmitButtonView
+	ClearPath   string
+}
+
 type resourceView struct {
 	ID               string
 	Name             string
@@ -160,6 +169,7 @@ type usageEventView struct {
 type meteringRecordView struct {
 	ResourceName       string
 	AccountID          string
+	ServiceCode        string
 	BillableDimensions string
 	Window             string
 	Quantity           string
@@ -572,6 +582,7 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 		WorkspaceReady:             h.db != nil,
 		Flash:                      flashMessage,
 		Error:                      errorMessage,
+		Filters:                    resourceFilterFromRequest(r),
 		WorkspaceEmptyState:        uiWorkspaceRequiredState(),
 		DefaultClockAdvanceAmount:  defaultClockAdvanceAmount,
 		DefaultAccountID:           defaultUsageAccountID,
@@ -594,16 +605,153 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 			data.Error = err.Error()
 		}
 	}
+	applyResourceFilters(&data)
 	data.Notices = uiNotices(data.Flash, data.Error)
 	data.ClockAmountField = uiInputField("Amount", "clock_advance_amount", strconv.Itoa(data.DefaultClockAdvanceAmount), true)
 	data.ClockAmountField.InputMode = "numeric"
 	data.ClockUnitField = clockAdvanceUnitSelectField(data.ClockAdvanceUnits)
 	data.ClockSubmitButton = uiSubmitButton("Advance Clock")
 
+	if wantsPageFragment(r, "resources") {
+		renderPageFragment(w, status, resourcePageTemplate, "resources.refresh", data, "render resources fragment")
+		return
+	}
+
 	renderPage(w, status, pageLayoutOptions{
 		Title:     "Resources - AWS Billing Simulator",
 		ActiveNav: "resources",
 	}, resourcePageTemplate, data, "render resource page")
+}
+
+// resourceFilterFromRequest normalizes the GET filters used by links and partial refreshes.
+func resourceFilterFromRequest(r *http.Request) resourceFilterView {
+	query := r.URL.Query()
+	filter := resourceFilterView{
+		AccountID:   strings.TrimSpace(query.Get("account_id")),
+		ServiceCode: strings.TrimSpace(query.Get("service_code")),
+		ApplyButton: uiSubmitButton("Apply Filters"),
+		ClearPath:   "/resources",
+	}
+	filter.HasFilters = filter.AccountID != "" || filter.ServiceCode != ""
+	return filter
+}
+
+// applyResourceFilters limits all resource-lab tables to rows matching the active GET filters.
+func applyResourceFilters(data *resourcePageData) {
+	filter := data.Filters
+	if !filter.HasFilters {
+		return
+	}
+	data.Resources = filterResourceViews(data.Resources, filter)
+	data.UsageEvents = filterUsageEventViews(data.UsageEvents, filter)
+	data.MeteringRecords = filterMeteringRecordViews(data.MeteringRecords, filter)
+	data.BillLineItems = filterResourceBillLineItemViews(data.BillLineItems, filter)
+	data.BillingPeriodSummaries = filterBillingPeriodSummaryViews(data.BillingPeriodSummaries, filter)
+	data.DailyMeteringJobRuns = filterDailyMeteringJobRunViews(data.DailyMeteringJobRuns, filter)
+	data.MonthEndCloses = filterMonthEndCloseViews(data.MonthEndCloses, filter)
+	data.IssuedBills = filterIssuedBillViews(data.IssuedBills, filter)
+	data.CatalogItems = filterCatalogItemViews(data.CatalogItems, filter)
+}
+
+func filterResourceViews(rows []resourceView, filter resourceFilterView) []resourceView {
+	filtered := make([]resourceView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.AccountID, filter.AccountID) &&
+			matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterUsageEventViews(rows []usageEventView, filter resourceFilterView) []usageEventView {
+	filtered := make([]usageEventView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.AccountID, filter.AccountID) && matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterMeteringRecordViews(rows []meteringRecordView, filter resourceFilterView) []meteringRecordView {
+	filtered := make([]meteringRecordView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.AccountID, filter.AccountID) && matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterResourceBillLineItemViews(rows []billLineItemView, filter resourceFilterView) []billLineItemView {
+	filtered := make([]billLineItemView, 0, len(rows))
+	for _, row := range rows {
+		if (matchesFilter(row.UsageAccountID, filter.AccountID) || matchesFilter(row.PayerAccountID, filter.AccountID)) &&
+			matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterBillingPeriodSummaryViews(rows []billingPeriodSummaryView, filter resourceFilterView) []billingPeriodSummaryView {
+	filtered := make([]billingPeriodSummaryView, 0, len(rows))
+	for _, row := range rows {
+		if (matchesFilter(row.UsageAccountID, filter.AccountID) || matchesFilter(row.PayerAccountID, filter.AccountID)) &&
+			matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterDailyMeteringJobRunViews(rows []dailyMeteringJobRunView, filter resourceFilterView) []dailyMeteringJobRunView {
+	filtered := make([]dailyMeteringJobRunView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.AccountID) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterMonthEndCloseViews(rows []monthEndCloseView, filter resourceFilterView) []monthEndCloseView {
+	filtered := make([]monthEndCloseView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.AccountID) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterIssuedBillViews(rows []issuedBillView, filter resourceFilterView) []issuedBillView {
+	filtered := make([]issuedBillView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.AccountID) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterCatalogItemViews(rows []catalogItemView, filter resourceFilterView) []catalogItemView {
+	filtered := make([]catalogItemView, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func matchesFilter(value, filter string) bool {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(value), filter)
 }
 
 // resourceTables defines the shared dense-table metadata for the resource lab page.
@@ -933,6 +1081,7 @@ func meteringRecordViewFromRecord(record persistence.MeteringRecord, resourceNam
 	return meteringRecordView{
 		ResourceName:       resourceName,
 		AccountID:          record.AccountID,
+		ServiceCode:        record.ServiceCode,
 		BillableDimensions: billableDimensions(record.ServiceCode, record.UsageType, record.Operation, record.RegionCode),
 		Window:             record.UsageStartTime + " to " + record.UsageEndTime,
 		Quantity:           formatQuantityMicros(record.UsageQuantityMicros),
@@ -1416,11 +1565,29 @@ var resourcePageTemplate = newPageTemplate("resource-page", `<div class="page-he
 			</div>
 		</div>
 
+		<div id="resources-refresh" data-partial-surface="resources">
+			{{template "resources.refresh" .}}
+		</div>
+
+{{define "resources.refresh"}}
 		{{template "ui.notices" .Notices}}
 
 		{{if not .WorkspaceReady}}
 			{{template "ui.empty-state" .WorkspaceEmptyState}}
 		{{else}}
+			<section class="filter-bar" aria-label="Resource filters">
+				<form method="get" action="/resources" class="filter-form" data-partial-form="resources" data-partial-target="#resources-refresh" data-partial-auto="true">
+					<label>Account ID
+						<input name="account_id" value="{{.Filters.AccountID}}">
+					</label>
+					<label>Service
+						<input name="service_code" value="{{.Filters.ServiceCode}}">
+					</label>
+					{{template "ui.submit-button" .Filters.ApplyButton}}
+					{{if .Filters.HasFilters}}<a class="button-link secondary" href="{{.Filters.ClearPath}}">Clear</a>{{end}}
+				</form>
+			</section>
+
 			<section class="clock-strip">
 				<div>
 					<h2>Simulator Clock</h2>
@@ -1819,6 +1986,7 @@ owner=web-platform</textarea>
 				</div>
 			</section>
 		{{end}}
+{{end}}
 
 {{define "tags"}}
 	{{if .}}

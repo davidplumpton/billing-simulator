@@ -280,6 +280,42 @@ button:hover {
 	background: var(--accent-strong);
 }
 
+.button-link.secondary {
+	border: 1px solid var(--line);
+	background: var(--surface);
+	color: var(--text);
+}
+
+.button-link.secondary:hover {
+	border-color: var(--accent);
+	color: var(--accent-strong);
+}
+
+.filter-bar {
+	margin-top: 18px;
+	padding: 12px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
+.filter-form {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(180px, 1fr)) auto auto;
+	gap: 10px;
+	align-items: end;
+}
+
+.filter-form button,
+.filter-form .button-link {
+	margin-top: 0;
+	min-height: 36px;
+}
+
+[data-partial-surface][aria-busy="true"] {
+	opacity: 0.72;
+}
+
 .workspace-panel {
 	max-width: 760px;
 }
@@ -636,10 +672,11 @@ code {
 	.organization-hero,
 	.organization-meta,
 	.organization-summary-grid,
-	.organization-layout,
-	.fields,
-	.clock-form,
-	.invoice-meta-grid,
+		.organization-layout,
+		.fields,
+		.filter-form,
+		.clock-form,
+		.invoice-meta-grid,
 	.invoice-total-grid {
 		grid-template-columns: 1fr;
 	}

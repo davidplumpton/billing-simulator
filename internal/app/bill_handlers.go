@@ -24,6 +24,7 @@ type billsHandler struct {
 type billsPageData struct {
 	WorkspaceReady           bool
 	Error                    string
+	Filters                  billsFilterView
 	Notices                  []uiNoticeView
 	WorkspaceEmptyState      uiEmptyStateView
 	ClockCurrentTime         string
@@ -172,6 +173,15 @@ type billsTablesView struct {
 	BillSummaries            uiTableView
 }
 
+type billsFilterView struct {
+	PayerAccountID string
+	UsageAccountID string
+	ServiceCode    string
+	HasFilters     bool
+	ApplyButton    uiSubmitButtonView
+	ClearPath      string
+}
+
 type invoiceTablesView struct {
 	ServiceSummaries uiTableView
 	AccountSummaries uiTableView
@@ -283,6 +293,7 @@ func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status
 	data := billsPageData{
 		WorkspaceReady:      h.db != nil,
 		Error:               errorMessage,
+		Filters:             billsFilterFromRequest(r),
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
 		StateCards:          billStateCards(nil),
 		Tables:              billsTables(),
@@ -295,10 +306,29 @@ func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status
 	}
 	data.Notices = uiNotices("", data.Error)
 
+	if wantsPageFragment(r, "bills") {
+		renderPageFragment(w, status, billsPageTemplate, "bills.refresh", data, "render bills fragment")
+		return
+	}
+
 	renderPage(w, status, pageLayoutOptions{
 		Title:     "Bills - AWS Billing Simulator",
 		ActiveNav: "bills",
 	}, billsPageTemplate, data, "render bills page")
+}
+
+// billsFilterFromRequest normalizes bill report filters for full and partial renders.
+func billsFilterFromRequest(r *http.Request) billsFilterView {
+	query := r.URL.Query()
+	filter := billsFilterView{
+		PayerAccountID: strings.TrimSpace(query.Get("payer_account_id")),
+		UsageAccountID: strings.TrimSpace(query.Get("usage_account_id")),
+		ServiceCode:    strings.TrimSpace(query.Get("service_code")),
+		ApplyButton:    uiSubmitButton("Apply Filters"),
+		ClearPath:      "/bills",
+	}
+	filter.HasFilters = filter.PayerAccountID != "" || filter.UsageAccountID != "" || filter.ServiceCode != ""
+	return filter
 }
 
 // renderInvoice builds the printable invoice page from the invoice read model.
@@ -433,6 +463,7 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	if err != nil {
 		return err
 	}
+	summaries = filterBillStateSummaries(summaries, data.Filters)
 	data.StateCards = billStateCards(summaries)
 	for _, summary := range summaries {
 		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary))
@@ -444,6 +475,7 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	if err != nil {
 		return err
 	}
+	reconciliations = filterBillReconciliations(reconciliations, data.Filters)
 	for _, reconciliation := range reconciliations {
 		data.BillReconciliations = append(data.BillReconciliations, billReconciliationViewFromSummary(reconciliation))
 	}
@@ -454,6 +486,8 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	if err != nil {
 		return err
 	}
+	breakdowns.Summaries = filterBillChargeSummaries(breakdowns.Summaries, data.Filters)
+	breakdowns.Resources = filterBillResourceChargeSummaries(breakdowns.Resources, data.Filters)
 	for _, summary := range breakdowns.Summaries {
 		data.ChargeBreakdowns = append(data.ChargeBreakdowns, billChargeBreakdownViewFromSummary(summary))
 	}
@@ -461,6 +495,50 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 		data.ResourceChargeBreakdowns = append(data.ResourceChargeBreakdowns, billResourceChargeBreakdownViewFromSummary(summary))
 	}
 	return nil
+}
+
+func filterBillStateSummaries(rows []persistence.BillStateSummary, filter billsFilterView) []persistence.BillStateSummary {
+	filtered := make([]persistence.BillStateSummary, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.PayerAccountID) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterBillReconciliations(rows []persistence.BillReconciliation, filter billsFilterView) []persistence.BillReconciliation {
+	filtered := make([]persistence.BillReconciliation, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.PayerAccountID) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterBillChargeSummaries(rows []persistence.BillChargeSummary, filter billsFilterView) []persistence.BillChargeSummary {
+	filtered := make([]persistence.BillChargeSummary, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.PayerAccountID) &&
+			matchesFilter(row.UsageAccountID, filter.UsageAccountID) &&
+			matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterBillResourceChargeSummaries(rows []persistence.BillResourceChargeSummary, filter billsFilterView) []persistence.BillResourceChargeSummary {
+	filtered := make([]persistence.BillResourceChargeSummary, 0, len(rows))
+	for _, row := range rows {
+		if matchesFilter(row.PayerAccountID, filter.PayerAccountID) &&
+			matchesFilter(row.UsageAccountID, filter.UsageAccountID) &&
+			matchesFilter(row.ServiceCode, filter.ServiceCode) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummaryView {
@@ -890,11 +968,32 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 			</div>
 		</div>
 
+		<div id="bills-refresh" data-partial-surface="bills">
+			{{template "bills.refresh" .}}
+		</div>
+
+{{define "bills.refresh"}}
 		{{template "ui.notices" .Notices}}
 
 		{{if not .WorkspaceReady}}
 			{{template "ui.empty-state" .WorkspaceEmptyState}}
 		{{else}}
+			<section class="filter-bar" aria-label="Bill filters">
+				<form method="get" action="/bills" class="filter-form" data-partial-form="bills" data-partial-target="#bills-refresh" data-partial-auto="true">
+					<label>Payer Account ID
+						<input name="payer_account_id" value="{{.Filters.PayerAccountID}}">
+					</label>
+					<label>Usage Account ID
+						<input name="usage_account_id" value="{{.Filters.UsageAccountID}}">
+					</label>
+					<label>Service
+						<input name="service_code" value="{{.Filters.ServiceCode}}">
+					</label>
+					{{template "ui.submit-button" .Filters.ApplyButton}}
+					{{if .Filters.HasFilters}}<a class="button-link secondary" href="{{.Filters.ClearPath}}">Clear</a>{{end}}
+				</form>
+			</section>
+
 			<section class="clock-strip">
 				<div>
 					<h2>Simulator Clock</h2>
@@ -1058,6 +1157,7 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 				</div>
 			</section>
 		{{end}}
+{{end}}
 `)
 
 var invoicePageTemplate = newPageTemplate("invoice-page", `<div class="page-heading">

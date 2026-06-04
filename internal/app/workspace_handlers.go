@@ -105,6 +105,7 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/workspaces", workspaces.handleWorkspaces)
 	mux.HandleFunc("/workspaces/open", workspaces.handleOpenWorkspace)
 	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
+	mux.HandleFunc("/assets/app.js", serveAppScript)
 	mux.HandleFunc("/organization", func(w http.ResponseWriter, r *http.Request) {
 		newOrganizationHandler(workspace.DB()).handleOrganization(w, r)
 	})

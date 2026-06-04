@@ -416,6 +416,99 @@ func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 	}
 }
 
+func TestEmbeddedProgressiveEnhancementScriptServed(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+
+	resp, err := server.Client().Get(server.URL + "/assets/app.js")
+	if err != nil {
+		t.Fatalf("GET /assets/app.js error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /assets/app.js status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/javascript") ||
+		!strings.Contains(body, "data-partial-form") ||
+		!strings.Contains(body, "X-AWS-Billing-Simulator-Fragment") {
+		t.Fatalf("GET /assets/app.js missing partial-update script contract: %s", body)
+	}
+}
+
+func TestResourcesUIFiltersAndPartialRefresh(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedFilterableUsage(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/resources?account_id=111122223333")
+	if err != nil {
+		t.Fatalf("GET /resources filtered error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources filtered status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<main class="page">`,
+		`<script src="/assets/app.js" defer></script>`,
+		`data-partial-form="resources"`,
+		`name="account_id" value="111122223333"`,
+		"Filter web",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /resources filtered body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Filter bucket") {
+		t.Fatalf("GET /resources account filter included S3 resource: %s", body)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/resources?service_code=AmazonS3", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(/resources fragment) error = %v", err)
+	}
+	req.Header.Set("X-AWS-Billing-Simulator-Fragment", "resources")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /resources fragment error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources fragment status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if strings.Contains(body, "<main") || strings.Contains(body, `<script src="/assets/app.js"`) {
+		t.Fatalf("GET /resources fragment returned full layout: %s", body)
+	}
+	for _, want := range []string{
+		`data-partial-target="#resources-refresh"`,
+		`name="service_code" value="AmazonS3"`,
+		"Filter bucket",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /resources fragment body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Filter web") {
+		t.Fatalf("GET /resources service fragment included EC2 resource: %s", body)
+	}
+}
+
 func TestResourcesUIStorageEstimatesUseBillingPeriodDays(t *testing.T) {
 	t.Parallel()
 
@@ -926,6 +1019,83 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 	}
 }
 
+func TestBillsUIFiltersAndPartialRefresh(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedFilterableUsage(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/bills?usage_account_id=222233334444&service_code=AmazonS3")
+	if err != nil {
+		t.Fatalf("GET /bills filtered error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills filtered status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<main class="page">`,
+		`<script src="/assets/app.js" defer></script>`,
+		`data-partial-form="bills"`,
+		`name="usage_account_id" value="222233334444"`,
+		`name="service_code" value="AmazonS3"`,
+		"Filter bucket",
+		"Amazon S3",
+		"222233334444",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills filtered body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Filter web") {
+		t.Fatalf("GET /bills filtered body included EC2 resource: %s", body)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/bills?payer_account_id=999988887777&usage_account_id=111122223333", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(/bills fragment) error = %v", err)
+	}
+	req.Header.Set("X-AWS-Billing-Simulator-Fragment", "bills")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /bills fragment error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills fragment status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if strings.Contains(body, "<main") || strings.Contains(body, `<script src="/assets/app.js"`) {
+		t.Fatalf("GET /bills fragment returned full layout: %s", body)
+	}
+	for _, want := range []string{
+		`data-partial-target="#bills-refresh"`,
+		`name="payer_account_id" value="999988887777"`,
+		`name="usage_account_id" value="111122223333"`,
+		"Filter web",
+		"Amazon EC2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills fragment body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Filter bucket") {
+		t.Fatalf("GET /bills usage-account fragment included S3 resource: %s", body)
+	}
+}
+
 func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -1186,6 +1356,66 @@ func readOnlyResourceID(t *testing.T, db *sql.DB) string {
 		t.Fatalf("read resource ID: %v", err)
 	}
 	return resourceID
+}
+
+func seedFilterableUsage(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-filter-ec2",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Filter web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(EC2) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-filter-ec2",
+		ResourceID:          "resource-filter-ec2",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T01:00:00Z",
+		UsageQuantityMicros: 1_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(EC2) error = %v", err)
+	}
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-filter-s3",
+		AccountID:    "222233334444",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonS3",
+		ResourceType: "s3_bucket",
+		ResourceName: "Filter bucket",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource(S3) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-filter-s3",
+		ResourceID:          "resource-filter-s3",
+		UsageType:           "requests:put-1k",
+		Operation:           "PutObject",
+		UsageStartTime:      "2026-02-02T00:00:00Z",
+		UsageEndTime:        "2026-02-03T00:00:00Z",
+		UsageQuantityMicros: 1_500_000_000,
+		UsageUnit:           "Request",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(S3) error = %v", err)
+	}
+	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
 }
 
 func insertBillsUIStoredBillState(

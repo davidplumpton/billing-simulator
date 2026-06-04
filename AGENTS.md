@@ -9,8 +9,14 @@ br ready              # Find available work
 br show <id>          # View issue details
 br update <id> --status in_progress  # Claim work
 br close <id>         # Complete work
-br sync               # Sync issues with version control
+br sync --flush-only  # Export issue changes before jj commit
 ```
+
+## Robot-Next Compatibility
+
+`bv --robot-next` is useful for recommendation context, but its JSON command fields may still name the legacy `bd` executable. Treat those command fields as hints only: use the returned issue `id` with the equivalent `br show`, `br update`, and `br close` commands from the quick reference.
+
+When the user asks for work with a specific label, select from `br ready --label <label>` before acting on the generic `bv --robot-next` recommendation. For a lightweight smoke check, run `bv --robot-next`, then verify the returned `id` with `br show <id>`; never run a legacy tracker executable from the robot output.
 
 ## Session Completion
 
@@ -28,11 +34,12 @@ br sync               # Sync issues with version control
 
 ### Best Practices
 
-- Check `bv --robot-next` at session start to find available work
+- Check `bv --robot-next` at session start for recommendation context
+- Use `br ready --label <label>` when the requested work is label-scoped
 - Update status as you work (in_progress → closed)
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type, and dependencies between related items
-- Always `br sync` before committing
+- Always `br sync --flush-only` before committing
 - Commit between finishing one beads issue and starting another
 - Use `jj desc -m <description>` with a description, when finished use `jj new`
 - Add comments to newly created methods so their purpose is easy to understand later
@@ -40,4 +47,3 @@ br sync               # Sync issues with version control
 - Track user preferences in `MIND_MAP.md` during each session (things the user explicitly likes/dislikes)
 - Keep these mind-map notes concise and actionable so future sessions can apply them immediately
 - Never touch files outside the project directory
-

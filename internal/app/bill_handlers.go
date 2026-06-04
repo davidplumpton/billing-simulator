@@ -7,7 +7,6 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,6 +24,8 @@ type billsHandler struct {
 type billsPageData struct {
 	WorkspaceReady           bool
 	Error                    string
+	Notices                  []uiNoticeView
+	WorkspaceEmptyState      uiEmptyStateView
 	ClockCurrentTime         string
 	ClockBillingPeriod       string
 	StateCards               []billStateCardView
@@ -32,6 +33,7 @@ type billsPageData struct {
 	BillReconciliations      []billReconciliationView
 	ChargeBreakdowns         []billChargeBreakdownView
 	ResourceChargeBreakdowns []billResourceChargeBreakdownView
+	Tables                   billsTablesView
 }
 
 type billStateCardView struct {
@@ -127,6 +129,9 @@ type invoicePageData struct {
 	WorkspaceReady        bool
 	Loaded                bool
 	Error                 string
+	Notices               []uiNoticeView
+	WorkspaceEmptyState   uiEmptyStateView
+	Actions               uiActionBarView
 	InvoiceID             string
 	BillID                string
 	DocumentVersion       int
@@ -157,6 +162,20 @@ type invoicePageData struct {
 	ServiceSummaries      []invoiceChargeSummaryView
 	AccountSummaries      []invoiceAccountChargeSummaryView
 	LineItems             []invoiceLineItemView
+	Tables                invoiceTablesView
+}
+
+type billsTablesView struct {
+	BillReconciliations      uiTableView
+	ChargeBreakdowns         uiTableView
+	ResourceChargeBreakdowns uiTableView
+	BillSummaries            uiTableView
+}
+
+type invoiceTablesView struct {
+	ServiceSummaries uiTableView
+	AccountSummaries uiTableView
+	LineItems        uiTableView
 }
 
 type invoiceChargeSummaryView struct {
@@ -262,9 +281,11 @@ func (h billsHandler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 // renderBills builds the dedicated bills state page from the current workspace.
 func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status int, errorMessage string) {
 	data := billsPageData{
-		WorkspaceReady: h.db != nil,
-		Error:          errorMessage,
-		StateCards:     billStateCards(nil),
+		WorkspaceReady:      h.db != nil,
+		Error:               errorMessage,
+		WorkspaceEmptyState: uiWorkspaceRequiredState(),
+		StateCards:          billStateCards(nil),
+		Tables:              billsTables(),
 	}
 	if h.db != nil {
 		if err := h.loadBillsPageData(r.Context(), &data); err != nil {
@@ -272,6 +293,7 @@ func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status
 			data.Error = err.Error()
 		}
 	}
+	data.Notices = uiNotices("", data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
 		Title:     "Bills - AWS Billing Simulator",
@@ -300,12 +322,45 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 			data = invoicePageDataFromPrintable(printable)
 		}
 	}
+	data.Notices = uiNotices("", data.Error)
+	data.WorkspaceEmptyState = uiWorkspaceRequiredState()
+	data.Actions = invoiceActionBar(data)
+	data.Tables = invoiceTables()
 
 	renderPage(w, status, pageLayoutOptions{
 		Title:     "Invoice " + data.InvoiceID + " - AWS Billing Simulator",
 		ActiveNav: "bills",
 		MainClass: "invoice-page",
 	}, invoicePageTemplate, data, "render invoice page")
+}
+
+// billsTables defines the shared dense-table metadata for bill rollups.
+func billsTables() billsTablesView {
+	return billsTablesView{
+		BillReconciliations:      uiTable(uiTableHeaders("Bill", "Period", "Payer", "State", "Status", "Bill Items", "Source Items", "Item Delta", "Bill Total", "Source Total", "Rounding Residual", "Charge Residual", "Credit Residual", "Refund Residual", "Tax Residual", "Updated"), "No issued bills to reconcile"),
+		ChargeBreakdowns:         uiTable(uiTableHeaders("Period", "Payer", "Usage Account", "Service", "Region", "Usage Type", "Status", "Resources", "Items", "Charges", "Credits", "Refunds", "Tax", "Total", "Updated"), "No charges"),
+		ResourceChargeBreakdowns: uiTable(uiTableHeaders("Resource", "Period", "Payer", "Usage Account", "Service", "Region", "Usage Type", "Status", "Items", "Charges", "Credits", "Refunds", "Tax", "Total"), "No resource charges"),
+		BillSummaries:            uiTable(uiTableHeaders("State", "Period", "Payer", "Items", "Charges", "Credits", "Refunds", "Tax", "Total", "Invoice", "Updated"), "No bill states"),
+	}
+}
+
+// invoiceTables defines the shared dense-table metadata for printable invoices.
+func invoiceTables() invoiceTablesView {
+	return invoiceTablesView{
+		ServiceSummaries: uiTable(uiTableHeaders("Service", "Items", "Charges", "Credits", "Refunds", "Tax", "Total"), "No service detail"),
+		AccountSummaries: uiTable(uiTableHeaders("Usage Account", "Items", "Charges", "Credits", "Refunds", "Tax", "Total"), "No account detail"),
+		LineItems:        uiTable(uiTableHeaders("Resource", "Account", "Service", "Type", "Region", "Usage", "Window", "Quantity", "Rate", "Cost"), "No invoice lines"),
+	}
+}
+
+// invoiceActionBar returns the invoice links available for the current page state.
+func invoiceActionBar(data invoicePageData) uiActionBarView {
+	actions := []uiActionLinkView{}
+	if data.Loaded {
+		actions = append(actions, uiActionLink("CSV", data.CSVPath), uiActionLink("PDF", data.PDFPath))
+	}
+	actions = append(actions, uiActionLink("Bills", "/bills"))
+	return uiActionBar(actions...)
 }
 
 // handleInvoiceCSV serves a machine-readable detailed-charge export for one invoice.
@@ -829,20 +884,16 @@ func invoiceCSVFilename(invoiceID string) string {
 	return safe + "-line-items.csv"
 }
 
-var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div class="page-heading">
+var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading">
 			<div>
 				<h1>Bills</h1>
 			</div>
 		</div>
 
-		{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+		{{template "ui.notices" .Notices}}
 
 		{{if not .WorkspaceReady}}
-			<section class="empty">
-				<h2>Workspace Required</h2>
-				<p>No workspace is open.</p>
-				<a class="button-link" href="/workspaces">Open Workspace</a>
-			</section>
+			{{template "ui.empty-state" .WorkspaceEmptyState}}
 		{{else}}
 			<section class="clock-strip">
 				<div>
@@ -868,27 +919,8 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 					<span>{{len .BillReconciliations}} bills</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Bill</th>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>State</th>
-								<th>Status</th>
-								<th>Bill Items</th>
-								<th>Source Items</th>
-								<th>Item Delta</th>
-								<th>Bill Total</th>
-								<th>Source Total</th>
-								<th>Rounding Residual</th>
-								<th>Charge Residual</th>
-								<th>Credit Residual</th>
-								<th>Refund Residual</th>
-								<th>Tax Residual</th>
-								<th>Updated</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.BillReconciliations}}
 						<tbody>
 							{{range .BillReconciliations}}
 								<tr>
@@ -910,7 +942,7 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 									<td>{{.UpdatedAt}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="16" class="empty-cell">No issued bills to reconcile</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.BillReconciliations}}
 							{{end}}
 						</tbody>
 					</table>
@@ -923,26 +955,8 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 					<span>{{len .ChargeBreakdowns}} groups</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>Usage Account</th>
-								<th>Service</th>
-								<th>Region</th>
-								<th>Usage Type</th>
-								<th>Status</th>
-								<th>Resources</th>
-								<th>Items</th>
-								<th>Charges</th>
-								<th>Credits</th>
-								<th>Refunds</th>
-								<th>Tax</th>
-								<th>Total</th>
-								<th>Updated</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.ChargeBreakdowns}}
 						<tbody>
 							{{range .ChargeBreakdowns}}
 								<tr>
@@ -963,7 +977,7 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 									<td>{{.UpdatedAt}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="15" class="empty-cell">No charges</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.ChargeBreakdowns}}
 							{{end}}
 						</tbody>
 					</table>
@@ -976,25 +990,8 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 					<span>{{len .ResourceChargeBreakdowns}} rows</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Resource</th>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>Usage Account</th>
-								<th>Service</th>
-								<th>Region</th>
-								<th>Usage Type</th>
-								<th>Status</th>
-								<th>Items</th>
-								<th>Charges</th>
-								<th>Credits</th>
-								<th>Refunds</th>
-								<th>Tax</th>
-								<th>Total</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.ResourceChargeBreakdowns}}
 						<tbody>
 							{{range .ResourceChargeBreakdowns}}
 								<tr>
@@ -1014,7 +1011,7 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 									<td><strong>{{.Total}}</strong></td>
 								</tr>
 							{{else}}
-								<tr><td colspan="14" class="empty-cell">No resource charges</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.ResourceChargeBreakdowns}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1027,22 +1024,8 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 					<span>{{len .BillSummaries}} summaries</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>State</th>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>Items</th>
-								<th>Charges</th>
-								<th>Credits</th>
-								<th>Refunds</th>
-								<th>Tax</th>
-								<th>Total</th>
-								<th>Invoice</th>
-								<th>Updated</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.BillSummaries}}
 						<tbody>
 							{{range .BillSummaries}}
 								<tr>
@@ -1068,36 +1051,26 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div cla
 									<td>{{.UpdatedAt}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="11" class="empty-cell">No bill states</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.BillSummaries}}
 							{{end}}
 						</tbody>
 					</table>
 				</div>
 			</section>
 		{{end}}
-`))
+`)
 
-var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div class="page-heading">
+var invoicePageTemplate = newPageTemplate("invoice-page", `<div class="page-heading">
 			<div>
 				<h1>Invoice {{.InvoiceID}}</h1>
 			</div>
-			<div class="page-actions">
-				{{if .Loaded}}
-					<a class="button-link" href="{{.CSVPath}}">CSV</a>
-					<a class="button-link" href="{{.PDFPath}}">PDF</a>
-				{{end}}
-				<a class="button-link" href="/bills">Bills</a>
-			</div>
+			{{template "ui.action-bar" .Actions}}
 		</div>
 
-		{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+		{{template "ui.notices" .Notices}}
 
 		{{if not .WorkspaceReady}}
-			<section class="empty">
-				<h2>Workspace Required</h2>
-				<p>No workspace is open.</p>
-				<a class="button-link" href="/workspaces">Open Workspace</a>
-			</section>
+			{{template "ui.empty-state" .WorkspaceEmptyState}}
 		{{else if .Loaded}}
 			<section class="invoice-document">
 				<div class="invoice-title-row">
@@ -1155,18 +1128,8 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div
 					<span>{{len .ServiceSummaries}} services</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Service</th>
-								<th>Items</th>
-								<th>Charges</th>
-								<th>Credits</th>
-								<th>Refunds</th>
-								<th>Tax</th>
-								<th>Total</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.ServiceSummaries}}
 						<tbody>
 							{{range .ServiceSummaries}}
 								<tr>
@@ -1179,7 +1142,7 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div
 									<td><strong>{{.Total}}</strong></td>
 								</tr>
 							{{else}}
-								<tr><td colspan="7" class="empty-cell">No service detail</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.ServiceSummaries}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1192,18 +1155,8 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div
 					<span>{{len .AccountSummaries}} accounts</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Usage Account</th>
-								<th>Items</th>
-								<th>Charges</th>
-								<th>Credits</th>
-								<th>Refunds</th>
-								<th>Tax</th>
-								<th>Total</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.AccountSummaries}}
 						<tbody>
 							{{range .AccountSummaries}}
 								<tr>
@@ -1216,7 +1169,7 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div
 									<td><strong>{{.Total}}</strong></td>
 								</tr>
 							{{else}}
-								<tr><td colspan="7" class="empty-cell">No account detail</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.AccountSummaries}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1229,21 +1182,8 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div
 					<span>{{len .LineItems}} rows</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Resource</th>
-								<th>Account</th>
-								<th>Service</th>
-								<th>Type</th>
-								<th>Region</th>
-								<th>Usage</th>
-								<th>Window</th>
-								<th>Quantity</th>
-								<th>Rate</th>
-								<th>Cost</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.LineItems}}
 						<tbody>
 							{{range .LineItems}}
 								<tr>
@@ -1259,11 +1199,11 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div
 									<td><strong>{{.Cost}}</strong></td>
 								</tr>
 							{{else}}
-								<tr><td colspan="10" class="empty-cell">No invoice lines</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.LineItems}}
 							{{end}}
 						</tbody>
 					</table>
 				</div>
 			</section>
 		{{end}}
-`))
+`)

@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"html/template"
 	"net/http"
 )
 
@@ -17,6 +16,9 @@ type workspacePageData struct {
 	SuggestedPath        string
 	Flash                string
 	Error                string
+	Notices              []uiNoticeView
+	WorkspacePathField   uiInputFieldView
+	SubmitButton         uiSubmitButtonView
 }
 
 // newWorkspaceHandler builds the server-rendered workspace lifecycle page.
@@ -84,6 +86,9 @@ func (h workspaceHandler) renderWorkspaces(w http.ResponseWriter, status int, er
 		SuggestedPath:        suggestedPath,
 		Flash:                flashMessage,
 		Error:                errorMessage,
+		Notices:              uiNotices(flashMessage, errorMessage),
+		WorkspacePathField:   uiInputField("Workspace Directory", "workspace_path", suggestedPath, true),
+		SubmitButton:         uiSubmitButton("Open or Create Workspace"),
 	}
 
 	renderPage(w, status, pageLayoutOptions{
@@ -147,14 +152,13 @@ func resourceRoute(workspace *workspaceSession, handle func(resourceLabHandler, 
 	}
 }
 
-var workspacePageTemplate = template.Must(template.New("workspace-page").Parse(`<div class="page-heading">
+var workspacePageTemplate = newPageTemplate("workspace-page", `<div class="page-heading">
 			<div>
 				<h1>Workspaces</h1>
 			</div>
 		</div>
 
-		{{if .Flash}}<div class="notice success">{{.Flash}}</div>{{end}}
-		{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+		{{template "ui.notices" .Notices}}
 
 		<section class="panel workspace-panel">
 			<h2>Workspace</h2>
@@ -176,10 +180,8 @@ var workspacePageTemplate = template.Must(template.New("workspace-page").Parse(`
 				</div>
 			{{end}}
 			<form method="post" action="/workspaces/open" class="workspace-form">
-				<label>Workspace Directory
-					<input name="workspace_path" value="{{.SuggestedPath}}" required>
-				</label>
-				<button type="submit">Open or Create Workspace</button>
+				{{template "ui.input-field" .WorkspacePathField}}
+				{{template "ui.submit-button" .SubmitButton}}
 			</form>
 		</section>
-`))
+`)

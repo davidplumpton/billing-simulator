@@ -80,8 +80,13 @@ type resourcePageData struct {
 	WorkspaceReady             bool
 	Flash                      string
 	Error                      string
+	Notices                    []uiNoticeView
+	WorkspaceEmptyState        uiEmptyStateView
 	ClockCurrentTime           string
 	ClockBillingPeriod         string
+	ClockAmountField           uiInputFieldView
+	ClockUnitField             uiSelectFieldView
+	ClockSubmitButton          uiSubmitButtonView
 	DefaultClockAdvanceAmount  int
 	DefaultAccountID           string
 	DefaultPayerAccountID      string
@@ -104,6 +109,19 @@ type resourcePageData struct {
 	MonthEndCloses             []monthEndCloseView
 	IssuedBills                []issuedBillView
 	CatalogItems               []catalogItemView
+	Tables                     resourceTablesView
+}
+
+type resourceTablesView struct {
+	Inventory              uiTableView
+	RecentUsage            uiTableView
+	BillingPeriodSummaries uiTableView
+	DailyMeteringJobRuns   uiTableView
+	MonthEndCloses         uiTableView
+	IssuedBills            uiTableView
+	MeteringRecords        uiTableView
+	BillLineItems          uiTableView
+	PriceDimensions        uiTableView
 }
 
 type resourceView struct {
@@ -554,6 +572,7 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 		WorkspaceReady:             h.db != nil,
 		Flash:                      flashMessage,
 		Error:                      errorMessage,
+		WorkspaceEmptyState:        uiWorkspaceRequiredState(),
 		DefaultClockAdvanceAmount:  defaultClockAdvanceAmount,
 		DefaultAccountID:           defaultUsageAccountID,
 		DefaultPayerAccountID:      persistence.AnyCompanyRetailManagementAccountID,
@@ -567,6 +586,7 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 		UsagePresets:               usagePresets(),
 		UsageGenerationPresets:     usageGenerationPresets(),
 		ClockAdvanceUnits:          clockAdvanceUnitOptions(),
+		Tables:                     resourceTables(),
 	}
 	if h.db != nil {
 		if err := h.loadResourcePageData(r.Context(), &data); err != nil {
@@ -574,11 +594,45 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 			data.Error = err.Error()
 		}
 	}
+	data.Notices = uiNotices(data.Flash, data.Error)
+	data.ClockAmountField = uiInputField("Amount", "clock_advance_amount", strconv.Itoa(data.DefaultClockAdvanceAmount), true)
+	data.ClockAmountField.InputMode = "numeric"
+	data.ClockUnitField = clockAdvanceUnitSelectField(data.ClockAdvanceUnits)
+	data.ClockSubmitButton = uiSubmitButton("Advance Clock")
 
 	renderPage(w, status, pageLayoutOptions{
 		Title:     "Resources - AWS Billing Simulator",
 		ActiveNav: "resources",
 	}, resourcePageTemplate, data, "render resource page")
+}
+
+// resourceTables defines the shared dense-table metadata for the resource lab page.
+func resourceTables() resourceTablesView {
+	return resourceTablesView{
+		Inventory:              uiTable(uiTableHeaders("Name", "Account", "Service", "Region", "Size", "Status", "Tags", "Usage"), "No resources"),
+		RecentUsage:            uiTable(uiTableHeaders("Resource", "Billable Dimensions", "Window", "Quantity", "Estimated Cost", "Tags Snapshot"), "No usage events"),
+		BillingPeriodSummaries: uiTable(uiTableHeaders("Period", "Payer", "Usage Account", "Service", "Status", "Items", "Cost", "Refreshed"), "No billing summary"),
+		DailyMeteringJobRuns:   uiTable(uiTableHeaders("Completed", "Trigger", "Clock", "Payer", "Metering", "Line Items", "Summaries"), "No daily metering jobs"),
+		MonthEndCloses:         uiTable(uiTableHeaders("Closed", "Period", "Payer", "Status", "Metering", "Line Items", "Final Cost", "Summaries"), "No closed billing periods"),
+		IssuedBills:            uiTable(uiTableHeaders("Bill", "Period", "Payer", "State", "Items", "Charges", "Tax", "Total", "Invoice", "Due"), "No issued bills"),
+		MeteringRecords:        uiTable(uiTableHeaders("Resource", "Billable Dimensions", "Window", "Quantity", "Tags Snapshot"), "No metering records"),
+		BillLineItems:          uiTable(uiTableHeaders("Resource", "Period", "Status", "Accounts", "Service", "Description", "Usage", "Rate", "Cost", "Tags Snapshot"), "No bill line items"),
+		PriceDimensions:        uiTable(uiTableHeaders("Service", "Billable Dimensions", "Unit", "Rate", "Estimate"), "No price dimensions"),
+	}
+}
+
+// clockAdvanceUnitSelectField prepares simulator-clock units for the shared select partial.
+func clockAdvanceUnitSelectField(units []clockAdvanceUnitView) uiSelectFieldView {
+	options := make([]uiSelectOptionView, 0, len(units))
+	for _, unit := range units {
+		options = append(options, uiSelectOptionView{Value: string(unit.Key), Label: unit.Label})
+	}
+	return uiSelectFieldView{
+		Label:    "Unit",
+		Name:     "clock_advance_unit",
+		Options:  options,
+		Required: true,
+	}
 }
 
 func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *resourcePageData) error {
@@ -1356,21 +1410,16 @@ func urlQueryEscape(value string) string {
 	return strings.ReplaceAll(template.URLQueryEscaper(value), "+", "%20")
 }
 
-var resourcePageTemplate = template.Must(template.New("resource-page").Parse(`<div class="page-heading">
+var resourcePageTemplate = newPageTemplate("resource-page", `<div class="page-heading">
 			<div>
 				<h1>Resources</h1>
 			</div>
 		</div>
 
-		{{if .Flash}}<div class="notice success">{{.Flash}}</div>{{end}}
-		{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+		{{template "ui.notices" .Notices}}
 
 		{{if not .WorkspaceReady}}
-			<section class="empty">
-				<h2>Workspace Required</h2>
-				<p>No workspace is open.</p>
-				<a class="button-link" href="/workspaces">Open Workspace</a>
-			</section>
+			{{template "ui.empty-state" .WorkspaceEmptyState}}
 		{{else}}
 			<section class="clock-strip">
 				<div>
@@ -1379,15 +1428,9 @@ var resourcePageTemplate = template.Must(template.New("resource-page").Parse(`<d
 					<small>{{.ClockBillingPeriod}}</small>
 				</div>
 				<form method="post" action="/clock/advance" class="clock-form">
-					<label>Amount
-						<input name="clock_advance_amount" value="{{.DefaultClockAdvanceAmount}}" inputmode="numeric" required>
-					</label>
-					<label>Unit
-						<select name="clock_advance_unit">
-							{{range .ClockAdvanceUnits}}<option value="{{.Key}}">{{.Label}}</option>{{end}}
-						</select>
-					</label>
-					<button type="submit">Advance Clock</button>
+					{{template "ui.input-field" .ClockAmountField}}
+					{{template "ui.select-field" .ClockUnitField}}
+					{{template "ui.submit-button" .ClockSubmitButton}}
 				</form>
 			</section>
 
@@ -1537,19 +1580,8 @@ owner=web-platform</textarea>
 					<span>{{len .Resources}} resources</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Name</th>
-								<th>Account</th>
-								<th>Service</th>
-								<th>Region</th>
-								<th>Size</th>
-								<th>Status</th>
-								<th>Tags</th>
-								<th>Usage</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.Inventory}}
 						<tbody>
 							{{range .Resources}}
 								<tr>
@@ -1563,7 +1595,7 @@ owner=web-platform</textarea>
 									<td>{{.UsageEventCount}}{{if .LastUsageEndTime}}<small>{{.LastUsageEndTime}}</small>{{end}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="8" class="empty-cell">No resources</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.Inventory}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1576,17 +1608,8 @@ owner=web-platform</textarea>
 					<span>{{len .UsageEvents}} events</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Resource</th>
-								<th>Billable Dimensions</th>
-								<th>Window</th>
-								<th>Quantity</th>
-								<th>Estimated Cost</th>
-								<th>Tags Snapshot</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.RecentUsage}}
 						<tbody>
 							{{range .UsageEvents}}
 								<tr>
@@ -1598,7 +1621,7 @@ owner=web-platform</textarea>
 									<td>{{template "tags" .Tags}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="6" class="empty-cell">No usage events</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.RecentUsage}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1611,19 +1634,8 @@ owner=web-platform</textarea>
 					<span>{{len .BillingPeriodSummaries}} summaries</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>Usage Account</th>
-								<th>Service</th>
-								<th>Status</th>
-								<th>Items</th>
-								<th>Cost</th>
-								<th>Refreshed</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.BillingPeriodSummaries}}
 						<tbody>
 							{{range .BillingPeriodSummaries}}
 								<tr>
@@ -1637,7 +1649,7 @@ owner=web-platform</textarea>
 									<td>{{.RefreshedAt}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="8" class="empty-cell">No billing summary</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.BillingPeriodSummaries}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1650,18 +1662,8 @@ owner=web-platform</textarea>
 					<span>{{len .DailyMeteringJobRuns}} runs</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Completed</th>
-								<th>Trigger</th>
-								<th>Clock</th>
-								<th>Payer</th>
-								<th>Metering</th>
-								<th>Line Items</th>
-								<th>Summaries</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.DailyMeteringJobRuns}}
 						<tbody>
 							{{range .DailyMeteringJobRuns}}
 								<tr>
@@ -1674,7 +1676,7 @@ owner=web-platform</textarea>
 									<td>{{.SummariesRefreshed}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="7" class="empty-cell">No daily metering jobs</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.DailyMeteringJobRuns}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1687,19 +1689,8 @@ owner=web-platform</textarea>
 					<span>{{len .MonthEndCloses}} closes</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Closed</th>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>Status</th>
-								<th>Metering</th>
-								<th>Line Items</th>
-								<th>Final Cost</th>
-								<th>Summaries</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.MonthEndCloses}}
 						<tbody>
 							{{range .MonthEndCloses}}
 								<tr>
@@ -1713,7 +1704,7 @@ owner=web-platform</textarea>
 									<td>{{.SummariesRefreshed}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="8" class="empty-cell">No closed billing periods</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.MonthEndCloses}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1726,21 +1717,8 @@ owner=web-platform</textarea>
 					<span>{{len .IssuedBills}} bills</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Bill</th>
-								<th>Period</th>
-								<th>Payer</th>
-								<th>State</th>
-								<th>Items</th>
-								<th>Charges</th>
-								<th>Tax</th>
-								<th>Total</th>
-								<th>Invoice</th>
-								<th>Due</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.IssuedBills}}
 						<tbody>
 							{{range .IssuedBills}}
 								<tr>
@@ -1756,7 +1734,7 @@ owner=web-platform</textarea>
 									<td>{{.InvoiceDueDate}}<small>{{.InvoiceDate}}</small></td>
 								</tr>
 							{{else}}
-								<tr><td colspan="10" class="empty-cell">No issued bills</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.IssuedBills}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1769,16 +1747,8 @@ owner=web-platform</textarea>
 					<span>{{len .MeteringRecords}} records</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Resource</th>
-								<th>Billable Dimensions</th>
-								<th>Window</th>
-								<th>Quantity</th>
-								<th>Tags Snapshot</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.MeteringRecords}}
 						<tbody>
 							{{range .MeteringRecords}}
 								<tr>
@@ -1789,7 +1759,7 @@ owner=web-platform</textarea>
 									<td>{{template "tags" .Tags}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="5" class="empty-cell">No metering records</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.MeteringRecords}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1802,21 +1772,8 @@ owner=web-platform</textarea>
 					<span>{{len .BillLineItems}} items</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Resource</th>
-								<th>Period</th>
-								<th>Status</th>
-								<th>Accounts</th>
-								<th>Service</th>
-								<th>Description</th>
-								<th>Usage</th>
-								<th>Rate</th>
-								<th>Cost</th>
-								<th>Tags Snapshot</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.BillLineItems}}
 						<tbody>
 							{{range .BillLineItems}}
 								<tr>
@@ -1832,7 +1789,7 @@ owner=web-platform</textarea>
 									<td>{{template "tags" .Tags}}</td>
 								</tr>
 							{{else}}
-								<tr><td colspan="10" class="empty-cell">No bill line items</td></tr>
+								{{template "ui.dense-table-empty-row" $.Tables.BillLineItems}}
 							{{end}}
 						</tbody>
 					</table>
@@ -1845,16 +1802,8 @@ owner=web-platform</textarea>
 					<span>{{len .CatalogItems}} rates</span>
 				</div>
 				<div class="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th>Service</th>
-								<th>Billable Dimensions</th>
-								<th>Unit</th>
-								<th>Rate</th>
-								<th>Estimate</th>
-							</tr>
-						</thead>
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.PriceDimensions}}
 						<tbody>
 							{{range .CatalogItems}}
 								<tr>
@@ -1880,4 +1829,4 @@ owner=web-platform</textarea>
 		<span class="muted">untagged</span>
 	{{end}}
 {{end}}
-`))
+`)

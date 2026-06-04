@@ -200,6 +200,106 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	}
 }
 
+func TestReusableUITemplatePartialsRenderAcrossPages(t *testing.T) {
+	t.Parallel()
+
+	workspaceMux := httptest.NewServer(newWorkspaceMux(&workspaceSession{}))
+	t.Cleanup(workspaceMux.Close)
+	workspaceClient := workspaceMux.Client()
+
+	resp, err := workspaceClient.Get(workspaceMux.URL + "/workspaces?flash=Saved")
+	if err != nil {
+		t.Fatalf("GET /workspaces error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /workspaces status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<div class="notice success">Saved</div>`,
+		`<label class="form-row">Workspace Directory`,
+		`<button type="submit">Open or Create Workspace</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /workspaces missing reusable UI fragment %q: %s", want, body)
+		}
+	}
+
+	resp, err = workspaceClient.Get(workspaceMux.URL + "/resources")
+	if err != nil {
+		t.Fatalf("GET /resources without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, `<section class="empty">`) ||
+		!strings.Contains(body, `<a class="button-link" href="/workspaces">Open Workspace</a>`) {
+		t.Fatalf("GET /resources missing shared empty state: %s", body)
+	}
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	appMux := httptest.NewServer(newMux(db))
+	t.Cleanup(appMux.Close)
+	appClient := appMux.Client()
+
+	resp, err = appClient.Get(appMux.URL + "/resources")
+	if err != nil {
+		t.Fatalf("GET /resources error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<label class="form-row">Amount`,
+		`<table class="dense-table">`,
+		`<th>Name</th>`,
+		`colspan="8" class="empty-cell">No resources</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /resources missing reusable UI fragment %q: %s", want, body)
+		}
+	}
+
+	resp, err = appClient.Get(appMux.URL + "/bills")
+	if err != nil {
+		t.Fatalf("GET /bills error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, `<th>Rounding Residual</th>`) ||
+		!strings.Contains(body, `colspan="16" class="empty-cell">No issued bills to reconcile</td>`) {
+		t.Fatalf("GET /bills missing shared dense-table fragments: %s", body)
+	}
+
+	resp, err = appClient.Get(appMux.URL + "/invoices/SIM-INV-MISSING")
+	if err != nil {
+		t.Fatalf("GET missing invoice error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET missing invoice status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotFound, body)
+	}
+	if !strings.Contains(body, `<div class="page-actions">`) ||
+		!strings.Contains(body, `<a class="button-link" href="/bills">Bills</a>`) ||
+		!strings.Contains(body, `<div class="notice error">Invoice not found.</div>`) {
+		t.Fatalf("GET missing invoice missing shared action bar or validation notice: %s", body)
+	}
+}
+
 func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
 	t.Parallel()
 

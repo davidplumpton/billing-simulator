@@ -217,6 +217,92 @@ func TestMonthEndCloseRejectsCrossPeriodLineItems(t *testing.T) {
 	}
 }
 
+func TestMonthEndCloseRejectsPayerMismatchedPrepricedLineItems(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	clockRepo := NewSimulatorClockRepository(db)
+	jobRepo := NewDailyMeteringJobRepository(db)
+	closeRepo := NewMonthEndCloseRepository(db)
+
+	resource, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-month-close-payer-mismatch",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonEC2,
+		ResourceType: "ec2_instance",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-month-close-payer-mismatch",
+		ResourceID:          resource.ID,
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if _, err := clockRepo.Set(ctx, "2026-02-02T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock daily) error = %v", err)
+	}
+	daily, err := jobRepo.Run(ctx, DailyMeteringJobRequest{
+		Trigger:        DailyMeteringJobTriggerOnDemand,
+		PayerAccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("Run(daily metering) error = %v", err)
+	}
+	if daily.MeteringRecordsCreated != 1 || daily.BillLineItemsCreated != 2 {
+		t.Fatalf("Run(daily metering) = %+v, want one metering record plus usage and Support items", daily)
+	}
+	items, err := NewBillLineItemRepository(db).ListBillLineItems(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListBillLineItems() error = %v", err)
+	}
+	usageItem := requireBillLineItemByService(t, items, serviceAmazonEC2)
+	if usageItem.PayerAccountID != "111122223333" || usageItem.UsageAccountID != "111122223333" {
+		t.Fatalf("usage bill line item accounts = payer %s usage %s, want member-payer prepriced item", usageItem.PayerAccountID, usageItem.UsageAccountID)
+	}
+	if _, err := clockRepo.Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock close) error = %v", err)
+	}
+
+	_, err = closeRepo.ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: "999988887777",
+		InvoiceDueDays: 10,
+	})
+	if err == nil {
+		t.Fatal("ClosePreviousPeriod(payer mismatch) error = nil, want rejection")
+	}
+	for _, want := range []string{"payer-mismatched", usageItem.ID, "111122223333", "999988887777", "2026-02-01 to 2026-03-01"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ClosePreviousPeriod(payer mismatch) error = %q, want %q", err.Error(), want)
+		}
+	}
+	var closeCount, billCount, finalLineItemCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM billing_period_closes`).Scan(&closeCount); err != nil {
+		t.Fatalf("count billing_period_closes: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bills`).Scan(&billCount); err != nil {
+		t.Fatalf("count bills: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = ?`, billLineItemStatusFinal).Scan(&finalLineItemCount); err != nil {
+		t.Fatalf("count final bill_line_items: %v", err)
+	}
+	if closeCount != 0 || billCount != 0 || finalLineItemCount != 0 {
+		t.Fatalf("close side effects = closes %d bills %d final line items %d, want none", closeCount, billCount, finalLineItemCount)
+	}
+}
+
 func TestMonthEndCloseRejectsNilDB(t *testing.T) {
 	t.Parallel()
 

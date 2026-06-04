@@ -155,6 +155,9 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 	if err != nil {
 		return MonthEndCloseResult{}, err
 	}
+	if err := rejectPayerMismatchedLineItems(ctx, r.db, request); err != nil {
+		return MonthEndCloseResult{}, err
+	}
 	lineItemResult, err := r.lineItems.GenerateBillLineItemsThrough(ctx, BillLineItemGenerationRequest{
 		PayerAccountID: request.PayerAccountID,
 		LineItemStatus: billLineItemStatusEstimated,
@@ -181,6 +184,9 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 			return nil
 		}
 		if err := rejectCrossPeriodLineItems(ctx, tx, request); err != nil {
+			return err
+		}
+		if err := rejectPayerMismatchedLineItems(ctx, tx, request); err != nil {
 			return err
 		}
 		if _, err := finalizeEstimatedLineItems(ctx, tx, request); err != nil {
@@ -605,6 +611,56 @@ func rejectCrossPeriodLineItems(ctx context.Context, tx *sql.Tx, request MonthEn
 		return nil
 	}
 	return fmt.Errorf("check cross-period bill line items: %w", err)
+}
+
+type monthEndCloseQueryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// rejectPayerMismatchedLineItems prevents closing a consolidated payer while usage was already priced to another payer.
+func rejectPayerMismatchedLineItems(ctx context.Context, db monthEndCloseQueryRower, request MonthEndCloseRequest) error {
+	var id, existingPayerAccountID, usageAccountID string
+	err := db.QueryRowContext(
+		ctx,
+		`SELECT
+			li.id,
+			li.payer_account_id,
+			li.usage_account_id
+		 FROM bill_line_items li
+		 LEFT JOIN accounts usage_account ON usage_account.id = li.usage_account_id
+		 WHERE li.billing_period_start = ?
+		   AND li.billing_period_end = ?
+		   AND li.line_item_type = ?
+		   AND li.payer_account_id <> ?
+		   AND (
+			li.usage_account_id = ?
+			OR usage_account.payer_account_id = ?
+			OR usage_account.id IS NULL
+		   )
+		 ORDER BY li.usage_start_time, li.id
+		 LIMIT 1`,
+		request.PeriodStart,
+		request.PeriodEnd,
+		billLineItemTypeUsage,
+		request.PayerAccountID,
+		request.PayerAccountID,
+		request.PayerAccountID,
+	).Scan(&id, &existingPayerAccountID, &usageAccountID)
+	if err == nil {
+		return fmt.Errorf(
+			"payer-mismatched bill line item %q for usage account %s is priced to payer %s, but month-end close requested payer %s for %s to %s; close with the existing payer or reprice usage before closing",
+			id,
+			usageAccountID,
+			existingPayerAccountID,
+			request.PayerAccountID,
+			request.PeriodStart,
+			request.PeriodEnd,
+		)
+	}
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	return fmt.Errorf("check payer-mismatched bill line items: %w", err)
 }
 
 func finalizeEstimatedLineItems(ctx context.Context, tx *sql.Tx, request MonthEndCloseRequest) (int, error) {

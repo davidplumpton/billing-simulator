@@ -200,6 +200,158 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	}
 }
 
+func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state", "app.json")
+	workspacePath := filepath.Join(root, "ui-shell-workspace")
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.StatePath = statePath
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Get(server.URL() + "/workspaces")
+	if err != nil {
+		t.Fatalf("GET /workspaces error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /workspaces status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Workspaces - AWS Billing Simulator</title>`,
+		`<link rel="stylesheet" href="/assets/app.css">`,
+		`<script src="/assets/app.js" defer></script>`,
+		`<a class="active" aria-current="page" href="/workspaces">Workspaces</a>`,
+		"No workspace open",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /workspaces missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/workspaces/open", url.Values{
+		"workspace_path": {workspacePath},
+	})
+	if err != nil {
+		t.Fatalf("POST /workspaces/open error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /workspaces/open status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Resources - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/resources">Resources</a>`,
+		`data-partial-form="resources"`,
+		`<table class="dense-table">`,
+		"Create Resource",
+		"Opened workspace",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("workspace open response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Workspace Required") {
+		t.Fatalf("workspace open response still requires a workspace: %s", body)
+	}
+
+	pages := []struct {
+		path  string
+		wants []string
+	}{
+		{
+			path: "/organization",
+			wants: []string{
+				`<title>Organization - AWS Billing Simulator</title>`,
+				`<a class="active" aria-current="page" href="/organization">Organization</a>`,
+				"AnyCompany Retail",
+				"Account Detail",
+			},
+		},
+		{
+			path: "/bills",
+			wants: []string{
+				`<title>Bills - AWS Billing Simulator</title>`,
+				`<a class="active" aria-current="page" href="/bills">Bills</a>`,
+				`data-partial-form="bills"`,
+				"No issued bills to reconcile",
+			},
+		},
+	}
+	for _, page := range pages {
+		resp, err := client.Get(server.URL() + page.path)
+		if err != nil {
+			t.Fatalf("GET %s error = %v", page.path, err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d; body=%s", page.path, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "<!doctype html>") || !strings.Contains(body, `<main class="page`) {
+			t.Fatalf("GET %s missing shared document shell: %s", page.path, body)
+		}
+		for _, want := range page.wants {
+			if !strings.Contains(body, want) {
+				t.Fatalf("GET %s missing %q: %s", page.path, want, body)
+			}
+		}
+	}
+
+	assets := []struct {
+		path        string
+		contentType string
+		wants       []string
+	}{
+		{
+			path:        "/assets/app.css",
+			contentType: "text/css",
+			wants:       []string{".table-wrap", "@media (max-width: 980px)"},
+		},
+		{
+			path:        "/assets/app.js",
+			contentType: "text/javascript",
+			wants:       []string{"data-partial-form", "X-AWS-Billing-Simulator-Fragment"},
+		},
+	}
+	for _, asset := range assets {
+		resp, err := client.Get(server.URL() + asset.path)
+		if err != nil {
+			t.Fatalf("GET %s error = %v", asset.path, err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d; body=%s", asset.path, resp.StatusCode, http.StatusOK, body)
+		}
+		if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, asset.contentType) {
+			t.Fatalf("GET %s Content-Type = %q, want prefix %q", asset.path, got, asset.contentType)
+		}
+		for _, want := range asset.wants {
+			if !strings.Contains(body, want) {
+				t.Fatalf("GET %s missing %q: %s", asset.path, want, body)
+			}
+		}
+	}
+}
+
 func TestReusableUITemplatePartialsRenderAcrossPages(t *testing.T) {
 	t.Parallel()
 

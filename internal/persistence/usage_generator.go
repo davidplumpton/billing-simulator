@@ -52,10 +52,14 @@ type UsageGenerationPatternOption struct {
 
 // UsageGenerationRequest describes deterministic usage to emit for one resource.
 type UsageGenerationRequest struct {
-	ResourceID string
-	Pattern    UsageGenerationPattern
-	StartDate  string
-	Days       int
+	ResourceID            string
+	Pattern               UsageGenerationPattern
+	StartDate             string
+	Days                  int
+	EventSource           string
+	ScenarioRunID         string
+	ScenarioEventID       string
+	ScenarioEventSequence int
 }
 
 // UsageGenerationResult returns the resource snapshot and generated usage events.
@@ -113,7 +117,12 @@ func (r ResourceUsageRepository) GenerateUsage(ctx context.Context, request Usag
 		Events:   make([]UsageEvent, 0, len(specs)),
 	}
 	for _, spec := range specs {
-		event, err := r.RecordGeneratedUsageEvent(ctx, spec.createRequest(resource.ID, request.Pattern))
+		createRequest := spec.createRequest(resource.ID, request.Pattern)
+		createRequest.EventSource = request.EventSource
+		createRequest.ScenarioRunID = request.ScenarioRunID
+		createRequest.ScenarioEventID = request.ScenarioEventID
+		createRequest.ScenarioEventSequence = request.ScenarioEventSequence
+		event, err := r.RecordGeneratedUsageEvent(ctx, createRequest)
 		if err != nil {
 			return UsageGenerationResult{}, err
 		}
@@ -126,6 +135,9 @@ func normalizeUsageGenerationRequest(request UsageGenerationRequest) UsageGenera
 	request.ResourceID = strings.TrimSpace(request.ResourceID)
 	request.Pattern = UsageGenerationPattern(strings.TrimSpace(string(request.Pattern)))
 	request.StartDate = strings.TrimSpace(request.StartDate)
+	request.EventSource = strings.TrimSpace(request.EventSource)
+	request.ScenarioRunID = strings.TrimSpace(request.ScenarioRunID)
+	request.ScenarioEventID = strings.TrimSpace(request.ScenarioEventID)
 	return request
 }
 

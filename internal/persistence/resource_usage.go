@@ -18,39 +18,44 @@ const (
 
 // Resource stores one synthetic billable resource in the learner workspace.
 type Resource struct {
-	ID              string
-	AccountID       string
-	RegionCode      string
-	ServiceCode     string
-	ResourceType    string
-	ResourceName    string
-	Status          string
-	CreatedAt       string
-	StartedAt       string
-	StoppedAt       string
-	DeletedAt       string
-	Attributes      map[string]string
-	EventSource     string
-	ScenarioRunID   string
-	ScenarioEventID string
-	Notes           string
+	ID                    string
+	AccountID             string
+	RegionCode            string
+	ServiceCode           string
+	ResourceType          string
+	ResourceName          string
+	Status                string
+	CreatedAt             string
+	StartedAt             string
+	StoppedAt             string
+	DeletedAt             string
+	Attributes            map[string]string
+	EventSource           string
+	ScenarioRunID         string
+	ScenarioEventID       string
+	ScenarioEventSequence int
+	Notes                 string
 }
 
 // ResourceCreateRequest describes a learner-created synthetic resource.
 type ResourceCreateRequest struct {
-	ID           string
-	AccountID    string
-	RegionCode   string
-	ServiceCode  string
-	ResourceType string
-	ResourceName string
-	Status       string
-	StartedAt    string
-	StoppedAt    string
-	DeletedAt    string
-	Attributes   map[string]string
-	Tags         map[string]string
-	Notes        string
+	ID                    string
+	AccountID             string
+	RegionCode            string
+	ServiceCode           string
+	ResourceType          string
+	ResourceName          string
+	Status                string
+	StartedAt             string
+	StoppedAt             string
+	DeletedAt             string
+	Attributes            map[string]string
+	Tags                  map[string]string
+	Notes                 string
+	EventSource           string
+	ScenarioRunID         string
+	ScenarioEventID       string
+	ScenarioEventSequence int
 }
 
 // ResourceTag stores one active or historical resource tag value.
@@ -65,45 +70,56 @@ type ResourceTag struct {
 
 // ResourceTagCreateRequest describes a learner tag added to a resource.
 type ResourceTagCreateRequest struct {
-	ID         string
-	ResourceID string
-	Key        string
-	Value      string
-	AppliedAt  string
+	ID                    string
+	ResourceID            string
+	Key                   string
+	Value                 string
+	AppliedAt             string
+	EventSource           string
+	ScenarioRunID         string
+	ScenarioEventID       string
+	ScenarioEventSequence int
 }
 
 // UsageEvent stores one generated billable usage measurement.
 type UsageEvent struct {
-	ID                  string
-	ResourceID          string
-	AccountID           string
-	ServiceCode         string
-	UsageType           string
-	Operation           string
-	RegionCode          string
-	UsageStartTime      string
-	UsageEndTime        string
-	UsageQuantityMicros int64
-	UsageUnit           string
-	Attributes          map[string]string
-	TagSnapshot         map[string]string
-	EventSource         string
-	CreatedAt           string
+	ID                    string
+	ResourceID            string
+	AccountID             string
+	ServiceCode           string
+	UsageType             string
+	Operation             string
+	RegionCode            string
+	UsageStartTime        string
+	UsageEndTime          string
+	UsageQuantityMicros   int64
+	UsageUnit             string
+	Attributes            map[string]string
+	TagSnapshot           map[string]string
+	EventSource           string
+	ScenarioRunID         string
+	ScenarioEventID       string
+	ScenarioEventSequence int
+	CreatedAt             string
 }
 
 // UsageEventCreateRequest describes a learner-generated usage event.
 type UsageEventCreateRequest struct {
-	ID                  string
-	ResourceID          string
-	ServiceCode         string
-	UsageType           string
-	Operation           string
-	RegionCode          string
-	UsageStartTime      string
-	UsageEndTime        string
-	UsageQuantityMicros int64
-	UsageUnit           string
-	Attributes          map[string]string
+	ID                    string
+	ResourceID            string
+	ServiceCode           string
+	UsageType             string
+	Operation             string
+	RegionCode            string
+	UsageStartTime        string
+	UsageEndTime          string
+	UsageQuantityMicros   int64
+	UsageUnit             string
+	Attributes            map[string]string
+	EventSource           string
+	ScenarioRunID         string
+	ScenarioEventID       string
+	ScenarioEventSequence int
 }
 
 // ResourceSummary combines a resource with its active tags and usage rollup.
@@ -130,6 +146,9 @@ func (r ResourceUsageRepository) CreateResource(ctx context.Context, request Res
 		return Resource{}, fmt.Errorf("database handle is required")
 	}
 	request = normalizeResourceCreateRequest(request)
+	if request.EventSource == "" {
+		request.EventSource = "learner"
+	}
 	if err := validateResourceCreateRequest(request); err != nil {
 		return Resource{}, err
 	}
@@ -163,8 +182,11 @@ func (r ResourceUsageRepository) CreateResource(ctx context.Context, request Res
 				deleted_at,
 				attributes_json,
 				event_source,
+				scenario_run_id,
+				scenario_event_id,
+				scenario_event_sequence,
 				notes
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			request.ID,
 			request.AccountID,
 			request.RegionCode,
@@ -176,7 +198,10 @@ func (r ResourceUsageRepository) CreateResource(ctx context.Context, request Res
 			nullStringArg(request.StoppedAt),
 			nullStringArg(request.DeletedAt),
 			attributesJSON,
-			"learner",
+			request.EventSource,
+			nullStringArg(request.ScenarioRunID),
+			nullStringArg(request.ScenarioEventID),
+			nullIntArg(request.ScenarioEventSequence),
 			request.Notes,
 		)
 		if err != nil {
@@ -189,10 +214,14 @@ func (r ResourceUsageRepository) CreateResource(ctx context.Context, request Res
 				return err
 			}
 			if err := insertResourceTag(ctx, tx, ResourceTagCreateRequest{
-				ID:         tagID,
-				ResourceID: request.ID,
-				Key:        key,
-				Value:      value,
+				ID:                    tagID,
+				ResourceID:            request.ID,
+				Key:                   key,
+				Value:                 value,
+				EventSource:           request.EventSource,
+				ScenarioRunID:         request.ScenarioRunID,
+				ScenarioEventID:       request.ScenarioEventID,
+				ScenarioEventSequence: request.ScenarioEventSequence,
 			}); err != nil {
 				return err
 			}
@@ -216,6 +245,9 @@ func (r ResourceUsageRepository) AddTag(ctx context.Context, request ResourceTag
 		return ResourceTag{}, fmt.Errorf("database handle is required")
 	}
 	request = normalizeResourceTagCreateRequest(request)
+	if request.EventSource == "" {
+		request.EventSource = "learner"
+	}
 	if err := validateResourceTagCreateRequest(request); err != nil {
 		return ResourceTag{}, err
 	}
@@ -255,6 +287,9 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 		return UsageEvent{}, fmt.Errorf("database handle is required")
 	}
 	request = normalizeUsageEventCreateRequest(request)
+	if request.EventSource == "" {
+		request.EventSource = eventSource
+	}
 	if err := validateUsageEventCreateRequest(request); err != nil {
 		return UsageEvent{}, err
 	}
@@ -305,8 +340,11 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 			usage_unit,
 			attributes_json,
 			tag_snapshot_json,
-			event_source
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			event_source,
+			scenario_run_id,
+			scenario_event_id,
+			scenario_event_sequence
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if ignoreDuplicateID {
 		query += `
 		ON CONFLICT(id) DO NOTHING`
@@ -328,7 +366,10 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 		request.UsageUnit,
 		attributesJSON,
 		tagSnapshotJSON,
-		eventSource,
+		request.EventSource,
+		nullStringArg(request.ScenarioRunID),
+		nullStringArg(request.ScenarioEventID),
+		nullIntArg(request.ScenarioEventSequence),
 	)
 	if err != nil {
 		return UsageEvent{}, fmt.Errorf("insert usage event %q: %w", request.ID, err)
@@ -349,6 +390,7 @@ func (r ResourceUsageRepository) GetResource(ctx context.Context, id string) (Re
 
 	var resource Resource
 	var startedAt, stoppedAt, deletedAt, scenarioRunID, scenarioEventID sql.NullString
+	var scenarioEventSequence sql.NullInt64
 	var attributesJSON string
 	err := r.db.QueryRowContext(
 		ctx,
@@ -368,6 +410,7 @@ func (r ResourceUsageRepository) GetResource(ctx context.Context, id string) (Re
 			event_source,
 			scenario_run_id,
 			scenario_event_id,
+			scenario_event_sequence,
 			notes
 		 FROM resources
 		 WHERE id = ?`,
@@ -388,6 +431,7 @@ func (r ResourceUsageRepository) GetResource(ctx context.Context, id string) (Re
 		&resource.EventSource,
 		&scenarioRunID,
 		&scenarioEventID,
+		&scenarioEventSequence,
 		&resource.Notes,
 	)
 	if err != nil {
@@ -401,6 +445,7 @@ func (r ResourceUsageRepository) GetResource(ctx context.Context, id string) (Re
 	resource.DeletedAt = nullStringValue(deletedAt)
 	resource.ScenarioRunID = nullStringValue(scenarioRunID)
 	resource.ScenarioEventID = nullStringValue(scenarioEventID)
+	resource.ScenarioEventSequence = nullIntValue(scenarioEventSequence)
 	resource.Attributes, err = unmarshalStringMap(attributesJSON)
 	if err != nil {
 		return Resource{}, fmt.Errorf("decode resource attributes for %q: %w", id, err)
@@ -514,6 +559,9 @@ func (r ResourceUsageRepository) ListUsageEvents(ctx context.Context, limit int)
 			attributes_json,
 			tag_snapshot_json,
 			event_source,
+			scenario_run_id,
+			scenario_event_id,
+			scenario_event_sequence,
 			created_at
 		 FROM usage_events
 		 ORDER BY usage_start_time DESC, id DESC
@@ -574,6 +622,9 @@ func (r ResourceUsageRepository) getUsageEvent(ctx context.Context, id string) (
 			attributes_json,
 			tag_snapshot_json,
 			event_source,
+			scenario_run_id,
+			scenario_event_id,
+			scenario_event_sequence,
 			created_at
 		 FROM usage_events
 		 WHERE id = ?`,
@@ -624,14 +675,20 @@ func insertResourceTag(ctx context.Context, tx *sql.Tx, request ResourceTagCreat
 			tag_key,
 			tag_value,
 			applied_at,
-			event_source
-		) VALUES (?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?)`,
+			event_source,
+			scenario_run_id,
+			scenario_event_id,
+			scenario_event_sequence
+		) VALUES (?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?, ?, ?, ?)`,
 		request.ID,
 		request.ResourceID,
 		request.Key,
 		request.Value,
 		appliedAt,
-		"learner",
+		request.EventSource,
+		nullStringArg(request.ScenarioRunID),
+		nullStringArg(request.ScenarioEventID),
+		nullIntArg(request.ScenarioEventSequence),
 	)
 	if err != nil {
 		return fmt.Errorf("insert resource tag %q for resource %q: %w", request.Key, request.ResourceID, err)
@@ -646,6 +703,8 @@ type usageEventRow interface {
 func scanUsageEvent(row usageEventRow) (UsageEvent, error) {
 	var event UsageEvent
 	var attributesJSON, tagSnapshotJSON string
+	var scenarioRunID, scenarioEventID sql.NullString
+	var scenarioEventSequence sql.NullInt64
 	if err := row.Scan(
 		&event.ID,
 		&event.ResourceID,
@@ -661,6 +720,9 @@ func scanUsageEvent(row usageEventRow) (UsageEvent, error) {
 		&attributesJSON,
 		&tagSnapshotJSON,
 		&event.EventSource,
+		&scenarioRunID,
+		&scenarioEventID,
+		&scenarioEventSequence,
 		&event.CreatedAt,
 	); err != nil {
 		return UsageEvent{}, fmt.Errorf("scan usage event: %w", err)
@@ -675,6 +737,9 @@ func scanUsageEvent(row usageEventRow) (UsageEvent, error) {
 	if err != nil {
 		return UsageEvent{}, fmt.Errorf("decode usage tag snapshot for %q: %w", event.ID, err)
 	}
+	event.ScenarioRunID = nullStringValue(scenarioRunID)
+	event.ScenarioEventID = nullStringValue(scenarioEventID)
+	event.ScenarioEventSequence = nullIntValue(scenarioEventSequence)
 	return event, nil
 }
 
@@ -690,6 +755,9 @@ func normalizeResourceCreateRequest(request ResourceCreateRequest) ResourceCreat
 	request.StoppedAt = strings.TrimSpace(request.StoppedAt)
 	request.DeletedAt = strings.TrimSpace(request.DeletedAt)
 	request.Notes = strings.TrimSpace(request.Notes)
+	request.EventSource = strings.TrimSpace(request.EventSource)
+	request.ScenarioRunID = strings.TrimSpace(request.ScenarioRunID)
+	request.ScenarioEventID = strings.TrimSpace(request.ScenarioEventID)
 	if request.Status == "" {
 		request.Status = "active"
 	}
@@ -704,6 +772,9 @@ func normalizeResourceTagCreateRequest(request ResourceTagCreateRequest) Resourc
 	request.Key = strings.TrimSpace(request.Key)
 	request.Value = strings.TrimSpace(request.Value)
 	request.AppliedAt = strings.TrimSpace(request.AppliedAt)
+	request.EventSource = strings.TrimSpace(request.EventSource)
+	request.ScenarioRunID = strings.TrimSpace(request.ScenarioRunID)
+	request.ScenarioEventID = strings.TrimSpace(request.ScenarioEventID)
 	return request
 }
 
@@ -717,6 +788,9 @@ func normalizeUsageEventCreateRequest(request UsageEventCreateRequest) UsageEven
 	request.UsageStartTime = strings.TrimSpace(request.UsageStartTime)
 	request.UsageEndTime = strings.TrimSpace(request.UsageEndTime)
 	request.UsageUnit = strings.TrimSpace(request.UsageUnit)
+	request.EventSource = strings.TrimSpace(request.EventSource)
+	request.ScenarioRunID = strings.TrimSpace(request.ScenarioRunID)
+	request.ScenarioEventID = strings.TrimSpace(request.ScenarioEventID)
 	request.Attributes = normalizeStringMap(request.Attributes)
 	return request
 }
@@ -746,6 +820,9 @@ func validateResourceCreateRequest(request ResourceCreateRequest) error {
 	if err := validateOptionalTimestamp("resource deleted_at", request.DeletedAt); err != nil {
 		return err
 	}
+	if err := validateEventSourceProvenance("resource", request.EventSource, request.ScenarioRunID, request.ScenarioEventID, request.ScenarioEventSequence); err != nil {
+		return err
+	}
 	return validateStringMap("resource tag", request.Tags)
 }
 
@@ -755,6 +832,9 @@ func validateResourceTagCreateRequest(request ResourceTagCreateRequest) error {
 	}
 	if request.Key == "" {
 		return fmt.Errorf("resource tag key is required")
+	}
+	if err := validateEventSourceProvenance("resource tag", request.EventSource, request.ScenarioRunID, request.ScenarioEventID, request.ScenarioEventSequence); err != nil {
+		return err
 	}
 	return validateOptionalTimestamp("resource tag applied_at", request.AppliedAt)
 }
@@ -791,6 +871,33 @@ func validateUsageEventCreateRequest(request UsageEventCreateRequest) error {
 	}
 	if request.UsageUnit == "" {
 		return fmt.Errorf("usage event unit is required")
+	}
+	if err := validateEventSourceProvenance("usage event", request.EventSource, request.ScenarioRunID, request.ScenarioEventID, request.ScenarioEventSequence); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateEventSourceProvenance(label, eventSource, scenarioRunID, scenarioEventID string, scenarioEventSequence int) error {
+	switch eventSource {
+	case "learner", "scenario", "generator", "system":
+	default:
+		return fmt.Errorf("%s event source %q is not supported", label, eventSource)
+	}
+	if eventSource == "scenario" {
+		if scenarioRunID == "" {
+			return fmt.Errorf("%s scenario run ID is required for scenario event source", label)
+		}
+		if scenarioEventID == "" {
+			return fmt.Errorf("%s scenario event ID is required for scenario event source", label)
+		}
+		if scenarioEventSequence <= 0 {
+			return fmt.Errorf("%s scenario event sequence is required for scenario event source", label)
+		}
+		return nil
+	}
+	if scenarioRunID != "" || scenarioEventID != "" || scenarioEventSequence != 0 {
+		return fmt.Errorf("%s scenario provenance requires scenario event source", label)
 	}
 	return nil
 }
@@ -875,6 +982,20 @@ func nullStringValue(value sql.NullString) string {
 		return ""
 	}
 	return value.String
+}
+
+func nullIntArg(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
+func nullIntValue(value sql.NullInt64) int {
+	if !value.Valid {
+		return 0
+	}
+	return int(value.Int64)
 }
 
 func newRepositoryID(prefix string) (string, error) {

@@ -95,6 +95,88 @@ func TestResourceUsageRepositoryCreatesResourceTagsAndUsage(t *testing.T) {
 	}
 }
 
+func TestResourceUsageRepositoryRecordsScenarioProvenance(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewResourceUsageRepository(db)
+
+	resource, err := repo.CreateResource(ctx, ResourceCreateRequest{
+		ID:                    "resource-scenario-ec2",
+		AccountID:             "111122223333",
+		RegionCode:            "us-east-1",
+		ServiceCode:           "AmazonEC2",
+		ResourceType:          "ec2_instance",
+		ResourceName:          "Scenario web",
+		Status:                "active",
+		StartedAt:             "2026-03-01T00:00:00Z",
+		EventSource:           "scenario",
+		ScenarioRunID:         "scenario-run-1",
+		ScenarioEventID:       "create-web",
+		ScenarioEventSequence: 1,
+		Tags: map[string]string{
+			"app": "storefront",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateResource(scenario) error = %v", err)
+	}
+	if resource.EventSource != "scenario" ||
+		resource.ScenarioRunID != "scenario-run-1" ||
+		resource.ScenarioEventID != "create-web" ||
+		resource.ScenarioEventSequence != 1 {
+		t.Fatalf("resource provenance = %+v, want scenario run/event metadata", resource)
+	}
+
+	event, err := repo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                    "usage-scenario-ec2",
+		ResourceID:            resource.ID,
+		ServiceCode:           "AmazonEC2",
+		UsageType:             "instance-hours:t3.medium",
+		Operation:             "RunInstances",
+		UsageStartTime:        "2026-03-01T00:00:00Z",
+		UsageEndTime:          "2026-03-02T00:00:00Z",
+		UsageQuantityMicros:   24_000_000,
+		UsageUnit:             "Hours",
+		EventSource:           "scenario",
+		ScenarioRunID:         "scenario-run-1",
+		ScenarioEventID:       "usage-web",
+		ScenarioEventSequence: 2,
+	})
+	if err != nil {
+		t.Fatalf("RecordUsageEvent(scenario) error = %v", err)
+	}
+	if event.EventSource != "scenario" ||
+		event.ScenarioRunID != "scenario-run-1" ||
+		event.ScenarioEventID != "usage-web" ||
+		event.ScenarioEventSequence != 2 ||
+		event.TagSnapshot["app"] != "storefront" {
+		t.Fatalf("usage event provenance/tag snapshot = %+v, want scenario metadata and active tag", event)
+	}
+
+	var tagRunID, tagEventID string
+	var tagEventSequence int
+	if err := db.QueryRowContext(ctx, `SELECT scenario_run_id, scenario_event_id, scenario_event_sequence FROM resource_tags WHERE resource_id = ? AND tag_key = 'app'`, resource.ID).Scan(&tagRunID, &tagEventID, &tagEventSequence); err != nil {
+		t.Fatalf("read scenario resource tag provenance: %v", err)
+	}
+	if tagRunID != "scenario-run-1" || tagEventID != "create-web" || tagEventSequence != 1 {
+		t.Fatalf("tag provenance = %q/%q/%d, want create-web scenario metadata", tagRunID, tagEventID, tagEventSequence)
+	}
+
+	_, err = repo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-missing-provenance",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		EventSource:  "scenario",
+	})
+	if err == nil || !strings.Contains(err.Error(), "scenario run ID is required") {
+		t.Fatalf("CreateResource(missing scenario IDs) error = %v, want scenario provenance validation", err)
+	}
+}
+
 func TestResourceUsageRepositoryRejectsInvalidUsage(t *testing.T) {
 	t.Parallel()
 

@@ -177,6 +177,9 @@ func (r MeteringRepository) listUnmeteredUsageEvents(ctx context.Context, throug
 			u.attributes_json,
 			u.tag_snapshot_json,
 			u.event_source,
+			u.scenario_run_id,
+			u.scenario_event_id,
+			u.scenario_event_sequence,
 			u.created_at
 		 FROM usage_events u
 		 LEFT JOIN metering_records m ON m.usage_event_id = u.id

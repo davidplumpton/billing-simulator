@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -196,6 +197,36 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	}
 	if count != 14 {
 		t.Fatalf("schema_migrations count = %d, want 14", count)
+	}
+}
+
+func TestWorkspaceMuxRoutesInvoices(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newWorkspaceMux(&workspaceSession{db: db}))
+	t.Cleanup(server.Close)
+
+	resp, err := server.Client().Get(server.URL + "/invoices/SIM-INV-MISSING")
+	if err != nil {
+		t.Fatalf("GET /invoices/{id} error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /invoices/{id} status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotFound, body)
+	}
+	if !strings.Contains(body, "Invoice not found.") {
+		t.Fatalf("GET /invoices/{id} did not route to invoice handler: %s", body)
 	}
 }
 

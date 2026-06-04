@@ -1962,6 +1962,13 @@ nav .active {
 	margin-bottom: 14px;
 }
 
+.page-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: flex-end;
+}
+
 h1,
 h2,
 p {
@@ -2371,6 +2378,10 @@ code {
 		align-items: flex-start;
 		flex-direction: column;
 		gap: 6px;
+	}
+
+	.page-actions {
+		justify-content: flex-start;
 	}
 }
 `

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"html/template"
@@ -53,6 +54,8 @@ type billSummaryView struct {
 	Total            string
 	InvoiceID        string
 	InvoicePath      string
+	InvoiceCSVPath   string
+	InvoicePDFPath   string
 	InvoiceStatus    string
 	InvoiceAmountDue string
 	InvoicePaid      string
@@ -149,6 +152,8 @@ type invoicePageData struct {
 	PaymentStatus         string
 	AmountDue             string
 	AmountPaid            string
+	CSVPath               string
+	PDFPath               string
 	ServiceSummaries      []invoiceChargeSummaryView
 	AccountSummaries      []invoiceAccountChargeSummaryView
 	LineItems             []invoiceLineItemView
@@ -200,6 +205,20 @@ type billStateDefinition struct {
 	Label string
 }
 
+const (
+	invoiceExportHTML = ""
+	invoiceExportCSV  = "csv"
+	invoiceExportPDF  = "pdf"
+
+	invoiceCSVPathSuffix = "/line-items.csv"
+	invoicePDFPathSuffix = "/document.pdf"
+)
+
+type invoiceRoute struct {
+	InvoiceID string
+	Export    string
+}
+
 // newBillsHandler builds the repositories needed for the Bills page.
 func newBillsHandler(db *sql.DB) billsHandler {
 	return billsHandler{
@@ -225,12 +244,19 @@ func (h billsHandler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	invoiceID, ok := invoiceIDFromPath(r.URL.Path)
+	route, ok := invoiceRouteFromPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	h.renderInvoice(w, r, http.StatusOK, invoiceID, "")
+	switch route.Export {
+	case invoiceExportCSV:
+		h.handleInvoiceCSV(w, r, route.InvoiceID)
+	case invoiceExportPDF:
+		h.handleInvoicePDFPlan(w, r, route.InvoiceID)
+	default:
+		h.renderInvoice(w, r, http.StatusOK, route.InvoiceID, "")
+	}
 }
 
 // renderBills builds the dedicated bills state page from the current workspace.
@@ -289,6 +315,56 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 	_, _ = body.WriteTo(w)
 }
 
+// handleInvoiceCSV serves a machine-readable detailed-charge export for one invoice.
+func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, invoiceID string) {
+	if h.db == nil {
+		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+	printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "export invoice CSV: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	body, err := invoiceCSVBytes(printable)
+	if err != nil {
+		http.Error(w, "export invoice CSV: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+invoiceCSVFilename(invoiceID)+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// handleInvoicePDFPlan reserves the packaged PDF URL and points it at the printable HTML source.
+func (h billsHandler) handleInvoicePDFPlan(w http.ResponseWriter, r *http.Request, invoiceID string) {
+	if h.db == nil {
+		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+	if _, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "prepare invoice PDF: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	htmlPath := invoicePathForID(invoiceID)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Link", "<"+htmlPath+`>; rel="alternate"; type="text/html"`)
+	w.Header().Set("X-Invoice-PDF-Implementation", "packaged-html-to-pdf")
+	w.WriteHeader(http.StatusNotImplemented)
+	_, _ = fmt.Fprintf(w, "PDF export for invoice %s is reserved for the packaged HTML-to-PDF renderer. Printable HTML is available at %s.\n", invoiceID, htmlPath)
+}
+
 // loadBillsPageData reads clock context and bill summaries for rendering.
 func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData) error {
 	clock, err := h.clock.Get(ctx)
@@ -337,8 +413,12 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 
 func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummaryView {
 	invoicePath := ""
+	invoiceCSVPath := ""
+	invoicePDFPath := ""
 	if strings.TrimSpace(summary.InvoiceID) != "" {
 		invoicePath = invoicePathForID(summary.InvoiceID)
+		invoiceCSVPath = invoiceCSVPathForID(summary.InvoiceID)
+		invoicePDFPath = invoicePDFPathForID(summary.InvoiceID)
 	}
 	return billSummaryView{
 		ID:               summary.ID,
@@ -353,6 +433,8 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummar
 		Total:            formatUSDMicros(summary.TotalMicros),
 		InvoiceID:        summary.InvoiceID,
 		InvoicePath:      invoicePath,
+		InvoiceCSVPath:   invoiceCSVPath,
+		InvoicePDFPath:   invoicePDFPath,
 		InvoiceStatus:    displayBillState(summary.InvoiceStatus),
 		InvoiceAmountDue: formatUSDMicros(summary.InvoiceAmountDueMicros),
 		InvoicePaid:      formatUSDMicros(summary.InvoiceAmountPaidMicros),
@@ -394,6 +476,8 @@ func invoicePageDataFromPrintable(printable persistence.PrintableInvoice) invoic
 		PaymentStatus:         displayBillState(obligation.Status),
 		AmountDue:             formatUSDMicros(obligation.AmountDueMicros),
 		AmountPaid:            formatUSDMicros(obligation.AmountPaidMicros),
+		CSVPath:               invoiceCSVPathForID(document.InvoiceID),
+		PDFPath:               invoicePDFPathForID(document.InvoiceID),
 	}
 	for _, summary := range printable.ServiceSummaries {
 		data.ServiceSummaries = append(data.ServiceSummaries, invoiceChargeSummaryViewFromSummary(summary))
@@ -462,6 +546,103 @@ func invoiceLineItemViewFromItem(item persistence.InvoiceLineItem) invoiceLineIt
 		Cost:           formatUSDMicros(item.UnblendedCostMicros),
 		Description:    item.Description,
 	}
+}
+
+// invoiceCSVBytes writes the detailed invoice line-item export using the printable invoice read model.
+func invoiceCSVBytes(printable persistence.PrintableInvoice) ([]byte, error) {
+	var body bytes.Buffer
+	writer := csv.NewWriter(&body)
+	if err := writer.Write(invoiceCSVHeader()); err != nil {
+		return nil, err
+	}
+	for _, item := range printable.LineItems {
+		if err := writer.Write(invoiceCSVRecord(printable, item)); err != nil {
+			return nil, err
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return nil, err
+	}
+	return body.Bytes(), nil
+}
+
+// invoiceCSVHeader returns stable column names for the invoice detailed-charge export.
+func invoiceCSVHeader() []string {
+	return []string{
+		"invoice_id",
+		"bill_id",
+		"document_status",
+		"payment_status",
+		"billing_period_start",
+		"billing_period_end",
+		"invoice_date",
+		"due_date",
+		"payer_account_id",
+		"usage_account_id",
+		"line_item_id",
+		"line_item_type",
+		"service_code",
+		"service_name",
+		"region_code",
+		"resource_id",
+		"resource_name",
+		"usage_type",
+		"operation",
+		"usage_start_time",
+		"usage_end_time",
+		"pricing_quantity",
+		"pricing_unit",
+		"unblended_rate",
+		"unblended_cost",
+		"currency_code",
+		"description",
+	}
+}
+
+// invoiceCSVRecord formats one invoice source line item as a CSV row.
+func invoiceCSVRecord(printable persistence.PrintableInvoice, item persistence.InvoiceLineItem) []string {
+	document := printable.Document
+	obligation := printable.Obligation
+	return []string{
+		document.InvoiceID,
+		document.BillID,
+		document.Status,
+		obligation.Status,
+		document.BillingPeriodStart,
+		document.BillingPeriodEnd,
+		document.InvoiceDate,
+		document.DueDate,
+		document.PayerAccountID,
+		item.UsageAccountID,
+		item.ID,
+		item.LineItemType,
+		item.ServiceCode,
+		item.ServiceName,
+		item.RegionCode,
+		item.ResourceID,
+		item.ResourceName,
+		item.UsageType,
+		item.Operation,
+		item.UsageStartTime,
+		item.UsageEndTime,
+		formatMicrosDecimal(item.PricingQuantityMicros),
+		item.PricingUnit,
+		formatMicrosDecimal(item.UnblendedRateMicros),
+		formatMicrosDecimal(item.UnblendedCostMicros),
+		item.CurrencyCode,
+		item.Description,
+	}
+}
+
+// formatMicrosDecimal renders micros as a fixed six-decimal value for CSV readers.
+func formatMicrosDecimal(value int64) string {
+	sign := ""
+	if value < 0 {
+		sign = "-"
+		value = -value
+	}
+	return fmt.Sprintf("%s%d.%06d", sign, value/1_000_000, value%1_000_000)
 }
 
 func billChargeBreakdownViewFromSummary(summary persistence.BillChargeSummary) billChargeBreakdownView {
@@ -585,26 +766,70 @@ func displayOptionalValue(value string) string {
 	return value
 }
 
-// invoiceIDFromPath extracts and unescapes the invoice ID from /invoices/{id}.
-func invoiceIDFromPath(path string) (string, bool) {
+// invoiceRouteFromPath extracts the invoice ID and optional export kind from an invoice URL path.
+func invoiceRouteFromPath(path string) (invoiceRoute, bool) {
 	const prefix = "/invoices/"
 	if !strings.HasPrefix(path, prefix) {
-		return "", false
+		return invoiceRoute{}, false
 	}
 	rawID := strings.TrimSpace(strings.TrimPrefix(path, prefix))
+	export := invoiceExportHTML
+	if strings.HasSuffix(rawID, invoiceCSVPathSuffix) {
+		rawID = strings.TrimSuffix(rawID, invoiceCSVPathSuffix)
+		export = invoiceExportCSV
+	} else if strings.HasSuffix(rawID, invoicePDFPathSuffix) {
+		rawID = strings.TrimSuffix(rawID, invoicePDFPathSuffix)
+		export = invoiceExportPDF
+	}
 	if rawID == "" || strings.Contains(rawID, "/") {
-		return "", false
+		return invoiceRoute{}, false
 	}
 	invoiceID, err := url.PathUnescape(rawID)
 	if err != nil || strings.TrimSpace(invoiceID) == "" {
+		return invoiceRoute{}, false
+	}
+	return invoiceRoute{InvoiceID: strings.TrimSpace(invoiceID), Export: export}, true
+}
+
+// invoiceIDFromPath extracts and unescapes the invoice ID from /invoices/{id}.
+func invoiceIDFromPath(path string) (string, bool) {
+	route, ok := invoiceRouteFromPath(path)
+	if !ok || route.Export != invoiceExportHTML {
 		return "", false
 	}
-	return strings.TrimSpace(invoiceID), true
+	return route.InvoiceID, true
 }
 
 // invoicePathForID escapes an invoice ID for use as an internal invoice link.
 func invoicePathForID(invoiceID string) string {
 	return "/invoices/" + url.PathEscape(strings.TrimSpace(invoiceID))
+}
+
+// invoiceCSVPathForID returns the detailed-charge CSV download URL for an invoice.
+func invoiceCSVPathForID(invoiceID string) string {
+	return invoicePathForID(invoiceID) + invoiceCSVPathSuffix
+}
+
+// invoicePDFPathForID returns the reserved packaged-PDF URL for an invoice.
+func invoicePDFPathForID(invoiceID string) string {
+	return invoicePathForID(invoiceID) + invoicePDFPathSuffix
+}
+
+// invoiceCSVFilename sanitizes invoice IDs for the CSV content-disposition filename.
+func invoiceCSVFilename(invoiceID string) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(invoiceID) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			builder.WriteRune(r)
+		} else {
+			builder.WriteByte('-')
+		}
+	}
+	safe := strings.Trim(builder.String(), "-")
+	if safe == "" {
+		safe = "invoice"
+	}
+	return safe + "-line-items.csv"
 }
 
 var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctype html>
@@ -860,6 +1085,7 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctyp
 											<strong><a href="{{.InvoicePath}}">{{.InvoiceID}}</a></strong>
 											<small>{{.InvoiceStatus}} due {{.InvoiceAmountDue}} paid {{.InvoicePaid}}</small>
 											<small>{{.InvoiceDate}} to {{.InvoiceDueDate}}</small>
+											<small><a href="{{.InvoiceCSVPath}}">CSV</a> <a href="{{.InvoicePDFPath}}">PDF</a></small>
 										{{else}}
 											<span class="muted">not issued</span>
 										{{end}}
@@ -905,7 +1131,13 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<!do
 			<div>
 				<h1>Invoice {{.InvoiceID}}</h1>
 			</div>
-			<a class="button-link" href="/bills">Bills</a>
+			<div class="page-actions">
+				{{if .Loaded}}
+					<a class="button-link" href="{{.CSVPath}}">CSV</a>
+					<a class="button-link" href="{{.PDFPath}}">PDF</a>
+				{{end}}
+				<a class="button-link" href="/bills">Bills</a>
+			</div>
 		</div>
 
 		{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}

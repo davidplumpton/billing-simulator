@@ -972,10 +972,16 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT invoice_id FROM invoice_documents LIMIT 1`).Scan(&invoiceID); err != nil {
 		t.Fatalf("read invoice document ID: %v", err)
 	}
-	if !strings.Contains(body, "/invoices/"+invoiceID) {
+	invoicePath := invoicePathForID(invoiceID)
+	invoiceCSVPath := invoiceCSVPathForID(invoiceID)
+	invoicePDFPath := invoicePDFPathForID(invoiceID)
+	if !strings.Contains(body, invoicePath) {
 		t.Fatalf("GET /bills after close missing printable invoice link %q: %s", invoiceID, body)
 	}
-	resp, err = client.Get(server.URL + "/invoices/" + url.PathEscape(invoiceID))
+	if !strings.Contains(body, invoiceCSVPath) || !strings.Contains(body, invoicePDFPath) {
+		t.Fatalf("GET /bills after close missing invoice export links %q/%q: %s", invoiceCSVPath, invoicePDFPath, body)
+	}
+	resp, err = client.Get(server.URL + invoicePath)
 	if err != nil {
 		t.Fatalf("GET /invoices/{id} error = %v", err)
 	}
@@ -997,10 +1003,57 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		"$1.0832",
 		"$1.00",
 		"due",
+		invoiceCSVPath,
+		invoicePDFPath,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /invoices/{id} body missing %q: %s", want, body)
 		}
+	}
+
+	resp, err = client.Get(server.URL + invoiceCSVPath)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/line-items.csv error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /invoices/{id}/line-items.csv status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+		t.Fatalf("GET /invoices/{id}/line-items.csv content type = %q, want text/csv", contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, invoiceID+"-line-items.csv") {
+		t.Fatalf("GET /invoices/{id}/line-items.csv content disposition = %q, want invoice filename", disposition)
+	}
+	for _, want := range []string{
+		"invoice_id,bill_id,document_status,payment_status",
+		invoiceID,
+		"Workflow web",
+		"AWSSupport",
+		"AWS Support Business",
+		"Usage",
+		"Fee",
+		"0.083200",
+		"1.000000",
+		"111122223333",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /invoices/{id}/line-items.csv body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + invoicePDFPath)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/document.pdf error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("GET /invoices/{id}/document.pdf status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotImplemented, body)
+	}
+	if !strings.Contains(resp.Header.Get("X-Invoice-PDF-Implementation"), "html-to-pdf") ||
+		!strings.Contains(body, "packaged HTML-to-PDF renderer") ||
+		!strings.Contains(body, invoicePath) {
+		t.Fatalf("GET /invoices/{id}/document.pdf missing implementation plan: headers=%v body=%s", resp.Header, body)
 	}
 }
 

@@ -20,6 +20,7 @@ const (
 	scenarioRunStatusSucceeded = "succeeded"
 	scenarioRunStatusFailed    = "failed"
 	scenarioEventSource        = "scenario"
+	maxScenarioRunIDAttempts   = 10_000
 )
 
 // Runner applies parsed scenario definitions to a workspace database.
@@ -57,7 +58,6 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 	}
 
 	run := ScenarioRun{
-		ID:                   scenarioRunID(definition),
 		DefinitionName:       definition.Name,
 		OrganizationTemplate: definition.OrganizationTemplate,
 		RandomSeed:           definition.RandomSeed,
@@ -65,7 +65,8 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 		ClockStart:           startTime.Format(time.RFC3339),
 		EventsTotal:          len(definition.Events),
 	}
-	if err := r.insertScenarioRun(ctx, run); err != nil {
+	run, err = r.createScenarioRun(ctx, run, definition)
+	if err != nil {
 		return RunResult{}, err
 	}
 
@@ -282,10 +283,7 @@ func (r Runner) createResource(ctx context.Context, state *scenarioExecutionStat
 		status = "active"
 	}
 	startedAt, stoppedAt, deletedAt := scenarioResourceTimes(status, scheduledAt)
-	resourceID := event.ResourceID
-	if resourceID == "" {
-		resourceID = stableScenarioID("res_scn", state.runID, event.ID, event.Resource)
-	}
+	resourceID := scenarioResourceID(state.runID, event)
 	attributes := copyScenarioStringMap(service.Attributes)
 	for key, value := range event.Attributes {
 		attributes[key] = value
@@ -373,9 +371,6 @@ func (r Runner) ensureUsageResource(ctx context.Context, state *scenarioExecutio
 	}
 
 	createEvent := event
-	if createEvent.ResourceID == "" {
-		createEvent.ResourceID = stableScenarioID("res_scn", state.runID, event.ID, "implicit")
-	}
 	if createEvent.Resource == "" {
 		createEvent.Resource = chooseFirst(service.DefaultResourceName, event.ID)
 	}
@@ -407,6 +402,39 @@ func (r Runner) generateUsage(ctx context.Context, state *scenarioExecutionState
 		ScenarioEventID:       event.ID,
 		ScenarioEventSequence: event.Sequence,
 	})
+}
+
+// createScenarioRun reserves a durable per-attempt run ID before events mutate workspace state.
+func (r Runner) createScenarioRun(ctx context.Context, run ScenarioRun, definition Definition) (ScenarioRun, error) {
+	for attempt := 1; attempt <= maxScenarioRunIDAttempts; attempt++ {
+		candidate := run
+		candidate.ID = scenarioRunID(definition, attempt)
+		exists, err := r.scenarioRunExists(ctx, candidate.ID)
+		if err != nil {
+			return ScenarioRun{}, err
+		}
+		if exists {
+			continue
+		}
+		if err := r.insertScenarioRun(ctx, candidate); err != nil {
+			return ScenarioRun{}, err
+		}
+		return candidate, nil
+	}
+	return ScenarioRun{}, fmt.Errorf("scenario run ID attempts exhausted for definition %q", definition.Name)
+}
+
+// scenarioRunExists checks whether an audit run ID is already reserved in this workspace.
+func (r Runner) scenarioRunExists(ctx context.Context, runID string) (bool, error) {
+	var existing string
+	err := r.db.QueryRowContext(ctx, `SELECT id FROM scenario_runs WHERE id = ?`, runID).Scan(&existing)
+	if err == nil {
+		return true, nil
+	}
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return false, fmt.Errorf("check scenario run %q: %w", runID, err)
 }
 
 func (r Runner) insertScenarioRun(ctx context.Context, run ScenarioRun) error {
@@ -662,14 +690,39 @@ func scenarioAliasKey(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func scenarioRunID(definition Definition) string {
-	return stableScenarioID(
+func scenarioRunID(definition Definition, attempt int) string {
+	base := stableScenarioID(
 		"scr",
+		"v2",
+		scenarioDefinitionIdentity(definition),
+		scenarioDefinitionFingerprint(definition),
+	)
+	if attempt <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s_a%d", base, attempt)
+}
+
+func scenarioDefinitionIdentity(definition Definition) string {
+	return strings.Join([]string{
 		definition.Name,
 		definition.Clock.Start,
 		definition.OrganizationTemplate,
 		strconv.FormatInt(definition.RandomSeed, 10),
-	)
+	}, "\x00")
+}
+
+func scenarioDefinitionFingerprint(definition Definition) string {
+	data, err := json.Marshal(definition)
+	if err != nil {
+		return fmt.Sprintf("%#v", definition)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func scenarioResourceID(runID string, event Event) string {
+	return stableScenarioID("res_scn", runID, event.ID, chooseFirst(event.ResourceID, event.Resource))
 }
 
 func scenarioRunEventID(runID string, event Event) string {

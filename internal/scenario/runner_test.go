@@ -26,6 +26,105 @@ func TestRunnerAppliesScenarioEventsDeterministically(t *testing.T) {
 	}
 }
 
+func TestRunnerAllowsSameDefinitionRerunInOneWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition := parseScenarioDefinitionForTest(t, `{
+		"name": "Rerunnable explicit resource scenario",
+		"clock": {"start": "2026-03-01"},
+		"organization_template": "anycompany-retail",
+		"random_seed": 7,
+		"events": [
+			{
+				"id": "create-assets",
+				"day": 1,
+				"action": "create_resource",
+				"account": "Storefront Prod",
+				"service": "Amazon S3",
+				"resource_id": "scenario-assets",
+				"resource": "s3://scenario-assets"
+			},
+			{
+				"id": "generate-assets",
+				"day": 2,
+				"action": "generate_usage",
+				"resource_id": "scenario-assets",
+				"pattern": "storage_growth",
+				"days": 1
+			}
+		]
+	}`)
+
+	runner := NewRunner(db)
+	first, err := runner.Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	second, err := runner.Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+
+	if first.Run.ID == "" || second.Run.ID == "" || first.Run.ID == second.Run.ID {
+		t.Fatalf("scenario run IDs = %q/%q, want distinct durable attempts", first.Run.ID, second.Run.ID)
+	}
+	if first.ResourcesCreated != 1 || first.UsageEventsCreated != 1 || second.ResourcesCreated != 1 || second.UsageEventsCreated != 1 {
+		t.Fatalf("run counts = first %+v second %+v, want one resource and one usage event per attempt", first, second)
+	}
+
+	var runCount, eventCount, resourceCount, usageCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_runs WHERE definition_name = ?`, definition.Name).Scan(&runCount); err != nil {
+		t.Fatalf("count scenario runs: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_run_events WHERE scenario_event_id = 'generate-assets'`).Scan(&eventCount); err != nil {
+		t.Fatalf("count scenario run events: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM resources WHERE scenario_event_id = 'create-assets'`).Scan(&resourceCount); err != nil {
+		t.Fatalf("count scenario resources: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE scenario_event_id = 'generate-assets'`).Scan(&usageCount); err != nil {
+		t.Fatalf("count scenario usage events: %v", err)
+	}
+	if runCount != 2 || eventCount != 2 || resourceCount != 2 || usageCount != 2 {
+		t.Fatalf("audit/domain counts = runs:%d events:%d resources:%d usage:%d, want all 2", runCount, eventCount, resourceCount, usageCount)
+	}
+}
+
+func TestRunnerDistinguishesSameHeaderDefinitionsWithDifferentBodies(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	firstDefinition := parseScenarioDefinitionForTest(t, sameHeaderScenarioDefinition("1"))
+	secondDefinition := parseScenarioDefinitionForTest(t, sameHeaderScenarioDefinition("2"))
+	if scenarioRunID(firstDefinition, 1) == scenarioRunID(secondDefinition, 1) {
+		t.Fatalf("first-attempt run IDs matched for different definition bodies: %q", scenarioRunID(firstDefinition, 1))
+	}
+
+	runner := NewRunner(db)
+	first, err := runner.Run(ctx, firstDefinition)
+	if err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	second, err := runner.Run(ctx, secondDefinition)
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if first.Run.ID == second.Run.ID {
+		t.Fatalf("scenario run IDs = %q/%q, want different IDs for changed event bodies", first.Run.ID, second.Run.ID)
+	}
+
+	var runCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_runs WHERE definition_name = ?`, firstDefinition.Name).Scan(&runCount); err != nil {
+		t.Fatalf("count same-header scenario runs: %v", err)
+	}
+	if runCount != 2 {
+		t.Fatalf("same-header scenario runs = %d, want 2 durable audit rows", runCount)
+	}
+}
+
 func TestRunnerRecordsFailedExecutionEventAndRun(t *testing.T) {
 	t.Parallel()
 
@@ -84,7 +183,7 @@ func runScenarioFixture(t *testing.T) scenarioFixtureResult {
 
 	ctx := context.Background()
 	db := openScenarioTestWorkspace(t)
-	definition, err := ParseDefinitionBytes([]byte(`{
+	definition := parseScenarioDefinitionForTest(t, `{
 		"name": "Find the untagged data-transfer spike",
 		"clock": {"start": "2026-03-01"},
 		"organization_template": "anycompany-retail",
@@ -140,10 +239,7 @@ func runScenarioFixture(t *testing.T) scenarioFixtureResult {
 				"billing_period_end": "2026-04-01"
 			}
 		]
-	}`))
-	if err != nil {
-		t.Fatalf("ParseDefinitionBytes() error = %v", err)
-	}
+	}`)
 
 	result, err := NewRunner(db).Run(ctx, definition)
 	if err != nil {
@@ -217,6 +313,35 @@ func runScenarioFixture(t *testing.T) scenarioFixtureResult {
 		s3ResourceID:        s3ResourceID,
 		dataTransferUsageID: dataTransferUsageID,
 	}
+}
+
+func parseScenarioDefinitionForTest(t *testing.T, raw string) Definition {
+	t.Helper()
+
+	definition, err := ParseDefinitionBytes([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseDefinitionBytes() error = %v", err)
+	}
+	return definition
+}
+
+func sameHeaderScenarioDefinition(amountGB string) string {
+	return `{
+		"name": "Same header changed body scenario",
+		"clock": {"start": "2026-03-01"},
+		"organization_template": "anycompany-retail",
+		"random_seed": 12,
+		"events": [
+			{
+				"id": "data-transfer",
+				"day": 1,
+				"action": "add_usage",
+				"account": "Shared Networking",
+				"service": "AWS Data Transfer",
+				"amount_gb": ` + amountGB + `
+			}
+		]
+	}`
 }
 
 func openScenarioTestWorkspace(t *testing.T) *sql.DB {

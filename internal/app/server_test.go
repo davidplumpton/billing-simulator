@@ -225,6 +225,15 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	if !strings.Contains(body, "Simulator Clock") || !strings.Contains(body, "2026-02-01T00:00:00Z") {
 		t.Fatalf("GET /resources body missing simulator clock UI: %s", body)
 	}
+	if !strings.Contains(body, `name="account_id" value="111122223333"`) {
+		t.Fatalf("GET /resources body missing Storefront Prod usage account default: %s", body)
+	}
+	if count := strings.Count(body, `name="payer_account_id" value="999988887777"`); count != 3 {
+		t.Fatalf("GET /resources payer defaults = %d, want billing pipeline, daily metering, and month close defaults to management account: %s", count, body)
+	}
+	if strings.Contains(body, `name="payer_account_id" value="111122223333"`) {
+		t.Fatalf("GET /resources still defaults payer forms to member account: %s", body)
+	}
 
 	resp, err = client.PostForm(server.URL+"/resources/create", url.Values{
 		"account_id":     {"111122223333"},
@@ -623,7 +632,7 @@ func TestResourcesUIDailyMeteringRunsOnDemandAndAfterClockAdvance(t *testing.T) 
 	}
 
 	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceHours))
-	if !strings.Contains(body, "daily metering created 1 metering records and 2 bill line items") ||
+	if !strings.Contains(body, "daily metering created 1 metering records and 1 bill line items") ||
 		!strings.Contains(body, "clock_advance") ||
 		!strings.Contains(body, "on_demand") {
 		t.Fatalf("clock advance response missing triggered daily metering details: %s", body)
@@ -922,8 +931,16 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		!strings.Contains(body, "daily metering created 1 metering records and 2 bill line items") ||
 		!strings.Contains(body, "Current Billing Summary") ||
 		!strings.Contains(body, "AWSSupport") ||
-		!strings.Contains(body, "estimated") {
+		!strings.Contains(body, "estimated") ||
+		!strings.Contains(body, "999988887777") {
 		t.Fatalf("clock-advanced daily metering response missing estimated billing summary: %s", body)
+	}
+	var estimatedManagementItems int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = 'estimated' AND payer_account_id = ?`, "999988887777").Scan(&estimatedManagementItems); err != nil {
+		t.Fatalf("count estimated management bill_line_items: %v", err)
+	}
+	if estimatedManagementItems != 2 {
+		t.Fatalf("estimated management bill line item count = %d, want usage plus Support", estimatedManagementItems)
 	}
 
 	body = postClockAdvance(t, client, server.URL, "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
@@ -933,7 +950,7 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	}
 
 	resp, err = client.PostForm(server.URL+"/resources/month-close", url.Values{
-		"payer_account_id": {"111122223333"},
+		"payer_account_id": {"999988887777"},
 		"invoice_due_days": {"14"},
 	})
 	if err != nil {
@@ -949,20 +966,21 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		!strings.Contains(body, "AWSSupport") ||
 		!strings.Contains(body, "SIM-INV-202602-") ||
 		!strings.Contains(body, "$1.0832") ||
+		!strings.Contains(body, "999988887777") ||
 		!strings.Contains(body, "final") ||
 		!strings.Contains(body, "due") {
 		t.Fatalf("month-end close response missing final bill workflow details: %s", body)
 	}
 
 	var finalLineItems int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = 'final'`).Scan(&finalLineItems); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = 'final' AND payer_account_id = ?`, "999988887777").Scan(&finalLineItems); err != nil {
 		t.Fatalf("count final bill_line_items: %v", err)
 	}
 	if finalLineItems != 2 {
-		t.Fatalf("final bill line item count = %d, want 2", finalLineItems)
+		t.Fatalf("final management bill line item count = %d, want 2", finalLineItems)
 	}
 	var issuedBills int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bills WHERE bill_state = 'issued'`).Scan(&issuedBills); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bills WHERE bill_state = 'issued' AND payer_account_id = ?`, "999988887777").Scan(&issuedBills); err != nil {
 		t.Fatalf("count issued bills: %v", err)
 	}
 	if issuedBills != 1 {
@@ -1059,6 +1077,7 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		"Fee",
 		"0.083200",
 		"1.000000",
+		"999988887777",
 		"111122223333",
 	} {
 		if !strings.Contains(body, want) {

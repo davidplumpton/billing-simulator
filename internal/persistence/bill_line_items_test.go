@@ -152,6 +152,9 @@ func TestBillLineItemRepositoryIsIdempotent(t *testing.T) {
 	if first.ItemsCreated != 1 || second.ItemsCreated != 0 {
 		t.Fatalf("bill line item created counts = %d/%d, want 1/0", first.ItemsCreated, second.ItemsCreated)
 	}
+	if first.Items[0].PayerAccountID != AnyCompanyRetailManagementAccountID || first.Items[0].UsageAccountID != "111122223333" {
+		t.Fatalf("default bill line item accounts = payer %q usage %q, want organization payer and usage account", first.Items[0].PayerAccountID, first.Items[0].UsageAccountID)
+	}
 	if first.Items[0].PricingQuantityMicros != 1_500_000 || first.Items[0].UnblendedCostMicros != 7_500 {
 		t.Fatalf("S3 PUT pricing = quantity %d cost %d, want 1500000/7500 micros", first.Items[0].PricingQuantityMicros, first.Items[0].UnblendedCostMicros)
 	}

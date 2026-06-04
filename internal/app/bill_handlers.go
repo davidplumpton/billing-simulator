@@ -374,9 +374,13 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	data.ClockCurrentTime = clock.CurrentTime
 	data.ClockBillingPeriod = fmt.Sprintf("%s to %s (%d days)", clock.BillingPeriodStart, clock.BillingPeriodEnd, clock.BillingPeriodDays)
 
+	defaultPayerAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return err
+	}
 	summaries, err := h.bills.ListBillStateSummaries(ctx, persistence.BillStateSummaryRequest{
 		Limit:                 50,
-		DefaultPayerAccountID: defaultAccountID,
+		DefaultPayerAccountID: defaultPayerAccountID,
 	})
 	if err != nil {
 		return err

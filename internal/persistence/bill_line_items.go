@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -287,7 +288,10 @@ func (r BillLineItemRepository) billLineItemFromMeteringRecord(ctx context.Conte
 
 	payerAccountID := request.PayerAccountID
 	if payerAccountID == "" {
-		payerAccountID = record.AccountID
+		payerAccountID, err = r.defaultPayerAccountID(ctx, record.AccountID)
+		if err != nil {
+			return BillLineItem{}, fmt.Errorf("resolve payer for metering record %q: %w", record.ID, err)
+		}
 	}
 	item := BillLineItem{
 		ID:                    billLineItemID(record.ID),
@@ -325,6 +329,26 @@ func (r BillLineItemRepository) billLineItemFromMeteringRecord(ctx context.Conte
 		return BillLineItem{}, fmt.Errorf("price metering record %q: %w", record.ID, err)
 	}
 	return item, nil
+}
+
+// defaultPayerAccountID maps a usage account to its organization payer when the caller omits an override.
+func (r BillLineItemRepository) defaultPayerAccountID(ctx context.Context, usageAccountID string) (string, error) {
+	usageAccountID = strings.TrimSpace(usageAccountID)
+	if usageAccountID == "" {
+		return "", nil
+	}
+
+	account, err := NewOrganizationRepository(r.db).GetAccount(ctx, usageAccountID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return usageAccountID, nil
+		}
+		return "", err
+	}
+	if strings.TrimSpace(account.PayerAccountID) == "" {
+		return usageAccountID, nil
+	}
+	return strings.TrimSpace(account.PayerAccountID), nil
 }
 
 func validateBillLineItem(item BillLineItem) error {

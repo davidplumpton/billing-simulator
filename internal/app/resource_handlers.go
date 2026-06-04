@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultAccountID              = "111122223333"
+	defaultUsageAccountID         = "111122223333"
 	defaultUsageStartLocal        = "2026-02-01T00:00"
 	defaultUsageEndLocal          = "2026-02-01T01:00"
 	defaultUsageStartRFC3339      = "2026-02-01T00:00:00Z"
@@ -414,6 +414,11 @@ func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *h
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
+	request.PayerAccountID, err = payerAccountIDOrDefault(r.Context(), h.db, request.PayerAccountID)
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
 	meteringResult, err := h.metering.GenerateMeteringRecords(r.Context())
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
@@ -458,6 +463,11 @@ func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
+	request.PayerAccountID, err = payerAccountIDOrDefault(r.Context(), h.db, request.PayerAccountID)
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
 	result, err := h.dailyJobs.Run(r.Context(), request)
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
@@ -485,6 +495,11 @@ func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *htt
 	request, err := monthEndCloseRequestFromForm(r)
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	request.PayerAccountID, err = payerAccountIDOrDefault(r.Context(), h.db, request.PayerAccountID)
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
 		return
 	}
 	result, err := h.monthEnd.ClosePreviousPeriod(r.Context(), request)
@@ -521,9 +536,14 @@ func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Re
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
+	defaultPayerAccountID, err := defaultBillingPayerAccountID(r.Context(), h.db, defaultUsageAccountID)
+	if err != nil {
+		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
 	result, err := h.dailyJobs.Run(r.Context(), persistence.DailyMeteringJobRequest{
 		Trigger:        persistence.DailyMeteringJobTriggerClockAdvance,
-		PayerAccountID: defaultAccountID,
+		PayerAccountID: defaultPayerAccountID,
 	})
 	if err != nil {
 		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
@@ -545,8 +565,8 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 		Flash:                      flashMessage,
 		Error:                      errorMessage,
 		DefaultClockAdvanceAmount:  defaultClockAdvanceAmount,
-		DefaultAccountID:           defaultAccountID,
-		DefaultPayerAccountID:      defaultAccountID,
+		DefaultAccountID:           defaultUsageAccountID,
+		DefaultPayerAccountID:      persistence.AnyCompanyRetailManagementAccountID,
 		DefaultUsageStart:          defaults.UsageStartLocal,
 		DefaultUsageEnd:            defaults.UsageEndLocal,
 		DefaultGenerationStartDate: defaults.GenerationStartDate,
@@ -576,6 +596,12 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 }
 
 func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *resourcePageData) error {
+	defaultPayerAccountID, err := defaultBillingPayerAccountID(ctx, h.db, defaultUsageAccountID)
+	if err != nil {
+		return err
+	}
+	data.DefaultPayerAccountID = defaultPayerAccountID
+
 	clock, err := h.clock.Get(ctx)
 	if err != nil {
 		return err

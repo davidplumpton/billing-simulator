@@ -162,7 +162,7 @@ func TestBillsRepositoryListsChargeBreakdowns(t *testing.T) {
 		},
 	)
 	supportResult, err := NewSupportChargeRepository(db).GenerateSupportCharges(ctx, SupportChargeGenerationRequest{
-		PayerAccountID: "111122223333",
+		PayerAccountID: ec2Item.PayerAccountID,
 		PeriodStart:    "2026-02-01",
 		PeriodEnd:      "2026-03-01",
 		LineItemStatus: billLineItemStatusEstimated,
@@ -180,7 +180,7 @@ func TestBillsRepositoryListsChargeBreakdowns(t *testing.T) {
 		t.Fatalf("ListChargeBreakdowns() error = %v", err)
 	}
 
-	ec2Summary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAmazonEC2, "111122223333", "111122223333", "instance-hours:t3.medium")
+	ec2Summary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAmazonEC2, AnyCompanyRetailManagementAccountID, "111122223333", "instance-hours:t3.medium")
 	if ec2Summary.ServiceName != "Amazon EC2" ||
 		ec2Summary.RegionCode != "us-east-1" ||
 		ec2Summary.LineItemStatus != billLineItemStatusEstimated ||
@@ -190,11 +190,11 @@ func TestBillsRepositoryListsChargeBreakdowns(t *testing.T) {
 		ec2Summary.TotalMicros != ec2Item.UnblendedCostMicros {
 		t.Fatalf("EC2 charge summary = %+v, want source line item total", ec2Summary)
 	}
-	s3Summary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAmazonS3, "222233334444", "222233334444", "requests:put-1k")
+	s3Summary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAmazonS3, AnyCompanyRetailManagementAccountID, "222233334444", "requests:put-1k")
 	if s3Summary.ChargeMicros != s3Item.UnblendedCostMicros || s3Summary.TotalMicros != 7_500 {
 		t.Fatalf("S3 charge summary = %+v, want PUT request total from account 222233334444", s3Summary)
 	}
-	supportSummary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAWSSupport, "111122223333", "111122223333", supportBusinessUsageType)
+	supportSummary := requireBillChargeSummary(t, breakdowns.Summaries, serviceAWSSupport, AnyCompanyRetailManagementAccountID, AnyCompanyRetailManagementAccountID, supportBusinessUsageType)
 	if supportSummary.RegionCode != supportRegionGlobal ||
 		supportSummary.ResourceCount != 0 ||
 		supportSummary.ChargeMicros != supportBusinessMinimumCostMicros ||
@@ -246,7 +246,7 @@ func TestBillsRepositoryReconcilesBillsToFinalLineItems(t *testing.T) {
 		t.Fatalf("Set(clock) error = %v", err)
 	}
 	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
-		PayerAccountID: "111122223333",
+		PayerAccountID: AnyCompanyRetailManagementAccountID,
 	})
 	if err != nil {
 		t.Fatalf("ClosePreviousPeriod() error = %v", err)

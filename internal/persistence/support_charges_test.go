@@ -35,7 +35,7 @@ func TestSupportChargeRepositoryGeneratesMinimumFeeFromEstimatedEligibleSpend(t 
 
 	repo := NewSupportChargeRepository(db)
 	result, err := repo.GenerateSupportCharges(ctx, SupportChargeGenerationRequest{
-		PayerAccountID: "111122223333",
+		PayerAccountID: lineItem.PayerAccountID,
 		PeriodStart:    "2026-02-01",
 		PeriodEnd:      "2026-03-01",
 		LineItemStatus: billLineItemStatusEstimated,
@@ -74,7 +74,7 @@ func TestSupportChargeRepositoryGeneratesMinimumFeeFromEstimatedEligibleSpend(t 
 	}
 
 	replay, err := repo.GenerateSupportCharges(ctx, SupportChargeGenerationRequest{
-		PayerAccountID: "111122223333",
+		PayerAccountID: lineItem.PayerAccountID,
 		PeriodStart:    "2026-02-01",
 		PeriodEnd:      "2026-03-01",
 		LineItemStatus: billLineItemStatusEstimated,
@@ -112,11 +112,11 @@ func TestSupportChargeRepositoryUsesPercentageAboveMinimumAndExcludesIneligibleT
 			UsageUnit:           "Months",
 		},
 	)
-	insertIneligibleCreditLineItem(t, ctx, db, "credit-support-excluded", "111122223333", 750_000_000)
+	insertIneligibleCreditLineItem(t, ctx, db, "credit-support-excluded", eligible.PayerAccountID, 750_000_000)
 
 	repo := NewSupportChargeRepository(db)
 	result, err := repo.GenerateSupportCharges(ctx, SupportChargeGenerationRequest{
-		PayerAccountID: "111122223333",
+		PayerAccountID: eligible.PayerAccountID,
 		PeriodStart:    "2026-02-01",
 		PeriodEnd:      "2026-03-01",
 		LineItemStatus: billLineItemStatusEstimated,

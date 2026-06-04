@@ -207,7 +207,7 @@ func TestMonthEndCloseRejectsCrossPeriodLineItems(t *testing.T) {
 	}
 
 	_, err := closeRepo.ClosePreviousPeriod(ctx, MonthEndCloseRequest{
-		PayerAccountID: "111122223333",
+		PayerAccountID: item.PayerAccountID,
 	})
 	if err == nil {
 		t.Fatal("ClosePreviousPeriod(cross-period item) error = nil, want rejection")

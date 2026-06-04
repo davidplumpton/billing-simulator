@@ -126,7 +126,7 @@ func newMux(db *sql.DB) http.Handler {
 	bills := newBillsHandler(db)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", resourceLab.handleRoot)
-	mux.HandleFunc("/assets/app.css", resourceLab.handleStylesheet)
+	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
 	mux.HandleFunc("/resources", resourceLab.handleResources)
 	mux.HandleFunc("/resources/create", resourceLab.handleCreateResource)
 	mux.HandleFunc("/resources/tags", resourceLab.handleAddTag)

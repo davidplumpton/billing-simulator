@@ -273,14 +273,10 @@ func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status
 		}
 	}
 
-	var body bytes.Buffer
-	if err := billsPageTemplate.Execute(&body, data); err != nil {
-		http.Error(w, "render bills page: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = body.WriteTo(w)
+	renderPage(w, status, pageLayoutOptions{
+		Title:     "Bills - AWS Billing Simulator",
+		ActiveNav: "bills",
+	}, billsPageTemplate, data, "render bills page")
 }
 
 // renderInvoice builds the printable invoice page from the invoice read model.
@@ -305,14 +301,11 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 		}
 	}
 
-	var body bytes.Buffer
-	if err := invoicePageTemplate.Execute(&body, data); err != nil {
-		http.Error(w, "render invoice page: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = body.WriteTo(w)
+	renderPage(w, status, pageLayoutOptions{
+		Title:     "Invoice " + data.InvoiceID + " - AWS Billing Simulator",
+		ActiveNav: "bills",
+		MainClass: "invoice-page",
+	}, invoicePageTemplate, data, "render invoice page")
 }
 
 // handleInvoiceCSV serves a machine-readable detailed-charge export for one invoice.
@@ -836,29 +829,7 @@ func invoiceCSVFilename(invoiceID string) string {
 	return safe + "-line-items.csv"
 }
 
-var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Bills - AWS Billing Simulator</title>
-	<link rel="stylesheet" href="/assets/app.css">
-</head>
-<body>
-	<header class="topbar">
-		<div class="brand">AWS Billing Simulator</div>
-		<nav aria-label="Primary">
-			<a href="/workspaces">Workspaces</a>
-			<a href="/resources">Resources</a>
-			<span>Tags</span>
-			<span>Cost Explorer</span>
-			<a class="active" href="/bills">Bills</a>
-			<span>Scenarios</span>
-		</nav>
-	</header>
-
-	<main class="page">
-		<div class="page-heading">
+var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<div class="page-heading">
 			<div>
 				<h1>Bills</h1>
 			</div>
@@ -1104,34 +1075,9 @@ var billsPageTemplate = template.Must(template.New("bills-page").Parse(`<!doctyp
 				</div>
 			</section>
 		{{end}}
-	</main>
-</body>
-</html>
 `))
 
-var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Invoice {{.InvoiceID}} - AWS Billing Simulator</title>
-	<link rel="stylesheet" href="/assets/app.css">
-</head>
-<body>
-	<header class="topbar">
-		<div class="brand">AWS Billing Simulator</div>
-		<nav aria-label="Primary">
-			<a href="/workspaces">Workspaces</a>
-			<a href="/resources">Resources</a>
-			<span>Tags</span>
-			<span>Cost Explorer</span>
-			<a class="active" href="/bills">Bills</a>
-			<span>Scenarios</span>
-		</nav>
-	</header>
-
-	<main class="page invoice-page">
-		<div class="page-heading">
+var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<div class="page-heading">
 			<div>
 				<h1>Invoice {{.InvoiceID}}</h1>
 			</div>
@@ -1320,7 +1266,4 @@ var invoicePageTemplate = template.Must(template.New("invoice-page").Parse(`<!do
 				</div>
 			</section>
 		{{end}}
-	</main>
-</body>
-</html>
 `))

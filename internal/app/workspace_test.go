@@ -200,6 +200,86 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	}
 }
 
+func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspacePath := t.TempDir()
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}))
+	t.Cleanup(server.Close)
+
+	client := server.Client()
+	pages := []struct {
+		path       string
+		title      string
+		activeLink string
+	}{
+		{
+			path:       "/workspaces",
+			title:      "<title>Workspaces - AWS Billing Simulator</title>",
+			activeLink: `<a class="active" aria-current="page" href="/workspaces">Workspaces</a>`,
+		},
+		{
+			path:       "/resources",
+			title:      "<title>Resources - AWS Billing Simulator</title>",
+			activeLink: `<a class="active" aria-current="page" href="/resources">Resources</a>`,
+		},
+		{
+			path:       "/bills",
+			title:      "<title>Bills - AWS Billing Simulator</title>",
+			activeLink: `<a class="active" aria-current="page" href="/bills">Bills</a>`,
+		},
+	}
+
+	for _, page := range pages {
+		resp, err := client.Get(server.URL + page.path)
+		if err != nil {
+			t.Fatalf("GET %s error = %v", page.path, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d; body=%s", page.path, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "<!doctype html>") || !strings.Contains(body, `<main class="page`) {
+			t.Fatalf("GET %s missing shared document shell: %s", page.path, body)
+		}
+		if !strings.Contains(body, page.title) || !strings.Contains(body, page.activeLink) {
+			t.Fatalf("GET %s missing title or active nav; body=%s", page.path, body)
+		}
+		if !strings.Contains(body, `<span aria-disabled="true">Cost Explorer</span>`) {
+			t.Fatalf("GET %s missing disabled future navigation item: %s", page.path, body)
+		}
+	}
+
+	resp, err := client.Get(server.URL + "/assets/app.css")
+	if err != nil {
+		t.Fatalf("GET /assets/app.css error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /assets/app.css status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Fatalf("GET /assets/app.css Content-Type = %q, want text/css", got)
+	}
+	if !strings.Contains(body, "--accent: #0f766e") || !strings.Contains(body, "@media (max-width: 980px)") {
+		t.Fatalf("GET /assets/app.css missing embedded app styles: %s", body)
+	}
+}
+
 func TestWorkspaceMuxRoutesInvoices(t *testing.T) {
 	t.Parallel()
 

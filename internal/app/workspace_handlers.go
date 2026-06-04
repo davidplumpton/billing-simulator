@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -87,14 +86,10 @@ func (h workspaceHandler) renderWorkspaces(w http.ResponseWriter, status int, er
 		Error:                errorMessage,
 	}
 
-	var body bytes.Buffer
-	if err := workspacePageTemplate.Execute(&body, data); err != nil {
-		http.Error(w, "render workspace page: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = body.WriteTo(w)
+	renderPage(w, status, pageLayoutOptions{
+		Title:     "Workspaces - AWS Billing Simulator",
+		ActiveNav: "workspaces",
+	}, workspacePageTemplate, data, "render workspace page")
 }
 
 // newWorkspaceMux routes requests through the current workspace session.
@@ -104,9 +99,7 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/", workspaces.handleRoot)
 	mux.HandleFunc("/workspaces", workspaces.handleWorkspaces)
 	mux.HandleFunc("/workspaces/open", workspaces.handleOpenWorkspace)
-	mux.HandleFunc("/assets/app.css", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleStylesheet(w, r)
-	}))
+	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
 	mux.HandleFunc("/resources", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
 		h.handleResources(w, r)
 	}))
@@ -154,29 +147,7 @@ func resourceRoute(workspace *workspaceSession, handle func(resourceLabHandler, 
 	}
 }
 
-var workspacePageTemplate = template.Must(template.New("workspace-page").Parse(`<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Workspaces - AWS Billing Simulator</title>
-	<link rel="stylesheet" href="/assets/app.css">
-</head>
-<body>
-	<header class="topbar">
-		<div class="brand">AWS Billing Simulator</div>
-		<nav aria-label="Primary">
-			<a class="active" href="/workspaces">Workspaces</a>
-			<a href="/resources">Resources</a>
-			<span>Tags</span>
-			<span>Cost Explorer</span>
-			<a href="/bills">Bills</a>
-			<span>Scenarios</span>
-		</nav>
-	</header>
-
-	<main class="page">
-		<div class="page-heading">
+var workspacePageTemplate = template.Must(template.New("workspace-page").Parse(`<div class="page-heading">
 			<div>
 				<h1>Workspaces</h1>
 			</div>
@@ -211,7 +182,4 @@ var workspacePageTemplate = template.Must(template.New("workspace-page").Parse(`
 				<button type="submit">Open or Create Workspace</button>
 			</form>
 		</section>
-	</main>
-</body>
-</html>
 `))

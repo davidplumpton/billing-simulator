@@ -218,6 +218,7 @@ func (r ResourceUsageRepository) CreateResource(ctx context.Context, request Res
 				ResourceID:            request.ID,
 				Key:                   key,
 				Value:                 value,
+				AppliedAt:             request.StartedAt,
 				EventSource:           request.EventSource,
 				ScenarioRunID:         request.ScenarioRunID,
 				ScenarioEventID:       request.ScenarioEventID,
@@ -272,7 +273,7 @@ func (r ResourceUsageRepository) AddTag(ctx context.Context, request ResourceTag
 	return r.getTag(ctx, request.ID)
 }
 
-// RecordUsageEvent creates a learner usage event from a resource snapshot and its active tags.
+// RecordUsageEvent creates a learner usage event from a resource snapshot and tags active at usage start.
 func (r ResourceUsageRepository) RecordUsageEvent(ctx context.Context, request UsageEventCreateRequest) (UsageEvent, error) {
 	return r.recordUsageEvent(ctx, request, "learner", false)
 }
@@ -317,7 +318,7 @@ func (r ResourceUsageRepository) recordUsageEvent(ctx context.Context, request U
 	if err != nil {
 		return UsageEvent{}, fmt.Errorf("marshal usage attributes: %w", err)
 	}
-	tagSnapshot, err := r.activeTags(ctx, resource.ID)
+	tagSnapshot, err := r.tagSnapshotAtUsageStart(ctx, resource.ID, request.UsageStartTime)
 	if err != nil {
 		return UsageEvent{}, err
 	}
@@ -661,6 +662,57 @@ func (r ResourceUsageRepository) activeTags(ctx context.Context, resourceID stri
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate active tags for resource %q: %w", resourceID, err)
+	}
+	return tags, nil
+}
+
+// tagSnapshotAtUsageStart returns tags that were active when a usage window began.
+func (r ResourceUsageRepository) tagSnapshotAtUsageStart(ctx context.Context, resourceID, usageStartTime string) (map[string]string, error) {
+	usageStart, err := time.Parse(time.RFC3339, usageStartTime)
+	if err != nil {
+		return nil, fmt.Errorf("parse usage start time for tag snapshot: %w", err)
+	}
+
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT tag_key, tag_value, applied_at, removed_at
+		 FROM resource_tags
+		 WHERE resource_id = ?
+		 ORDER BY tag_key, applied_at, id`,
+		resourceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list tag history for resource %q: %w", resourceID, err)
+	}
+	defer rows.Close()
+
+	tags := map[string]string{}
+	for rows.Next() {
+		var key, value, appliedAtRaw string
+		var removedAtRaw sql.NullString
+		if err := rows.Scan(&key, &value, &appliedAtRaw, &removedAtRaw); err != nil {
+			return nil, fmt.Errorf("scan tag history for resource %q: %w", resourceID, err)
+		}
+		appliedAt, err := time.Parse(time.RFC3339, appliedAtRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse applied_at for resource tag %q on resource %q: %w", key, resourceID, err)
+		}
+		if appliedAt.After(usageStart) {
+			continue
+		}
+		if removedAtRaw.Valid {
+			removedAt, err := time.Parse(time.RFC3339, removedAtRaw.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse removed_at for resource tag %q on resource %q: %w", key, resourceID, err)
+			}
+			if !removedAt.After(usageStart) {
+				continue
+			}
+		}
+		tags[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tag history for resource %q: %w", resourceID, err)
 	}
 	return tags, nil
 }

@@ -43,6 +43,7 @@ func TestResourceUsageRepositoryCreatesResourceTagsAndUsage(t *testing.T) {
 		ResourceID: resource.ID,
 		Key:        "env",
 		Value:      "prod",
+		AppliedAt:  "2026-02-01T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("AddTag() error = %v", err)
@@ -92,6 +93,91 @@ func TestResourceUsageRepositoryCreatesResourceTagsAndUsage(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].ID != "usage-ec2-hours-1" {
 		t.Fatalf("usage events = %+v, want generated event", events)
+	}
+}
+
+func TestResourceUsageRepositorySnapshotsTagsAtUsageStart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewResourceUsageRepository(db)
+
+	resource, err := repo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-tag-history",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Tagged history",
+		Status:       "active",
+		StartedAt:    "2026-01-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+
+	if _, err := repo.AddTag(ctx, ResourceTagCreateRequest{
+		ID:         "tag-owner-existing",
+		ResourceID: resource.ID,
+		Key:        "owner",
+		Value:      "platform",
+		AppliedAt:  "2026-01-15T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddTag(owner) error = %v", err)
+	}
+	if _, err := repo.AddTag(ctx, ResourceTagCreateRequest{
+		ID:         "tag-env-future",
+		ResourceID: resource.ID,
+		Key:        "env",
+		Value:      "prod",
+		AppliedAt:  "2026-02-01T00:30:00Z",
+	}); err != nil {
+		t.Fatalf("AddTag(env) error = %v", err)
+	}
+	if _, err := repo.AddTag(ctx, ResourceTagCreateRequest{
+		ID:         "tag-legacy-removed",
+		ResourceID: resource.ID,
+		Key:        "legacy",
+		Value:      "migration",
+		AppliedAt:  "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AddTag(legacy) error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE resource_tags SET removed_at = ? WHERE id = ?`, "2026-01-31T23:00:00Z", "tag-legacy-removed"); err != nil {
+		t.Fatalf("mark legacy tag removed: %v", err)
+	}
+
+	event, err := repo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-tag-history",
+		ResourceID:          resource.ID,
+		ServiceCode:         "AmazonEC2",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T01:00:00Z",
+		UsageQuantityMicros: 1_000_000,
+		UsageUnit:           "Hours",
+	})
+	if err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if event.TagSnapshot["owner"] != "platform" {
+		t.Fatalf("usage tag snapshot = %+v, want owner active at usage start", event.TagSnapshot)
+	}
+	if _, ok := event.TagSnapshot["env"]; ok {
+		t.Fatalf("usage tag snapshot = %+v, did not want tag applied after usage start", event.TagSnapshot)
+	}
+	if _, ok := event.TagSnapshot["legacy"]; ok {
+		t.Fatalf("usage tag snapshot = %+v, did not want tag removed before usage start", event.TagSnapshot)
+	}
+
+	summaries, err := repo.ListResources(ctx)
+	if err != nil {
+		t.Fatalf("ListResources() error = %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].ActiveTags["env"] != "prod" || summaries[0].ActiveTags["legacy"] != "" {
+		t.Fatalf("resource summary active tags = %+v, want current env tag without removed legacy tag", summaries)
 	}
 }
 

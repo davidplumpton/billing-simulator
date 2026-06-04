@@ -22,6 +22,7 @@ func TestMonthEndCloseFinalizesPeriodAndCreatesBill(t *testing.T) {
 		ServiceCode:  serviceAmazonEC2,
 		ResourceType: "ec2_instance",
 		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
 		Tags: map[string]string{
 			"app": "storefront",
 		},

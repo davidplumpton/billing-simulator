@@ -25,6 +25,7 @@ func TestBillLineItemRepositoryGeneratesPricedUsageLineItems(t *testing.T) {
 		ResourceType: "ec2_instance",
 		ResourceName: "Billable web",
 		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
 		Tags: map[string]string{
 			"app":   "storefront",
 			"owner": "platform",

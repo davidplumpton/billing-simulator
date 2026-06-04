@@ -22,6 +22,7 @@ func TestMeteringRepositoryGeneratesNormalizedRecordsFromUsageEvents(t *testing.
 		ResourceType: "ec2_instance",
 		ResourceName: "Metered web",
 		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
 		Tags: map[string]string{
 			"app":   "storefront",
 			"owner": "platform",

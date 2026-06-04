@@ -191,6 +191,81 @@ func TestParseDefinitionRejectsInvalidScenario(t *testing.T) {
 	assertErrorContains(t, err, "checks[1].type \"unknown_check\" is not supported")
 }
 
+func TestParseDefinitionReportsActionableScenarioErrors(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken authoring fixture",
+		"clock": {
+			"start": "2026-03-01"
+		},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "unknown-account",
+				"day": 1,
+				"action": "create_resource",
+				"account": "Ghost Account",
+				"service": "Amazon S3",
+				"resource": "s3://ghost-assets",
+				"tags": {
+					"aws:owner": "system",
+					"owner#": "platform"
+				}
+			},
+			{
+				"id": "unsupported-service",
+				"day": 2,
+				"action": "add_usage",
+				"account": "Storefront Prod",
+				"service": "Imaginary Compute",
+				"amount_gb": 1
+			},
+			{
+				"id": "before-start",
+				"at": "2026-02-28",
+				"action": "run_daily_metering",
+				"payer_account": "Management"
+			},
+			{
+				"id": "bad-period",
+				"day": 3,
+				"action": "close_billing_period",
+				"payer_account": "Nobody",
+				"billing_period_start": "2026-04-01",
+				"billing_period_end": "2026-03-01"
+			}
+		],
+		"checks": [
+			{
+				"id": "unsupported-check",
+				"type": "manually_review_console"
+			},
+			{
+				"id": "unsupported-check-service",
+				"type": "identifies_top_driver",
+				"expected_service": "Imaginary Compute"
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want actionable validation error")
+	}
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error type = %T, want ValidationError: %v", err, err)
+	}
+	assertErrorContains(t, err, `events[0].account "Ghost Account" is not in organization_template "anycompany-retail"`)
+	assertErrorContains(t, err, `events[0].tags key "aws:owner" must not start with aws:`)
+	assertErrorContains(t, err, `events[0].tags key "owner#" may contain letters`)
+	assertErrorContains(t, err, `events[1] service "Imaginary Compute" is not supported`)
+	assertErrorContains(t, err, `events[2] schedules at 2026-02-28T00:00:00Z before clock.start 2026-03-01`)
+	assertErrorContains(t, err, `events[3].payer_account "Nobody" is not in organization_template "anycompany-retail"`)
+	assertErrorContains(t, err, `events[3].billing_period_start must be before billing_period_end`)
+	assertErrorContains(t, err, `checks[0].type "manually_review_console" is not supported`)
+	assertErrorContains(t, err, `checks[1].expected_service "Imaginary Compute" is not supported`)
+}
+
 func TestParseDefinitionRejectsUnknownFieldsAndMultipleDocuments(t *testing.T) {
 	_, err := ParseDefinitionBytes([]byte(`{"name":"bad","title":"unknown"}`))
 	if err == nil {

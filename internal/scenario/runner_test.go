@@ -26,23 +26,23 @@ func TestRunnerAppliesScenarioEventsDeterministically(t *testing.T) {
 	}
 }
 
-func TestRunnerRecordsFailedEventAndRun(t *testing.T) {
+func TestRunnerRecordsFailedExecutionEventAndRun(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	db := openScenarioTestWorkspace(t)
 	definition, err := ParseDefinitionBytes([]byte(`{
-		"name": "Unsupported service scenario",
+		"name": "Missing resource scenario",
 		"clock": {"start": "2026-03-01"},
 		"organization_template": "anycompany-retail",
 		"events": [
 			{
-				"id": "create-unknown",
+				"id": "generate-missing",
 				"day": 1,
-				"action": "create_resource",
-				"account": "Storefront Prod",
-				"service": "Unknown Service",
-				"resource": "Unsupported"
+				"action": "generate_usage",
+				"resource": "s3://missing-assets",
+				"pattern": "storage_growth",
+				"days": 1
 			}
 		]
 	}`))
@@ -51,25 +51,25 @@ func TestRunnerRecordsFailedEventAndRun(t *testing.T) {
 	}
 
 	result, err := NewRunner(db).Run(ctx, definition)
-	if err == nil || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("Run() error = %v, want unsupported service error", err)
+	if err == nil || !strings.Contains(err.Error(), "was not created before generate_usage") {
+		t.Fatalf("Run() error = %v, want missing resource execution error", err)
 	}
-	if result.Run.Status != scenarioRunStatusFailed || result.Run.CurrentEventID != "create-unknown" {
-		t.Fatalf("failed run = %+v, want failed status at create-unknown", result.Run)
+	if result.Run.Status != scenarioRunStatusFailed || result.Run.CurrentEventID != "generate-missing" {
+		t.Fatalf("failed run = %+v, want failed status at generate-missing", result.Run)
 	}
 
 	var runStatus, eventStatus, errorMessage string
 	if err := db.QueryRowContext(ctx, `SELECT status, error_message FROM scenario_runs WHERE id = ?`, result.Run.ID).Scan(&runStatus, &errorMessage); err != nil {
 		t.Fatalf("read failed scenario run: %v", err)
 	}
-	if runStatus != scenarioRunStatusFailed || !strings.Contains(errorMessage, "not supported") {
-		t.Fatalf("persisted failed run = %q/%q, want failed unsupported-service message", runStatus, errorMessage)
+	if runStatus != scenarioRunStatusFailed || !strings.Contains(errorMessage, "was not created before generate_usage") {
+		t.Fatalf("persisted failed run = %q/%q, want failed missing-resource message", runStatus, errorMessage)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT status, error_message FROM scenario_run_events WHERE scenario_run_id = ? AND scenario_event_id = ?`, result.Run.ID, "create-unknown").Scan(&eventStatus, &errorMessage); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT status, error_message FROM scenario_run_events WHERE scenario_run_id = ? AND scenario_event_id = ?`, result.Run.ID, "generate-missing").Scan(&eventStatus, &errorMessage); err != nil {
 		t.Fatalf("read failed scenario event: %v", err)
 	}
-	if eventStatus != scenarioRunStatusFailed || !strings.Contains(errorMessage, "not supported") {
-		t.Fatalf("persisted failed event = %q/%q, want failed unsupported-service message", eventStatus, errorMessage)
+	if eventStatus != scenarioRunStatusFailed || !strings.Contains(errorMessage, "was not created before generate_usage") {
+		t.Fatalf("persisted failed event = %q/%q, want failed missing-resource message", eventStatus, errorMessage)
 	}
 }
 

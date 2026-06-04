@@ -856,6 +856,25 @@ func anyCompanyRetailAccountAliases() map[string]string {
 	}
 }
 
+func anyCompanyRetailAccountNames() []string {
+	return []string{
+		"Management",
+		"Management Account",
+		"Log Archive",
+		"Audit",
+		"Shared Networking",
+		"Platform Services",
+		"Developer Sandbox 1",
+		"Developer Sandbox 2",
+		"Storefront Dev",
+		"Storefront Prod",
+		"Payments Dev",
+		"Payments Prod",
+		"Analytics Prod",
+		"Deprecated Prototype",
+	}
+}
+
 func scenarioLookupKey(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	var builder strings.Builder

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -212,6 +213,8 @@ func normalizeAndValidate(definition Definition) (Definition, error) {
 		checkIDs[check.ID] = i
 	}
 
+	validateScenarioSemantics(definition, &problems)
+
 	if len(problems) > 0 {
 		return Definition{}, ValidationError{Problems: problems}
 	}
@@ -268,7 +271,7 @@ func normalizeCheck(check Check, index int) Check {
 func validateEvent(event Event, index int, problems *validationProblems) {
 	path := fmt.Sprintf("events[%d]", index)
 	validateEventSchedule(path, event, problems)
-	validateStringMap(path+".tags", event.Tags, problems)
+	validateScenarioTagMap(path+".tags", event.Tags, problems)
 	validateStringMap(path+".attributes", event.Attributes, problems)
 	validateOptionalDate(path+".billing_period_start", event.BillingPeriodStart, problems)
 	validateOptionalDate(path+".billing_period_end", event.BillingPeriodEnd, problems)
@@ -385,7 +388,7 @@ func validateBillingEvent(path string, event Event, problems *validationProblems
 
 func validateCheck(check Check, index int, problems *validationProblems) {
 	path := fmt.Sprintf("checks[%d]", index)
-	validateStringMap(path+".tags", check.Tags, problems)
+	validateScenarioTagMap(path+".tags", check.Tags, problems)
 	validatePositiveNumber(path+".expected_value", check.ExpectedValue, problems)
 
 	switch check.Type {
@@ -406,6 +409,123 @@ func validateCheck(check Check, index int, problems *validationProblems) {
 	default:
 		problems.add("%s.type %q is not supported", path, check.Type)
 	}
+}
+
+func validateScenarioSemantics(definition Definition, problems *validationProblems) {
+	startTime, hasStart := scenarioDefinitionStart(definition.Clock.Start)
+	for i, event := range definition.Events {
+		path := fmt.Sprintf("events[%d]", i)
+		validateScenarioEventAccountReferences(path, definition.OrganizationTemplate, event, problems)
+		validateScenarioEventService(path, event, problems)
+		validateScenarioEventTimeWindow(path, startTime, hasStart, event, problems)
+		validateScenarioBillingPeriodWindow(path, event, problems)
+	}
+
+	for i, check := range definition.Checks {
+		path := fmt.Sprintf("checks[%d]", i)
+		validateScenarioAccountReference(path+".account", definition.OrganizationTemplate, "", check.Account, problems)
+		validateScenarioCheckService(path+".expected_service", check.ExpectedService, problems)
+		validateScenarioCheckService(path+".service", check.Service, problems)
+	}
+}
+
+func validateScenarioEventAccountReferences(path, organizationTemplate string, event Event, problems *validationProblems) {
+	switch event.Action {
+	case EventActionCreateResource, EventActionAddUsage:
+		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, problems)
+	case EventActionRunDailyMetering, EventActionCloseBillingPeriod, EventActionIssueBill:
+		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, problems)
+	default:
+		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, problems)
+		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, problems)
+	}
+}
+
+func validateScenarioAccountReference(path, organizationTemplate, explicitID, name string, problems *validationProblems) {
+	if strings.TrimSpace(explicitID) != "" || strings.TrimSpace(name) == "" {
+		return
+	}
+	if scenarioLookupKey(organizationTemplate) != scenarioLookupKey("anycompany-retail") {
+		return
+	}
+	if anyCompanyRetailAccountAliases()[scenarioLookupKey(name)] != "" {
+		return
+	}
+	problems.add("%s %q is not in organization_template %q; use account_id or one of: %s", path, name, organizationTemplate, strings.Join(anyCompanyRetailAccountNames(), ", "))
+}
+
+func validateScenarioEventService(path string, event Event, problems *validationProblems) {
+	switch event.Action {
+	case EventActionCreateResource, EventActionAddUsage:
+	default:
+		return
+	}
+	if event.Service == "" && event.ServiceCode == "" {
+		return
+	}
+	if _, err := scenarioServiceDefaultsForEvent(event); err != nil {
+		problems.add("%s service %q is not supported; use one of: %s, or set service_code with usage_type, operation, and unit for custom usage", path, chooseFirst(event.Service, event.ServiceCode), supportedScenarioServiceList())
+	}
+}
+
+func validateScenarioCheckService(path, value string, problems *validationProblems) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	if scenarioServiceCodeForName(value) != "" {
+		return
+	}
+	if _, ok := scenarioServiceDefaultsByCode()[strings.TrimSpace(value)]; ok {
+		return
+	}
+	problems.add("%s %q is not supported; use one of: %s", path, value, supportedScenarioServiceList())
+}
+
+func validateScenarioEventTimeWindow(path string, startTime time.Time, hasStart bool, event Event, problems *validationProblems) {
+	if !hasStart {
+		return
+	}
+	scheduledAt, err := scheduledEventTime(startTime, event)
+	if err != nil {
+		return
+	}
+	if scheduledAt.Before(startTime) {
+		problems.add("%s schedules at %s before clock.start %s", path, scheduledAt.Format(time.RFC3339), startTime.Format(time.DateOnly))
+	}
+}
+
+func validateScenarioBillingPeriodWindow(path string, event Event, problems *validationProblems) {
+	if event.BillingPeriodStart == "" || event.BillingPeriodEnd == "" {
+		return
+	}
+	start, startOK := parseScenarioDateOnly(event.BillingPeriodStart)
+	end, endOK := parseScenarioDateOnly(event.BillingPeriodEnd)
+	if !startOK || !endOK {
+		return
+	}
+	if !start.Before(end) {
+		problems.add("%s.billing_period_start must be before billing_period_end", path)
+		return
+	}
+	if start.Day() != 1 || end.Day() != 1 || !start.AddDate(0, 1, 0).Equal(end) {
+		problems.add("%s billing period must cover exactly one UTC calendar month", path)
+	}
+}
+
+func scenarioDefinitionStart(value string) (time.Time, bool) {
+	parsed, ok := parseScenarioDateOnly(value)
+	if !ok {
+		return time.Time{}, false
+	}
+	return parsed, true
+}
+
+func parseScenarioDateOnly(value string) (time.Time, bool) {
+	parsed, err := time.Parse(time.DateOnly, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.UTC), true
 }
 
 func validateScenarioTimestamp(path, value string, problems *validationProblems) {
@@ -447,6 +567,51 @@ func validateStringMap(path string, values map[string]string, problems *validati
 	}
 }
 
+func validateScenarioTagMap(path string, values map[string]string, problems *validationProblems) {
+	for key := range values {
+		validateScenarioTagKey(path, key, problems)
+	}
+}
+
+func validateScenarioTagKey(path, key string, problems *validationProblems) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		problems.add("%s key is required", path)
+		return
+	}
+	if len(key) > 128 {
+		problems.add("%s key %q must be 128 bytes or fewer", path, key)
+	}
+	if strings.HasPrefix(strings.ToLower(key), "aws:") {
+		problems.add("%s key %q must not start with aws:", path, key)
+	}
+	for _, char := range key {
+		if isScenarioTagKeyRune(char) {
+			continue
+		}
+		problems.add("%s key %q may contain letters, numbers, spaces, and + - = . _ : / @", path, key)
+		return
+	}
+}
+
+func isScenarioTagKeyRune(char rune) bool {
+	if char >= 'a' && char <= 'z' {
+		return true
+	}
+	if char >= 'A' && char <= 'Z' {
+		return true
+	}
+	if char >= '0' && char <= '9' {
+		return true
+	}
+	switch char {
+	case ' ', '+', '-', '=', '.', '_', ':', '/', '@':
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeStringMap(values map[string]string) map[string]string {
 	if len(values) == 0 {
 		return map[string]string{}
@@ -462,4 +627,13 @@ type validationProblems []string
 
 func (p *validationProblems) add(format string, args ...any) {
 	*p = append(*p, fmt.Sprintf(format, args...))
+}
+
+func supportedScenarioServiceList() string {
+	names := make([]string, 0, len(scenarioServiceDefaultsByCode()))
+	for _, defaults := range scenarioServiceDefaultsByCode() {
+		names = append(names, defaults.ServiceName)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }

@@ -287,6 +287,184 @@ func TestLocalServerSmokeFlowCreatesWorkspaceAndServesDashboard(t *testing.T) {
 	}
 }
 
+func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "organization-workspace")
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Get(server.URL() + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization without workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Workspace Required") || !strings.Contains(body, `href="/workspaces"`) {
+		t.Fatalf("GET /organization without workspace missing workspace empty state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/workspaces/open", url.Values{
+		"workspace_path": {workspacePath},
+	})
+	if err != nil {
+		t.Fatalf("POST /workspaces/open error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /workspaces/open final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/resources" {
+		t.Fatalf("POST /workspaces/open final path = %q, want /resources", got)
+	}
+	if _, err := os.Stat(persistence.WorkspaceDBPath(workspacePath)); err != nil {
+		t.Fatalf("workspace database was not created: %v", err)
+	}
+
+	resp, err = client.Get(server.URL() + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization with workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization with workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Organization - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/organization">Organization</a>`,
+		"AnyCompany Retail",
+		"Root - ou_anycompany_root",
+		"Storefront Prod",
+		"Deprecated Prototype",
+		"13 accounts",
+		"12 active, 1 suspended, 0 closed",
+		`action="/organization/accounts/create"`,
+		`action="/organization/accounts/move"`,
+		`action="/organization/accounts/suspend"`,
+		`action="/organization/accounts/close"`,
+		`href="/resources?account_id=111122223333"`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /organization with workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/organization/accounts/create", url.Values{
+		"organization_id": {persistence.AnyCompanyRetailOrganizationID},
+		"account_id":      {"777788889901"},
+		"parent_unit_id":  {"ou_anycompany_sandbox"},
+		"account_name":    {"Feature Lab Account"},
+		"account_email":   {"feature-lab@anycompany.example"},
+		"effective_at":    {"2026-02-02T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST create account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created account Feature Lab Account") {
+		t.Fatalf("POST create account status/body = %d/%s, want success flash", resp.StatusCode, body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/organization/accounts/move", url.Values{
+		"account_id":     {"777788889901"},
+		"parent_unit_id": {"ou_anycompany_workloads"},
+		"effective_at":   {"2026-02-05T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST move account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Moved Feature Lab Account to Root/Workloads") {
+		t.Fatalf("POST move account status/body = %d/%s, want success flash", resp.StatusCode, body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/organization/accounts/suspend", url.Values{
+		"account_id":   {"777788889901"},
+		"effective_at": {"2026-02-10T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST suspend account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Suspended Feature Lab Account") {
+		t.Fatalf("POST suspend account status/body = %d/%s, want success flash", resp.StatusCode, body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/organization/accounts/close", url.Values{
+		"account_id":   {"777788889901"},
+		"effective_at": {"2026-02-15T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST close account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST close account status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Closed Feature Lab Account",
+		"14 accounts",
+		"12 active, 1 suspended, 1 closed",
+		"Feature Lab Account",
+		"Root/Workloads",
+		`<span class="status status-closed">Closed</span>`,
+		"17 events",
+		"Suspended -&gt; Closed",
+		`href="/resources?account_id=777788889901"`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=777788889901"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST close account body missing %q: %s", want, body)
+		}
+	}
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("workspace database is nil after organization workflow")
+	}
+	repo := persistence.NewOrganizationRepository(db)
+	account, err := repo.GetAccount(ctx, "777788889901")
+	if err != nil {
+		t.Fatalf("GetAccount(created) error = %v", err)
+	}
+	if account.Status != persistence.AccountStatusClosed ||
+		account.OUPath != "Root/Workloads" ||
+		account.LeftAt != "2026-02-15T00:00:00Z" {
+		t.Fatalf("created account after browser workflow = %+v, want closed in Workloads with left_at", account)
+	}
+	events, err := repo.ListAccountLifecycleEvents(ctx, persistence.AnyCompanyRetailOrganizationID, 200)
+	if err != nil {
+		t.Fatalf("ListAccountLifecycleEvents() error = %v", err)
+	}
+	if count := organizationLifecycleEventCountForAccount(events, "777788889901"); count != 4 {
+		t.Fatalf("created account lifecycle event count = %d, want 4", count)
+	}
+}
+
 func TestRunStartedServerClosesWorkspaceAfterUnexpectedServeExit(t *testing.T) {
 	t.Parallel()
 

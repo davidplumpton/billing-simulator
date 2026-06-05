@@ -200,6 +200,96 @@ func TestRunnerRecordsFailedExecutionEventAndRun(t *testing.T) {
 	}
 }
 
+func TestRunnerResetsOrganizationTemplateBeforeEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	organizationRepo := persistence.NewOrganizationRepository(db)
+	if _, err := organizationRepo.CreateAccount(ctx, persistence.AccountCreateRequest{
+		ID:             "777788889999",
+		OrganizationID: persistence.AnyCompanyRetailOrganizationID,
+		ParentUnitID:   "ou_anycompany_sandbox",
+		Name:           "Scenario Drift Account",
+		Email:          "scenario-drift@anycompany.example",
+		EffectiveAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+	if _, err := organizationRepo.MoveAccount(ctx, persistence.AccountMoveRequest{
+		AccountID:    "111122223333",
+		ParentUnitID: "ou_anycompany_sandbox",
+		EffectiveAt:  "2026-02-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("MoveAccount(Storefront Prod) error = %v", err)
+	}
+	if _, err := organizationRepo.SuspendAccount(ctx, persistence.AccountSuspendRequest{
+		AccountID:   "111122223333",
+		EffectiveAt: "2026-02-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SuspendAccount(Storefront Prod) error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE account_tags SET tag_value = ? WHERE account_id = ? AND tag_key = ?`, "drifted-owner", "111122223333", "owner"); err != nil {
+		t.Fatalf("update account tag drift: %v", err)
+	}
+	if _, err := persistence.NewResourceUsageRepository(db).CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "preserved-runner-reset-resource",
+		AccountID:    "777788889999",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonS3",
+		ResourceType: "bucket",
+		ResourceName: "runner-reset-preserved-resource",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+
+	definition := parseScenarioDefinitionForTest(t, `{
+		"name": "Reset organization before events",
+		"clock": {"start": "2026-03-01"},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "storefront-usage",
+				"day": 1,
+				"action": "add_usage",
+				"account": "Storefront Prod",
+				"service": "Amazon S3",
+				"amount_gb": 1
+			}
+		]
+	}`)
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded || result.ResourcesCreated != 1 || result.UsageEventsCreated != 1 {
+		t.Fatalf("Run() result = %+v, want successful usage after organization reset", result)
+	}
+
+	accounts, err := organizationRepo.ListAccounts(ctx, persistence.AnyCompanyRetailOrganizationID)
+	if err != nil {
+		t.Fatalf("ListAccounts() after scenario reset error = %v", err)
+	}
+	if len(accounts) != 13 {
+		t.Fatalf("account count after scenario reset = %d, want 13", len(accounts))
+	}
+	byName := scenarioAccountsByName(accounts)
+	if _, ok := byName["Scenario Drift Account"]; ok {
+		t.Fatalf("scenario reset retained drift account: %+v", accounts)
+	}
+	storefrontProd := byName["Storefront Prod"]
+	if storefrontProd.ParentUnitID != "ou_anycompany_workloads" ||
+		storefrontProd.Status != persistence.AccountStatusActive ||
+		storefrontProd.Owner != "storefront-team" {
+		t.Fatalf("Storefront Prod after scenario reset = %+v, want seed OU/status/account tags", storefrontProd)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*) FROM resources WHERE id = ?`, "preserved-runner-reset-resource"); got != 1 {
+		t.Fatalf("preserved resource count = %d, want 1", got)
+	}
+}
+
 type scenarioFixtureResult struct {
 	result              RunResult
 	s3ResourceID        string
@@ -332,4 +422,22 @@ func openScenarioTestWorkspace(t *testing.T) *sql.DB {
 		}
 	})
 	return db
+}
+
+func scenarioAccountsByName(accounts []persistence.OrganizationAccount) map[string]persistence.OrganizationAccount {
+	byName := make(map[string]persistence.OrganizationAccount, len(accounts))
+	for _, account := range accounts {
+		byName[account.Name] = account
+	}
+	return byName
+}
+
+func countScenarioRows(t *testing.T, db *sql.DB, query string, args ...any) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), query, args...).Scan(&count); err != nil {
+		t.Fatalf("count rows with %q: %v", query, err)
+	}
+	return count
 }

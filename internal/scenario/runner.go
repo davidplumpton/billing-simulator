@@ -25,21 +25,23 @@ const (
 
 // Runner applies parsed scenario definitions to a workspace database.
 type Runner struct {
-	db       *sql.DB
-	clock    persistence.SimulatorClockRepository
-	usage    persistence.ResourceUsageRepository
-	daily    persistence.DailyMeteringJobRepository
-	monthEnd persistence.MonthEndCloseRepository
+	db           *sql.DB
+	clock        persistence.SimulatorClockRepository
+	usage        persistence.ResourceUsageRepository
+	daily        persistence.DailyMeteringJobRepository
+	monthEnd     persistence.MonthEndCloseRepository
+	organization persistence.OrganizationRepository
 }
 
 // NewRunner creates a scenario runner backed by the workspace database.
 func NewRunner(db *sql.DB) Runner {
 	return Runner{
-		db:       db,
-		clock:    persistence.NewSimulatorClockRepository(db),
-		usage:    persistence.NewResourceUsageRepository(db),
-		daily:    persistence.NewDailyMeteringJobRepository(db),
-		monthEnd: persistence.NewMonthEndCloseRepository(db),
+		db:           db,
+		clock:        persistence.NewSimulatorClockRepository(db),
+		usage:        persistence.NewResourceUsageRepository(db),
+		daily:        persistence.NewDailyMeteringJobRepository(db),
+		monthEnd:     persistence.NewMonthEndCloseRepository(db),
+		organization: persistence.NewOrganizationRepository(db),
 	}
 }
 
@@ -73,6 +75,11 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 	result := RunResult{
 		Run: run,
 	}
+
+	if _, err := r.organization.ResetOrganizationTemplate(ctx, definition.OrganizationTemplate); err != nil {
+		return r.failRun(ctx, result, "", fmt.Errorf("reset scenario organization template: %w", err))
+	}
+
 	state := scenarioExecutionState{
 		runID:                run.ID,
 		definition:           definition,

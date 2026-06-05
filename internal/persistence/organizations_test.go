@@ -333,6 +333,127 @@ func TestOrganizationRepositoryAccountLifecycleOperationsRecordHistory(t *testin
 	}
 }
 
+func TestOrganizationRepositoryResetTemplateRestoresAnyCompanySeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewOrganizationRepository(db)
+
+	if _, err := repo.CreateAccount(ctx, AccountCreateRequest{
+		ID:             "777788889999",
+		OrganizationID: AnyCompanyRetailOrganizationID,
+		ParentUnitID:   "ou_anycompany_sandbox",
+		Name:           "Partner Integration",
+		Email:          "partner-integration@anycompany.example",
+		EffectiveAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+	if _, err := repo.MoveAccount(ctx, AccountMoveRequest{
+		AccountID:    "111122223333",
+		ParentUnitID: "ou_anycompany_sandbox",
+		EffectiveAt:  "2026-02-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("MoveAccount(Storefront Prod) error = %v", err)
+	}
+	if _, err := repo.SuspendAccount(ctx, AccountSuspendRequest{
+		AccountID:   "111122223333",
+		EffectiveAt: "2026-02-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SuspendAccount(Storefront Prod) error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE organizations SET name = ? WHERE id = ?`, "Changed Retail", AnyCompanyRetailOrganizationID); err != nil {
+		t.Fatalf("update organization name: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE organization_units SET name = ?, path = ? WHERE id = ?`, "Changed Workloads", "Root/Changed Workloads", "ou_anycompany_workloads"); err != nil {
+		t.Fatalf("update organization unit: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE account_tags SET tag_value = ? WHERE account_id = ? AND tag_key = ?`, "changed-owner", "111122223333", accountTagKeyOwner); err != nil {
+		t.Fatalf("update account tag: %v", err)
+	}
+	if _, err := NewResourceUsageRepository(db).CreateResource(ctx, ResourceCreateRequest{
+		ID:           "preserved-reset-resource",
+		AccountID:    "777788889999",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonS3",
+		ResourceType: "bucket",
+		ResourceName: "scenario-reset-preserved-resource",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := NewSavedReportRepository(db).Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-reset-report",
+		Name:           "Reset Safety",
+		OwnerAccountID: "777788889999",
+		OwnerRole:      "member-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Groupings:      []SavedReportGrouping{{Type: "dimension", Key: "service"}},
+		Metrics:        []string{"unblended_cost"},
+		ChartType:      "table",
+	}); err != nil {
+		t.Fatalf("Create(saved report) error = %v", err)
+	}
+
+	reset, err := repo.ResetOrganizationTemplate(ctx, AnyCompanyRetailTemplateKey)
+	if err != nil {
+		t.Fatalf("ResetOrganizationTemplate() error = %v", err)
+	}
+	if reset.OrganizationID != AnyCompanyRetailOrganizationID ||
+		reset.RootsReset != 1 ||
+		reset.UnitsReset != 6 ||
+		reset.AccountsReset != 13 ||
+		reset.AccountTagsReset != 65 ||
+		reset.LifecycleEventsReset != 13 {
+		t.Fatalf("reset result = %+v, want AnyCompany seed row counts", reset)
+	}
+
+	organization, err := repo.GetOrganizationByTemplate(ctx, AnyCompanyRetailTemplateKey)
+	if err != nil {
+		t.Fatalf("GetOrganizationByTemplate() after reset error = %v", err)
+	}
+	if organization.Name != "AnyCompany Retail" || organization.ManagementAccountID != AnyCompanyRetailManagementAccountID {
+		t.Fatalf("organization after reset = %+v, want AnyCompany seed header", organization)
+	}
+	units, err := repo.ListUnits(ctx, organization.ID)
+	if err != nil {
+		t.Fatalf("ListUnits() after reset error = %v", err)
+	}
+	if got := organizationUnitPathByID(units)["ou_anycompany_workloads"]; got != "Root/Workloads" {
+		t.Fatalf("workloads OU path after reset = %q, want Root/Workloads", got)
+	}
+	accounts, err := repo.ListAccounts(ctx, organization.ID)
+	if err != nil {
+		t.Fatalf("ListAccounts() after reset error = %v", err)
+	}
+	byName := organizationAccountsByName(accounts)
+	if _, ok := byName["Partner Integration"]; ok {
+		t.Fatalf("reset retained ad hoc account: %v", organizationAccountNames(accounts))
+	}
+	assertSeedAccount(t, byName["Storefront Prod"], "111122223333", "Root/Workloads", accountTypeMember, "active")
+	assertSeedAccountMetadata(t, byName["Storefront Prod"], "storefront-team", "4100-storefront", "storefront", "production", "active")
+
+	events, err := repo.ListAccountLifecycleEvents(ctx, AnyCompanyRetailOrganizationID, 200)
+	if err != nil {
+		t.Fatalf("ListAccountLifecycleEvents() after reset error = %v", err)
+	}
+	if len(events) != 13 {
+		t.Fatalf("lifecycle event count after reset = %d, want 13", len(events))
+	}
+	if _, ok := accountLifecycleEventsByAccount(events)["777788889999"]; ok {
+		t.Fatalf("reset retained ad hoc account lifecycle event: %+v", events)
+	}
+	if got := countRows(t, db, `SELECT COUNT(*) FROM resources WHERE id = ?`, "preserved-reset-resource"); got != 1 {
+		t.Fatalf("preserved resource count = %d, want 1", got)
+	}
+	if got := countRows(t, db, `SELECT COUNT(*) FROM saved_reports WHERE id = ?`, "saved-reset-report"); got != 1 {
+		t.Fatalf("preserved saved report count = %d, want 1", got)
+	}
+}
+
 func TestOrganizationRepositoryAccountLifecycleValidation(t *testing.T) {
 	t.Parallel()
 
@@ -515,4 +636,14 @@ func accountLifecycleEventsByAccount(events []AccountLifecycleEvent) map[string]
 		byAccount[event.AccountID] = append(byAccount[event.AccountID], event)
 	}
 	return byAccount
+}
+
+func countRows(t *testing.T, db *sql.DB, query string, args ...any) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), query, args...).Scan(&count); err != nil {
+		t.Fatalf("count rows with %q: %v", query, err)
+	}
+	return count
 }

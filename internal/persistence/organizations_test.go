@@ -84,6 +84,18 @@ func TestAnyCompanyRetailOrganizationFixtureSeeded(t *testing.T) {
 	assertSeedAccount(t, byName["Analytics Prod"], "555566667777", "Root/Workloads", accountTypeMember, "active")
 	assertSeedAccount(t, byName["Deprecated Prototype"], "666677778888", "Root/Suspended", accountTypeMember, "suspended")
 
+	tags, err := repo.ListAccountTags(ctx, organization.ID)
+	if err != nil {
+		t.Fatalf("ListAccountTags() error = %v", err)
+	}
+	if len(tags) != 65 {
+		t.Fatalf("active account tag count = %d, want 65", len(tags))
+	}
+	assertSeedAccountMetadata(t, byName["Management"], "finance-operations", "1000-corporate", "shared-services", "production", "active")
+	assertSeedAccountMetadata(t, byName["Storefront Prod"], "storefront-team", "4100-storefront", "storefront", "production", "active")
+	assertSeedAccountMetadata(t, byName["Payments Dev"], "payments-team", "4200-payments", "payments", "development", "active")
+	assertSeedAccountMetadata(t, byName["Deprecated Prototype"], "innovation-lab", "9900-deprecated", "prototype", "retired", "deprecated")
+
 	storefrontProd, err := repo.GetAccount(ctx, "111122223333")
 	if err != nil {
 		t.Fatalf("GetAccount(Storefront Prod) error = %v", err)
@@ -91,6 +103,7 @@ func TestAnyCompanyRetailOrganizationFixtureSeeded(t *testing.T) {
 	if storefrontProd.Name != "Storefront Prod" || storefrontProd.PayerAccountID != AnyCompanyRetailManagementAccountID {
 		t.Fatalf("Storefront Prod = %+v, want member account paid by management", storefrontProd)
 	}
+	assertSeedAccountMetadata(t, storefrontProd, "storefront-team", "4100-storefront", "storefront", "production", "active")
 }
 
 func TestAnyCompanyRetailAccountReferencesMatchFixture(t *testing.T) {
@@ -135,6 +148,9 @@ func TestOrganizationRepositoryRejectsBlankInputs(t *testing.T) {
 	}
 	if _, err := repo.GetAccount(ctx, ""); err == nil {
 		t.Fatal("GetAccount(blank) error = nil, want validation error")
+	}
+	if _, err := repo.ListAccountTags(ctx, " "); err == nil {
+		t.Fatal("ListAccountTags(blank) error = nil, want validation error")
 	}
 }
 
@@ -411,6 +427,41 @@ func assertSeedAccount(t *testing.T, account OrganizationAccount, wantID, wantUn
 	}
 	if unitPath := anyCompanyRetailUnitPath(account.ParentUnitID); unitPath != account.OUPath {
 		t.Fatalf("%s parent unit path lookup = %q, want repository OUPath %q", account.Name, unitPath, account.OUPath)
+	}
+}
+
+func assertSeedAccountMetadata(t *testing.T, account OrganizationAccount, wantOwner, wantCostCenter, wantProduct, wantEnvironment, wantLifecycle string) {
+	t.Helper()
+
+	if account.Owner != wantOwner ||
+		account.CostCenter != wantCostCenter ||
+		account.Product != wantProduct ||
+		account.Environment != wantEnvironment ||
+		account.Lifecycle != wantLifecycle {
+		t.Fatalf("%s metadata = owner %q cost-center %q product %q environment %q lifecycle %q, want %q/%q/%q/%q/%q",
+			account.Name,
+			account.Owner,
+			account.CostCenter,
+			account.Product,
+			account.Environment,
+			account.Lifecycle,
+			wantOwner,
+			wantCostCenter,
+			wantProduct,
+			wantEnvironment,
+			wantLifecycle,
+		)
+	}
+	for key, want := range map[string]string{
+		accountTagKeyOwner:       wantOwner,
+		accountTagKeyCostCenter:  wantCostCenter,
+		accountTagKeyProduct:     wantProduct,
+		accountTagKeyEnvironment: wantEnvironment,
+		accountTagKeyLifecycle:   wantLifecycle,
+	} {
+		if got := account.Tags[key]; got != want {
+			t.Fatalf("%s tag %q = %q, want %q", account.Name, key, got, want)
+		}
 	}
 }
 

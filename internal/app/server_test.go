@@ -130,8 +130,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 20 {
-		t.Fatalf("schema_migrations count = %d, want 20", count)
+	if count != 21 {
+		t.Fatalf("schema_migrations count = %d, want 21", count)
 	}
 
 	var catalogCount int
@@ -359,6 +359,10 @@ func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
 		"Root - ou_anycompany_root",
 		"Storefront Prod",
 		"Deprecated Prototype",
+		"storefront-team",
+		"4100-storefront",
+		"shared-networking",
+		"9900-deprecated",
 		"13 accounts",
 		"12 active, 1 suspended, 0 closed",
 		`action="/organization/accounts/create"`,
@@ -725,6 +729,11 @@ func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 		"Workloads - ou_anycompany_workloads",
 		"Storefront Prod",
 		"Deprecated Prototype",
+		"Cost Center",
+		"storefront-team",
+		"4100-storefront",
+		"shared-networking",
+		"9900-deprecated",
 		`<span class="status status-suspended">Suspended</span>`,
 		"13 accounts",
 		"12 active, 1 suspended, 0 closed",

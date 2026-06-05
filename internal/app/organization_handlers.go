@@ -78,6 +78,11 @@ type organizationAccountView struct {
 	AccountID             string
 	Email                 string
 	OUPath                string
+	Owner                 string
+	CostCenter            string
+	Product               string
+	Environment           string
+	Lifecycle             string
 	AccountType           string
 	Status                string
 	StatusClass           string
@@ -336,7 +341,7 @@ func (h organizationHandler) loadOrganizationPageData(ctx context.Context, data 
 // organizationTables defines the shared dense-table metadata for account detail rows.
 func organizationTables() organizationTablesView {
 	return organizationTablesView{
-		Accounts:        uiTable(uiTableHeaders("Account", "OU", "Status", "Payer", "Billing Role", "Links"), "No accounts"),
+		Accounts:        uiTable(uiTableHeaders("Account", "OU", "Owner", "Product", "Status", "Payer", "Billing Role", "Links"), "No accounts"),
 		LifecycleEvents: uiTable(uiTableHeaders("Account", "Event", "OU", "Status", "Effective", "Source"), "No lifecycle events"),
 	}
 }
@@ -534,6 +539,11 @@ func organizationAccountViewFromAccount(account persistence.OrganizationAccount)
 		AccountID:             account.ID,
 		Email:                 account.Email,
 		OUPath:                account.OUPath,
+		Owner:                 accountMetadataLabel(account.Owner),
+		CostCenter:            accountMetadataLabel(account.CostCenter),
+		Product:               accountMetadataLabel(account.Product),
+		Environment:           accountMetadataLabel(account.Environment),
+		Lifecycle:             accountMetadataLabel(account.Lifecycle),
 		AccountType:           accountType,
 		Status:                status,
 		StatusClass:           "status-" + string(account.Status),
@@ -546,6 +556,14 @@ func organizationAccountViewFromAccount(account persistence.OrganizationAccount)
 		ResourcePath:          organizationResourcePath(account.ID),
 		BillsPath:             organizationBillsPath(account),
 	}
+}
+
+func accountMetadataLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "Not tagged"
+	}
+	return value
 }
 
 func organizationLifecycleEventViews(events []persistence.AccountLifecycleEvent, accounts []persistence.OrganizationAccount, units []persistence.OrganizationUnit) []organizationLifecycleEventView {
@@ -832,6 +850,26 @@ var organizationPageTemplate = newPageTemplate("organization-page", `<div class=
 									<strong>{{.OUPath}}</strong>
 								</div>
 								<div class="detail-list">
+									<span>Owner</span>
+									<strong>{{.Owner}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Cost Center</span>
+									<strong>{{.CostCenter}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Product</span>
+									<strong>{{.Product}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Environment</span>
+									<strong>{{.Environment}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Lifecycle</span>
+									<strong>{{.Lifecycle}}</strong>
+								</div>
+								<div class="detail-list">
 									<span>Billing Role</span>
 									<strong>{{.BillingVisibilityRole}}</strong>
 								</div>
@@ -866,6 +904,8 @@ var organizationPageTemplate = newPageTemplate("organization-page", `<div class=
 								<tr>
 									<td><strong>{{.Name}}</strong><small>{{.AccountID}} - {{.AccountType}}</small></td>
 									<td>{{.OUPath}}</td>
+									<td>{{.Owner}}<small>{{.CostCenter}}</small></td>
+									<td><strong>{{.Product}}</strong><small>{{.Environment}} - {{.Lifecycle}}</small></td>
 									<td><span class="status {{.StatusClass}}">{{.Status}}</span></td>
 									<td>{{.PayerAccountID}}</td>
 									<td>{{.BillingVisibilityRole}}</td>

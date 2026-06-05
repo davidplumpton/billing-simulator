@@ -23,6 +23,14 @@ const (
 	accountTypeMember     = "member"
 )
 
+const (
+	accountTagKeyOwner       = "owner"
+	accountTagKeyCostCenter  = "cost-center"
+	accountTagKeyProduct     = "product"
+	accountTagKeyEnvironment = "environment"
+	accountTagKeyLifecycle   = "lifecycle"
+)
+
 // AccountStatus names the supported organization account lifecycle states.
 type AccountStatus string
 
@@ -102,6 +110,22 @@ type OrganizationAccount struct {
 	BillingVisibilityRole string
 	IsManagementAccount   bool
 	SortOrder             int
+	Tags                  map[string]string
+	Owner                 string
+	CostCenter            string
+	Product               string
+	Environment           string
+	Lifecycle             string
+}
+
+// AccountTag stores one active or historical account-level tag value.
+type AccountTag struct {
+	ID        string
+	AccountID string
+	Key       string
+	Value     string
+	AppliedAt string
+	RemovedAt string
 }
 
 // OrganizationRepository reads and updates the simulated organization hierarchy from a workspace database.
@@ -266,6 +290,9 @@ func (r OrganizationRepository) ListAccounts(ctx context.Context, organizationID
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate organization accounts for %q: %w", organizationID, err)
 	}
+	if err := r.attachActiveAccountTags(ctx, organizationID, accounts); err != nil {
+		return nil, err
+	}
 	return accounts, nil
 }
 
@@ -304,7 +331,145 @@ func (r OrganizationRepository) GetAccount(ctx context.Context, accountID string
 	if err != nil {
 		return OrganizationAccount{}, fmt.Errorf("get organization account %q: %w", accountID, err)
 	}
+	if err := r.attachActiveTagsToAccount(ctx, &account); err != nil {
+		return OrganizationAccount{}, err
+	}
 	return account, nil
+}
+
+// ListAccountTags returns active account-level tags for an organization in deterministic order.
+func (r OrganizationRepository) ListAccountTags(ctx context.Context, organizationID string) ([]AccountTag, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" {
+		return nil, fmt.Errorf("organization ID is required")
+	}
+
+	tags, err := r.listActiveAccountTags(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	return tags, nil
+}
+
+// attachActiveAccountTags enriches listed organization accounts with their current tag values.
+func (r OrganizationRepository) attachActiveAccountTags(ctx context.Context, organizationID string, accounts []OrganizationAccount) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	tags, err := r.listActiveAccountTags(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	tagsByAccount := map[string]map[string]string{}
+	for _, tag := range tags {
+		if _, ok := tagsByAccount[tag.AccountID]; !ok {
+			tagsByAccount[tag.AccountID] = map[string]string{}
+		}
+		tagsByAccount[tag.AccountID][tag.Key] = tag.Value
+	}
+	for idx := range accounts {
+		applyOrganizationAccountTags(&accounts[idx], tagsByAccount[accounts[idx].ID])
+	}
+	return nil
+}
+
+// attachActiveTagsToAccount enriches a single organization account with its current tag values.
+func (r OrganizationRepository) attachActiveTagsToAccount(ctx context.Context, account *OrganizationAccount) error {
+	tags, err := r.listActiveAccountTagsForAccount(ctx, account.ID)
+	if err != nil {
+		return err
+	}
+	applyOrganizationAccountTags(account, tags)
+	return nil
+}
+
+// listActiveAccountTags reads current account tags for one organization.
+func (r OrganizationRepository) listActiveAccountTags(ctx context.Context, organizationID string) ([]AccountTag, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			t.id,
+			t.account_id,
+			t.tag_key,
+			t.tag_value,
+			t.applied_at,
+			t.removed_at
+		   FROM account_tags t
+		   JOIN accounts a ON a.id = t.account_id
+		  WHERE a.organization_id = ?
+		    AND t.removed_at IS NULL
+		  ORDER BY a.sort_order, t.tag_key`,
+		organizationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list account tags for organization %q: %w", organizationID, err)
+	}
+	defer rows.Close()
+
+	var tags []AccountTag
+	for rows.Next() {
+		tag, err := scanAccountTag(rows)
+		if err != nil {
+			return nil, err
+		}
+		tags = append(tags, tag)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate account tags for organization %q: %w", organizationID, err)
+	}
+	return tags, nil
+}
+
+// listActiveAccountTagsForAccount reads current account tags for one account.
+func (r OrganizationRepository) listActiveAccountTagsForAccount(ctx context.Context, accountID string) (map[string]string, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			t.id,
+			t.account_id,
+			t.tag_key,
+			t.tag_value,
+			t.applied_at,
+			t.removed_at
+		   FROM account_tags t
+		  WHERE t.account_id = ?
+		    AND t.removed_at IS NULL
+		  ORDER BY t.tag_key`,
+		accountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list account tags for account %q: %w", accountID, err)
+	}
+	defer rows.Close()
+
+	tags := map[string]string{}
+	for rows.Next() {
+		tag, err := scanAccountTag(rows)
+		if err != nil {
+			return nil, err
+		}
+		tags[tag.Key] = tag.Value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate account tags for account %q: %w", accountID, err)
+	}
+	return tags, nil
+}
+
+// applyOrganizationAccountTags sets raw and standard metadata fields from account tags.
+func applyOrganizationAccountTags(account *OrganizationAccount, tags map[string]string) {
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	account.Tags = tags
+	account.Owner = tags[accountTagKeyOwner]
+	account.CostCenter = tags[accountTagKeyCostCenter]
+	account.Product = tags[accountTagKeyProduct]
+	account.Environment = tags[accountTagKeyEnvironment]
+	account.Lifecycle = tags[accountTagKeyLifecycle]
 }
 
 // IsAnyCompanyRetailTemplate reports whether a template key names the seeded AnyCompany fixture.
@@ -380,6 +545,10 @@ type organizationAccountRow interface {
 	Scan(dest ...any) error
 }
 
+type accountTagRow interface {
+	Scan(dest ...any) error
+}
+
 func scanOrganizationAccount(row organizationAccountRow) (OrganizationAccount, error) {
 	var account OrganizationAccount
 	var leftAt sql.NullString
@@ -407,6 +576,23 @@ func scanOrganizationAccount(row organizationAccountRow) (OrganizationAccount, e
 	account.LeftAt = nullStringValue(leftAt)
 	account.IsManagementAccount = isManagementAccount == 1
 	return account, nil
+}
+
+func scanAccountTag(row accountTagRow) (AccountTag, error) {
+	var tag AccountTag
+	var removedAt sql.NullString
+	if err := row.Scan(
+		&tag.ID,
+		&tag.AccountID,
+		&tag.Key,
+		&tag.Value,
+		&tag.AppliedAt,
+		&removedAt,
+	); err != nil {
+		return AccountTag{}, fmt.Errorf("scan account tag: %w", err)
+	}
+	tag.RemovedAt = nullStringValue(removedAt)
+	return tag, nil
 }
 
 func organizationLookupKey(value string) string {

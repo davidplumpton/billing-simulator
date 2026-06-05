@@ -42,6 +42,7 @@ The current codebase already includes these working foundations:
 - Bills UI with bill state summaries, charge breakdowns, resource-level charge rows, reconciliation data, printable invoice pages, and invoice line-item CSV export.
 - Scenario JSON parsing and execution for deterministic lab setup, including a packaged "Find the untagged data-transfer spike" scenario seed.
 - Cost allocation tag manager UI with discovered key/value coverage, spend and resource coverage by tag key/account/service, untagged and case-mismatched spend, activation, deactivation, 24-hour pending visibility timing, and usage-window tag snapshots.
+- Cost Category rule persistence for ordered account, service, region, usage-type, line-item-type, tag, and existing-category matches.
 - Saved Cost Explorer report persistence for later report-builder UI work.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 

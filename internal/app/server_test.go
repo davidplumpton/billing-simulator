@@ -791,6 +791,218 @@ func TestOrganizationAccountSimulationEpicWorksInFreshWorkspace(t *testing.T) {
 	}
 }
 
+// TestUsagePricingBillingEngineEpicWorksInFreshWorkspace keeps bd-zaw guarded through the browser-facing billing pipeline.
+func TestUsagePricingBillingEngineEpicWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "billing-engine-epic-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL() + "/resources")
+	if err != nil {
+		t.Fatalf("GET /resources error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Resources - AWS Billing Simulator</title>`,
+		"Create Resource",
+		"Generate Usage",
+		"Run Daily Metering",
+		"Close Previous Period",
+		"Price Dimensions",
+		`name="account_id" value="111122223333"`,
+		`name="payer_account_id" value="999988887777"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /resources body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Epic billing web"},
+		"status":         {"active"},
+		"started_at":     {"2026-02-01T00:00"},
+		"tags":           {"app=storefront\nenv=prod"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Epic billing web") || !strings.Contains(body, "app=storefront") {
+		t.Fatalf("resource create response missing created resource/tag: %s", body)
+	}
+
+	resourceID := readOnlyResourceID(t, db)
+	resp, err = client.PostForm(server.URL()+"/resources/generate", url.Values{
+		"resource_id":           {resourceID},
+		"generation_pattern":    {"daily_instance_hours"},
+		"generation_start_date": {"2026-02-01"},
+		"generation_days":       {"1"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/generate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/generate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated 1 usage events") ||
+		!strings.Contains(body, "instance-hours:t3.medium") ||
+		!strings.Contains(body, "2026-02-02T00:00:00Z") {
+		t.Fatalf("generator response missing generated usage details: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/resources/generate", url.Values{
+		"resource_id":           {resourceID},
+		"generation_pattern":    {"daily_instance_hours"},
+		"generation_start_date": {"2026-02-01"},
+		"generation_days":       {"1"},
+	})
+	if err != nil {
+		t.Fatalf("repeat POST /resources/generate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("repeat POST /resources/generate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Reused 1 existing usage events") {
+		t.Fatalf("repeat generator response missing reuse flash: %s", body)
+	}
+
+	var generatedUsage int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE resource_id = ? AND event_source = 'generator'`, resourceID).Scan(&generatedUsage); err != nil {
+		t.Fatalf("count generated usage_events: %v", err)
+	}
+	if generatedUsage != 1 {
+		t.Fatalf("generated usage event count = %d, want 1", generatedUsage)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "2", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-03T00:00:00Z") ||
+		!strings.Contains(body, "daily metering created 1 metering records and 2 bill line items") ||
+		!strings.Contains(body, "Current Billing Summary") ||
+		!strings.Contains(body, "AWSSupport") ||
+		!strings.Contains(body, "estimated") ||
+		!strings.Contains(body, "999988887777") {
+		t.Fatalf("clock-advanced daily metering response missing estimated billing details: %s", body)
+	}
+
+	var meteringRecords, estimatedLineItems int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metering_records`).Scan(&meteringRecords); err != nil {
+		t.Fatalf("count metering_records: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = 'estimated' AND payer_account_id = ?`, "999988887777").Scan(&estimatedLineItems); err != nil {
+		t.Fatalf("count estimated bill_line_items: %v", err)
+	}
+	if meteringRecords != 1 || estimatedLineItems != 2 {
+		t.Fatalf("estimated pipeline counts = metering %d line items %d, want 1/2", meteringRecords, estimatedLineItems)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
+	if !strings.Contains(body, "Advanced clock to 2026-03-01T00:00:00Z") ||
+		!strings.Contains(body, "2026-03-01 to 2026-04-01 (31 days)") {
+		t.Fatalf("billing-period advance response missing March clock state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/resources/month-close", url.Values{
+		"payer_account_id": {"999988887777"},
+		"invoice_due_days": {"14"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/month-close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/month-close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Month-end close finalized 2 line items into bill",
+		"Closed Billing Periods",
+		"Issued Bills",
+		"SIM-INV-202602-",
+		"$1.9984",
+		"999988887777",
+		"final",
+		"due",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("month-end close response missing %q: %s", want, body)
+		}
+	}
+
+	var finalLineItems, issuedBills, invoiceDocuments int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE line_item_status = 'final' AND payer_account_id = ?`, "999988887777").Scan(&finalLineItems); err != nil {
+		t.Fatalf("count final bill_line_items: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bills WHERE bill_state = 'issued' AND payer_account_id = ?`, "999988887777").Scan(&issuedBills); err != nil {
+		t.Fatalf("count issued bills: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoice_documents`).Scan(&invoiceDocuments); err != nil {
+		t.Fatalf("count invoice_documents: %v", err)
+	}
+	if finalLineItems != 2 || issuedBills != 1 || invoiceDocuments != 1 {
+		t.Fatalf("final close counts = line items %d bills %d invoice docs %d, want 2/1/1", finalLineItems, issuedBills, invoiceDocuments)
+	}
+
+	resp, err = client.Get(server.URL() + "/bills?viewer_role=management-account&viewer_account_id=999988887777")
+	if err != nil {
+		t.Fatalf("GET /bills after close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills after close status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Bill Reconciliation",
+		"balanced",
+		"Epic billing web",
+		"AWSSupport",
+		"$1.9984",
+		"$0.00",
+		"SIM-INV-202602-",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills after close missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestRunStartedServerClosesWorkspaceAfterUnexpectedServeExit(t *testing.T) {
 	t.Parallel()
 

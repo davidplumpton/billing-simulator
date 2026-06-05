@@ -1301,19 +1301,52 @@ func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 			ID:           "resource-tags-worker",
 			AccountID:    "444455556666",
 			RegionCode:   "us-east-1",
-			ServiceCode:  "AWSLambda",
-			ResourceType: "lambda_function",
+			ServiceCode:  "AmazonS3",
+			ResourceType: "s3_bucket",
 			ResourceName: "Tagged worker",
 			Status:       "active",
 			StartedAt:    "2026-02-01T00:00:00Z",
 			Tags: map[string]string{
-				"app": "storefront",
+				"app":   "storefront",
+				"Owner": "payments-team",
 			},
 		},
 	} {
 		if _, err := usageRepo.CreateResource(ctx, request); err != nil {
 			t.Fatalf("CreateResource(%s) error = %v", request.ID, err)
 		}
+	}
+	for _, request := range []persistence.UsageEventCreateRequest{
+		{
+			ID:                  "usage-tags-web",
+			ResourceID:          "resource-tags-web",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+		{
+			ID:                  "usage-tags-worker",
+			ResourceID:          "resource-tags-worker",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	} {
+		if _, err := usageRepo.RecordUsageEvent(ctx, request); err != nil {
+			t.Fatalf("RecordUsageEvent(%s) error = %v", request.ID, err)
+		}
+	}
+	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
 	}
 
 	server := httptest.NewServer(newMux(db))
@@ -1330,12 +1363,19 @@ func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Cost Allocation Tag Manager",
+		"Spend Coverage",
+		"Account Coverage",
+		"Service Coverage",
 		"Tag Key Coverage",
 		"Discovered Values",
 		"app",
 		"storefront",
 		"2 resources",
 		"owner",
+		"Owner",
+		"Case Mismatch",
+		"$0.0907",
+		"$0.0075",
 		"Not activated",
 		`action="/tags/activate"`,
 	} {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -18,6 +19,15 @@ const (
 	costAllocationTagVisibilityDelay    = 24 * time.Hour
 	defaultCostAllocationTagEventSource = "learner"
 	defaultCostAllocationTagKeySource   = "system"
+)
+
+const (
+	// CostAllocationCoverageDimensionKey groups coverage across all line items for one tag key.
+	CostAllocationCoverageDimensionKey = "key"
+	// CostAllocationCoverageDimensionAccount groups coverage for one tag key and usage account.
+	CostAllocationCoverageDimensionAccount = "account"
+	// CostAllocationCoverageDimensionService groups coverage for one tag key and service.
+	CostAllocationCoverageDimensionService = "service"
 )
 
 // CostAllocationTagKey stores billing-side discovery and activation state for one tag key.
@@ -80,6 +90,36 @@ type CostAllocationTagActivationRequest struct {
 type CostAllocationTagRefreshResult struct {
 	DiscoveredKeyCount  int
 	InventoryValueCount int
+}
+
+// CostAllocationTagCoverageRequest selects the billing period used for spend coverage.
+type CostAllocationTagCoverageRequest struct {
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+}
+
+// CostAllocationTagCoverageRow summarizes exact, missing, and case-mismatched spend for one tag scope.
+type CostAllocationTagCoverageRow struct {
+	Key                       string
+	Dimension                 string
+	DimensionValue            string
+	DimensionLabel            string
+	ActivationStatus          string
+	CostExplorerVisibleAt     string
+	CurrencyCode              string
+	LineItemCount             int
+	ResourceCount             int
+	TaggedLineItemCount       int
+	TaggedResourceCount       int
+	UntaggedLineItemCount     int
+	UntaggedResourceCount     int
+	CaseMismatchLineItemCount int
+	CaseMismatchResourceCount int
+	TotalCostMicros           int64
+	TaggedCostMicros          int64
+	UntaggedCostMicros        int64
+	CaseMismatchCostMicros    int64
+	CaseMismatchKeys          []string
 }
 
 // CostAllocationTagRepository manages billing-visible cost allocation tag state.
@@ -356,6 +396,67 @@ func (r CostAllocationTagRepository) ListInventory(ctx context.Context) ([]CostA
 	return inventory, nil
 }
 
+// ListCoverage reports billing-period spend coverage by tag key, usage account, and service.
+func (r CostAllocationTagRepository) ListCoverage(ctx context.Context, request CostAllocationTagCoverageRequest) ([]CostAllocationTagCoverageRow, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	request = normalizeCostAllocationTagCoverageRequest(request)
+	if err := validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd); err != nil {
+		return nil, err
+	}
+
+	keys, err := r.ListDiscoveredKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items, err := r.listCoverageLineItems(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	accumulators := map[string]*costAllocationCoverageAccumulator{}
+	ensureAccumulator := func(key CostAllocationTagKey, dimension, dimensionValue, dimensionLabel string) *costAllocationCoverageAccumulator {
+		accumulatorKey := costAllocationCoverageAccumulatorKey(key.Key, dimension, dimensionValue)
+		accumulator := accumulators[accumulatorKey]
+		if accumulator == nil {
+			accumulator = newCostAllocationCoverageAccumulator(CostAllocationTagCoverageRow{
+				Key:                   key.Key,
+				Dimension:             dimension,
+				DimensionValue:        dimensionValue,
+				DimensionLabel:        dimensionLabel,
+				ActivationStatus:      key.ActivationStatus,
+				CostExplorerVisibleAt: key.CostExplorerVisibleAt,
+			})
+			accumulators[accumulatorKey] = accumulator
+		}
+		return accumulator
+	}
+
+	for _, key := range keys {
+		ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend")
+	}
+	for _, key := range keys {
+		for _, item := range items {
+			exactMatch, caseMismatchKeys := costAllocationTagCoverageMatch(key.Key, item.TagSnapshot)
+			ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend").add(item, exactMatch, caseMismatchKeys)
+			ensureAccumulator(key, CostAllocationCoverageDimensionAccount, item.UsageAccountID, item.UsageAccountID).add(item, exactMatch, caseMismatchKeys)
+			serviceLabel := item.ServiceName
+			if serviceLabel == "" {
+				serviceLabel = item.ServiceCode
+			}
+			ensureAccumulator(key, CostAllocationCoverageDimensionService, item.ServiceCode, serviceLabel).add(item, exactMatch, caseMismatchKeys)
+		}
+	}
+
+	rows := make([]CostAllocationTagCoverageRow, 0, len(accumulators))
+	for _, accumulator := range accumulators {
+		rows = append(rows, accumulator.rowValue())
+	}
+	sortCostAllocationCoverageRows(rows)
+	return rows, nil
+}
+
 // ListActivationEvents returns activation lifecycle events for one tag key, newest first.
 func (r CostAllocationTagRepository) ListActivationEvents(ctx context.Context, key string) ([]CostAllocationTagActivationEvent, error) {
 	if r.db == nil {
@@ -566,6 +667,222 @@ func (r CostAllocationTagRepository) getKey(ctx context.Context, key string) (Co
 		key,
 	)
 	return scanCostAllocationTagKey(row)
+}
+
+type costAllocationCoverageLineItem struct {
+	ID                  string
+	ResourceID          string
+	UsageAccountID      string
+	ServiceCode         string
+	ServiceName         string
+	CurrencyCode        string
+	UnblendedCostMicros int64
+	TagSnapshot         map[string]string
+}
+
+func (r CostAllocationTagRepository) listCoverageLineItems(ctx context.Context, request CostAllocationTagCoverageRequest) ([]costAllocationCoverageLineItem, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			id,
+			resource_id,
+			usage_account_id,
+			service_code,
+			service_name,
+			currency_code,
+			unblended_cost_micros,
+			tag_snapshot_json
+		 FROM bill_line_items
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		 ORDER BY usage_start_time, id`,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cost allocation coverage line items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []costAllocationCoverageLineItem
+	for rows.Next() {
+		var item costAllocationCoverageLineItem
+		var resourceID sql.NullString
+		var tagSnapshotJSON string
+		if err := rows.Scan(
+			&item.ID,
+			&resourceID,
+			&item.UsageAccountID,
+			&item.ServiceCode,
+			&item.ServiceName,
+			&item.CurrencyCode,
+			&item.UnblendedCostMicros,
+			&tagSnapshotJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan cost allocation coverage line item: %w", err)
+		}
+		item.ResourceID = nullStringValue(resourceID)
+		var err error
+		item.TagSnapshot, err = unmarshalStringMap(tagSnapshotJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode coverage tag snapshot for line item %q: %w", item.ID, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cost allocation coverage line items: %w", err)
+	}
+	return items, nil
+}
+
+type costAllocationCoverageAccumulator struct {
+	row                     CostAllocationTagCoverageRow
+	resourceIDs             map[string]struct{}
+	taggedResourceIDs       map[string]struct{}
+	untaggedResourceIDs     map[string]struct{}
+	caseMismatchResourceIDs map[string]struct{}
+	caseMismatchKeyVariants map[string]struct{}
+}
+
+func newCostAllocationCoverageAccumulator(row CostAllocationTagCoverageRow) *costAllocationCoverageAccumulator {
+	return &costAllocationCoverageAccumulator{
+		row:                     row,
+		resourceIDs:             map[string]struct{}{},
+		taggedResourceIDs:       map[string]struct{}{},
+		untaggedResourceIDs:     map[string]struct{}{},
+		caseMismatchResourceIDs: map[string]struct{}{},
+		caseMismatchKeyVariants: map[string]struct{}{},
+	}
+}
+
+func (a *costAllocationCoverageAccumulator) add(item costAllocationCoverageLineItem, exactMatch bool, caseMismatchKeys []string) {
+	a.row.LineItemCount++
+	a.row.TotalCostMicros += item.UnblendedCostMicros
+	a.mergeCurrency(item.CurrencyCode)
+	if item.ResourceID != "" {
+		a.resourceIDs[item.ResourceID] = struct{}{}
+	}
+
+	switch {
+	case exactMatch:
+		a.row.TaggedLineItemCount++
+		a.row.TaggedCostMicros += item.UnblendedCostMicros
+		if item.ResourceID != "" {
+			a.taggedResourceIDs[item.ResourceID] = struct{}{}
+		}
+	case len(caseMismatchKeys) > 0:
+		a.row.CaseMismatchLineItemCount++
+		a.row.CaseMismatchCostMicros += item.UnblendedCostMicros
+		if item.ResourceID != "" {
+			a.caseMismatchResourceIDs[item.ResourceID] = struct{}{}
+		}
+		for _, key := range caseMismatchKeys {
+			a.caseMismatchKeyVariants[key] = struct{}{}
+		}
+	default:
+		a.row.UntaggedLineItemCount++
+		a.row.UntaggedCostMicros += item.UnblendedCostMicros
+		if item.ResourceID != "" {
+			a.untaggedResourceIDs[item.ResourceID] = struct{}{}
+		}
+	}
+}
+
+func (a *costAllocationCoverageAccumulator) mergeCurrency(currencyCode string) {
+	currencyCode = strings.TrimSpace(currencyCode)
+	if currencyCode == "" {
+		return
+	}
+	if a.row.CurrencyCode == "" {
+		a.row.CurrencyCode = currencyCode
+		return
+	}
+	if a.row.CurrencyCode != currencyCode {
+		a.row.CurrencyCode = "mixed"
+	}
+}
+
+func (a *costAllocationCoverageAccumulator) rowValue() CostAllocationTagCoverageRow {
+	row := a.row
+	row.ResourceCount = len(a.resourceIDs)
+	row.TaggedResourceCount = len(a.taggedResourceIDs)
+	row.UntaggedResourceCount = len(a.untaggedResourceIDs)
+	row.CaseMismatchResourceCount = len(a.caseMismatchResourceIDs)
+	row.CaseMismatchKeys = sortedStringSetValues(a.caseMismatchKeyVariants)
+	if row.CurrencyCode == "" {
+		row.CurrencyCode = "USD"
+	}
+	return row
+}
+
+func costAllocationCoverageAccumulatorKey(tagKey, dimension, dimensionValue string) string {
+	return tagKey + "\x00" + dimension + "\x00" + dimensionValue
+}
+
+func costAllocationTagCoverageMatch(key string, snapshot map[string]string) (bool, []string) {
+	if _, ok := snapshot[key]; ok {
+		return true, nil
+	}
+	lowerKey := strings.ToLower(key)
+	var variants []string
+	for snapshotKey := range snapshot {
+		if strings.ToLower(snapshotKey) == lowerKey && snapshotKey != key {
+			variants = append(variants, snapshotKey)
+		}
+	}
+	sort.Strings(variants)
+	return false, variants
+}
+
+func normalizeCostAllocationTagCoverageRequest(request CostAllocationTagCoverageRequest) CostAllocationTagCoverageRequest {
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	return request
+}
+
+func sortedStringSetValues(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sorted := make([]string, 0, len(values))
+	for value := range values {
+		sorted = append(sorted, value)
+	}
+	sort.Strings(sorted)
+	return sorted
+}
+
+func sortCostAllocationCoverageRows(rows []CostAllocationTagCoverageRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		left := rows[i]
+		right := rows[j]
+		if costAllocationCoverageDimensionRank(left.Dimension) != costAllocationCoverageDimensionRank(right.Dimension) {
+			return costAllocationCoverageDimensionRank(left.Dimension) < costAllocationCoverageDimensionRank(right.Dimension)
+		}
+		if strings.ToLower(left.Key) != strings.ToLower(right.Key) {
+			return strings.ToLower(left.Key) < strings.ToLower(right.Key)
+		}
+		if left.Key != right.Key {
+			return left.Key < right.Key
+		}
+		if left.TotalCostMicros != right.TotalCostMicros {
+			return left.TotalCostMicros > right.TotalCostMicros
+		}
+		return left.DimensionValue < right.DimensionValue
+	})
+}
+
+func costAllocationCoverageDimensionRank(dimension string) int {
+	switch dimension {
+	case CostAllocationCoverageDimensionKey:
+		return 0
+	case CostAllocationCoverageDimensionAccount:
+		return 1
+	case CostAllocationCoverageDimensionService:
+		return 2
+	default:
+		return 3
+	}
 }
 
 type costAllocationTagKeyRow interface {

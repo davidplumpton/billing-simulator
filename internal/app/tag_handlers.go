@@ -35,6 +35,9 @@ type tagsPageData struct {
 	StateCards          []tagStateCardView
 	TagKeys             []tagKeyView
 	Inventory           []tagInventoryView
+	SpendCoverage       []tagSpendCoverageView
+	AccountCoverage     []tagSpendCoverageView
+	ServiceCoverage     []tagSpendCoverageView
 	ActivationEvents    []tagActivationEventView
 	Tables              tagTablesView
 }
@@ -86,9 +89,27 @@ type tagActivationEventView struct {
 	EventSource           string
 }
 
+type tagSpendCoverageView struct {
+	Key               string
+	Scope             string
+	ActivationStatus  string
+	StatusClass       string
+	LineItemCount     int
+	ResourceCoverage  string
+	SpendCoverage     string
+	TotalSpend        string
+	TaggedSpend       string
+	UntaggedSpend     string
+	CaseMismatchSpend string
+	CaseMismatchKeys  []string
+}
+
 type tagTablesView struct {
 	TagKeys          uiTableView
 	Inventory        uiTableView
+	SpendCoverage    uiTableView
+	AccountCoverage  uiTableView
+	ServiceCoverage  uiTableView
 	ActivationEvents uiTableView
 }
 
@@ -211,6 +232,13 @@ func (h costAllocationTagsHandler) loadTagsPageData(ctx context.Context, data *t
 	if err != nil {
 		return err
 	}
+	coverageRows, err := h.tags.ListCoverage(ctx, persistence.CostAllocationTagCoverageRequest{
+		BillingPeriodStart: clock.BillingPeriodStart,
+		BillingPeriodEnd:   clock.BillingPeriodEnd,
+	})
+	if err != nil {
+		return err
+	}
 
 	coverage := tagCoverageByKey(inventory)
 	currentTime := parseTagManagerTime(clock.CurrentTime)
@@ -246,6 +274,17 @@ func (h costAllocationTagsHandler) loadTagsPageData(ctx context.Context, data *t
 
 	for _, row := range inventory {
 		data.Inventory = append(data.Inventory, tagInventoryViewFromRow(row, currentTime))
+	}
+	for _, row := range coverageRows {
+		view := tagSpendCoverageViewFromRow(row)
+		switch row.Dimension {
+		case persistence.CostAllocationCoverageDimensionKey:
+			data.SpendCoverage = append(data.SpendCoverage, view)
+		case persistence.CostAllocationCoverageDimensionAccount:
+			data.AccountCoverage = append(data.AccountCoverage, view)
+		case persistence.CostAllocationCoverageDimensionService:
+			data.ServiceCoverage = append(data.ServiceCoverage, view)
+		}
 	}
 	data.StateCards = tagStateCards(len(keys), activeCount, pendingCount, visibleCount)
 	return nil
@@ -331,6 +370,32 @@ func tagInventoryViewFromRow(row persistence.CostAllocationTagInventoryRow, curr
 	}
 }
 
+// tagSpendCoverageViewFromRow formats billing-period spend coverage for display.
+func tagSpendCoverageViewFromRow(row persistence.CostAllocationTagCoverageRow) tagSpendCoverageView {
+	scope := row.DimensionLabel
+	if scope == "" {
+		scope = row.DimensionValue
+	}
+	resourceCoverage := fmt.Sprintf("%d/%d resources", row.TaggedResourceCount, row.ResourceCount)
+	if row.ResourceCount == 0 {
+		resourceCoverage = "0 resources"
+	}
+	return tagSpendCoverageView{
+		Key:               row.Key,
+		Scope:             scope,
+		ActivationStatus:  row.ActivationStatus,
+		StatusClass:       tagStatusClass(row.ActivationStatus),
+		LineItemCount:     row.LineItemCount,
+		ResourceCoverage:  resourceCoverage,
+		SpendCoverage:     formatCoveragePercent(row.TaggedCostMicros, row.TotalCostMicros),
+		TotalSpend:        formatUSDMicros(row.TotalCostMicros),
+		TaggedSpend:       formatUSDMicros(row.TaggedCostMicros),
+		UntaggedSpend:     formatUSDMicros(row.UntaggedCostMicros),
+		CaseMismatchSpend: formatUSDMicros(row.CaseMismatchCostMicros),
+		CaseMismatchKeys:  row.CaseMismatchKeys,
+	}
+}
+
 // tagActivationEventViewFromEvent adapts repository lifecycle events for tables.
 func tagActivationEventViewFromEvent(event persistence.CostAllocationTagActivationEvent) tagActivationEventView {
 	return tagActivationEventView{
@@ -342,6 +407,18 @@ func tagActivationEventViewFromEvent(event persistence.CostAllocationTagActivati
 		CURExportVisibleAt:    event.CURExportVisibleAt,
 		EventSource:           event.EventSource,
 	}
+}
+
+// formatCoveragePercent renders spend coverage as a compact percentage.
+func formatCoveragePercent(part, total int64) string {
+	if total <= 0 {
+		return "0%"
+	}
+	percent := float64(part) * 100 / float64(total)
+	if percent == float64(int64(percent)) {
+		return fmt.Sprintf("%.0f%%", percent)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", percent), "0"), ".") + "%"
 }
 
 // tagVisibilityState returns learner-facing billing visibility for one tag key.
@@ -399,6 +476,9 @@ func tagTables() tagTablesView {
 	return tagTablesView{
 		TagKeys:          uiTable(uiTableHeaders("Tag Key", "Coverage", "Status", "Billing Visibility", "Seen", "Actions"), "No resource tag keys discovered"),
 		Inventory:        uiTable(uiTableHeaders("Tag Key", "Value", "Resources", "First Seen", "Last Seen", "Billing State"), "No tag values discovered"),
+		SpendCoverage:    uiTable(uiTableHeaders("Tag Key", "Resources", "Spend Coverage", "Tagged Spend", "Untagged Spend", "Case Mismatch", "Status"), "No billed spend for discovered tag keys"),
+		AccountCoverage:  uiTable(uiTableHeaders("Tag Key", "Usage Account", "Resources", "Spend Coverage", "Untagged Spend", "Case Mismatch"), "No account spend coverage"),
+		ServiceCoverage:  uiTable(uiTableHeaders("Tag Key", "Service", "Resources", "Spend Coverage", "Untagged Spend", "Case Mismatch"), "No service spend coverage"),
 		ActivationEvents: uiTable(uiTableHeaders("Event", "Tag Key", "Requested", "Effective", "Billing Visibility", "Source"), "No activation events"),
 	}
 }
@@ -438,6 +518,94 @@ var tagManagerPageTemplate = newPageTemplate("tag-manager-page", `<div class="pa
 						<strong>{{.Value}}</strong>
 					</div>
 				{{end}}
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Spend Coverage</h2>
+					<span>{{len .SpendCoverage}} keys</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.SpendCoverage}}
+						<tbody>
+							{{range .SpendCoverage}}
+								<tr>
+									<td><strong>{{.Key}}</strong></td>
+									<td>{{.ResourceCoverage}}<small>{{.LineItemCount}} line items</small></td>
+									<td>{{.SpendCoverage}}<small>{{.TotalSpend}} total</small></td>
+									<td>{{.TaggedSpend}}</td>
+									<td>{{.UntaggedSpend}}</td>
+									<td>
+										{{.CaseMismatchSpend}}
+										{{if .CaseMismatchKeys}}<div class="tags">{{range .CaseMismatchKeys}}<span>{{.}}</span>{{end}}</div>{{end}}
+									</td>
+									<td><span class="status {{.StatusClass}}">{{.ActivationStatus}}</span></td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.SpendCoverage}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Account Coverage</h2>
+					<span>{{len .AccountCoverage}} rows</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.AccountCoverage}}
+						<tbody>
+							{{range .AccountCoverage}}
+								<tr>
+									<td><strong>{{.Key}}</strong></td>
+									<td>{{.Scope}}</td>
+									<td>{{.ResourceCoverage}}<small>{{.LineItemCount}} line items</small></td>
+									<td>{{.SpendCoverage}}<small>{{.TotalSpend}} total</small></td>
+									<td>{{.UntaggedSpend}}</td>
+									<td>
+										{{.CaseMismatchSpend}}
+										{{if .CaseMismatchKeys}}<div class="tags">{{range .CaseMismatchKeys}}<span>{{.}}</span>{{end}}</div>{{end}}
+									</td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.AccountCoverage}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Service Coverage</h2>
+					<span>{{len .ServiceCoverage}} rows</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.ServiceCoverage}}
+						<tbody>
+							{{range .ServiceCoverage}}
+								<tr>
+									<td><strong>{{.Key}}</strong></td>
+									<td>{{.Scope}}</td>
+									<td>{{.ResourceCoverage}}<small>{{.LineItemCount}} line items</small></td>
+									<td>{{.SpendCoverage}}<small>{{.TotalSpend}} total</small></td>
+									<td>{{.UntaggedSpend}}</td>
+									<td>
+										{{.CaseMismatchSpend}}
+										{{if .CaseMismatchKeys}}<div class="tags">{{range .CaseMismatchKeys}}<span>{{.}}</span>{{end}}</div>{{end}}
+									</td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.ServiceCoverage}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
 			</section>
 
 			<section>

@@ -1604,6 +1604,126 @@ func TestBillsUIFiltersBySimulatedViewer(t *testing.T) {
 	}
 }
 
+func TestBillingVisibilityModelFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "billing-visibility-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	seedFilterableUsage(t, context.Background(), db)
+
+	client := http.Client{Timeout: time.Second}
+	tests := []struct {
+		name  string
+		path  string
+		wants []string
+		leaks []string
+	}{
+		{
+			name: "management consolidated viewer sees linked account spend",
+			path: "/bills?viewer_role=management-account&viewer_account_id=999988887777",
+			wants: []string{
+				`<option value="management-account" selected>Management</option>`,
+				`name="viewer_account_id" value="999988887777"`,
+				"Filter web",
+				"Filter bucket",
+				"Amazon EC2",
+				"Amazon S3",
+				"111122223333",
+				"222233334444",
+			},
+		},
+		{
+			name: "finance viewer defaults to management payer scope",
+			path: "/bills?viewer_role=finance",
+			wants: []string{
+				`<option value="finance" selected>Finance</option>`,
+				"Filter web",
+				"Filter bucket",
+				"Amazon EC2",
+				"Amazon S3",
+				"111122223333",
+				"222233334444",
+			},
+		},
+		{
+			name: "member viewer sees only its own informational charges",
+			path: "/bills?viewer_role=member-account&viewer_account_id=111122223333",
+			wants: []string{
+				`<option value="member-account" selected>Member</option>`,
+				`name="viewer_account_id" value="111122223333"`,
+				"Filter web",
+				"Amazon EC2",
+				"111122223333",
+			},
+			leaks: []string{
+				"Filter bucket",
+				"Amazon S3",
+				"222233334444",
+			},
+		},
+		{
+			name: "instructor viewer sees all local training data",
+			path: "/bills?viewer_role=instructor",
+			wants: []string{
+				`<option value="instructor" selected>Instructor</option>`,
+				"Filter web",
+				"Filter bucket",
+				"Amazon EC2",
+				"Amazon S3",
+				"111122223333",
+				"222233334444",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := client.Get(server.URL() + tt.path)
+			if err != nil {
+				t.Fatalf("GET %s error = %v", tt.path, err)
+			}
+			body := readResponseBody(t, resp)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want %d; body=%s", tt.path, resp.StatusCode, http.StatusOK, body)
+			}
+			for _, want := range tt.wants {
+				if !strings.Contains(body, want) {
+					t.Fatalf("GET %s body missing %q: %s", tt.path, want, body)
+				}
+			}
+			for _, leaked := range tt.leaks {
+				if strings.Contains(body, leaked) {
+					t.Fatalf("GET %s body leaked %q: %s", tt.path, leaked, body)
+				}
+			}
+		})
+	}
+}
+
 func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	t.Parallel()
 

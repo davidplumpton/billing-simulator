@@ -130,8 +130,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 19 {
-		t.Fatalf("schema_migrations count = %d, want 19", count)
+	if count != 20 {
+		t.Fatalf("schema_migrations count = %d, want 20", count)
 	}
 
 	var catalogCount int
@@ -552,6 +552,15 @@ func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 		"12 active, 1 suspended, 0 closed",
 		"Account Detail",
 		"Billing Role",
+		"Simulator Clock",
+		`name="effective_at" value="2026-02-01T00:00"`,
+		`action="/organization/accounts/create"`,
+		"Create Account",
+		"Move Account",
+		"Suspend Account",
+		"Close Account",
+		"Lifecycle History",
+		"13 events",
 		`href="/resources?account_id=111122223333"`,
 		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333"`,
 		`href="/bills?payer_account_id=999988887777">Bills</a>`,
@@ -559,6 +568,110 @@ func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /organization body missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestOrganizationUIAccountLifecycleWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.PostForm(server.URL+"/organization/accounts/create", url.Values{
+		"organization_id": {persistence.AnyCompanyRetailOrganizationID},
+		"account_id":      {"777788889997"},
+		"parent_unit_id":  {"ou_anycompany_sandbox"},
+		"account_name":    {"Partner Integration"},
+		"account_email":   {"partner-integration@anycompany.example"},
+		"effective_at":    {"2026-02-01T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST create account error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created account Partner Integration") {
+		t.Fatalf("POST create account status/body = %d/%s, want success flash", resp.StatusCode, body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/organization/accounts/move", url.Values{
+		"account_id":     {"777788889997"},
+		"parent_unit_id": {"ou_anycompany_workloads"},
+		"effective_at":   {"2026-02-05T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST move account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Moved Partner Integration to Root/Workloads") {
+		t.Fatalf("POST move account status/body = %d/%s, want success flash", resp.StatusCode, body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/organization/accounts/suspend", url.Values{
+		"account_id":   {"777788889997"},
+		"effective_at": {"2026-02-10T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST suspend account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Suspended Partner Integration") {
+		t.Fatalf("POST suspend account status/body = %d/%s, want success flash", resp.StatusCode, body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/organization/accounts/close", url.Values{
+		"account_id":   {"777788889997"},
+		"effective_at": {"2026-02-15T00:00"},
+	})
+	if err != nil {
+		t.Fatalf("POST close account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST close account status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Closed Partner Integration",
+		"14 accounts",
+		"12 active, 1 suspended, 1 closed",
+		"Partner Integration",
+		"Root/Workloads",
+		`<span class="status status-closed">Closed</span>`,
+		"17 events",
+		"Suspended -&gt; Closed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST close account body missing %q: %s", want, body)
+		}
+	}
+
+	repo := persistence.NewOrganizationRepository(db)
+	account, err := repo.GetAccount(ctx, "777788889997")
+	if err != nil {
+		t.Fatalf("GetAccount(created) error = %v", err)
+	}
+	if account.Status != persistence.AccountStatusClosed ||
+		account.OUPath != "Root/Workloads" ||
+		account.LeftAt != "2026-02-15T00:00:00Z" {
+		t.Fatalf("created account after UI workflow = %+v, want closed in Workloads with left_at", account)
+	}
+	events, err := repo.ListAccountLifecycleEvents(ctx, persistence.AnyCompanyRetailOrganizationID, 200)
+	if err != nil {
+		t.Fatalf("ListAccountLifecycleEvents() error = %v", err)
+	}
+	if count := organizationLifecycleEventCountForAccount(events, "777788889997"); count != 4 {
+		t.Fatalf("created account lifecycle event count = %d, want 4", count)
 	}
 }
 
@@ -1502,6 +1615,16 @@ func readOnlyResourceID(t *testing.T, db *sql.DB) string {
 		t.Fatalf("read resource ID: %v", err)
 	}
 	return resourceID
+}
+
+func organizationLifecycleEventCountForAccount(events []persistence.AccountLifecycleEvent, accountID string) int {
+	count := 0
+	for _, event := range events {
+		if event.AccountID == accountID {
+			count++
+		}
+	}
+	return count
 }
 
 func seedFilterableUsage(t *testing.T, ctx context.Context, db *sql.DB) {

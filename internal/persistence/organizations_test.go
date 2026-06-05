@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -190,6 +191,191 @@ func TestOrganizationSchemaRejectsMismatchedManagementFlag(t *testing.T) {
 	)
 }
 
+func TestAccountLifecycleMigrationBackfillsSeedEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := NewOrganizationRepository(openTestWorkspace(t))
+
+	events, err := repo.ListAccountLifecycleEvents(ctx, AnyCompanyRetailOrganizationID, 200)
+	if err != nil {
+		t.Fatalf("ListAccountLifecycleEvents() error = %v", err)
+	}
+	if len(events) != 13 {
+		t.Fatalf("seed lifecycle event count = %d, want 13", len(events))
+	}
+	byAccount := accountLifecycleEventsByAccount(events)
+	management := byAccount[AnyCompanyRetailManagementAccountID][0]
+	if management.EventType != AccountLifecycleEventCreated ||
+		management.NewParentUnitID != "ou_anycompany_root" ||
+		management.NewStatus != AccountStatusActive ||
+		management.EffectiveAt != "2026-01-01T00:00:00Z" ||
+		management.EventSource != "system" {
+		t.Fatalf("management lifecycle event = %+v, want seeded creation baseline", management)
+	}
+	deprecated := byAccount["666677778888"][0]
+	if deprecated.EventType != AccountLifecycleEventCreated || deprecated.NewStatus != AccountStatusSuspended {
+		t.Fatalf("deprecated account lifecycle event = %+v, want suspended baseline", deprecated)
+	}
+}
+
+func TestOrganizationRepositoryAccountLifecycleOperationsRecordHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewOrganizationRepository(db)
+
+	created, err := repo.CreateAccount(ctx, AccountCreateRequest{
+		ID:             "777788889999",
+		OrganizationID: AnyCompanyRetailOrganizationID,
+		ParentUnitID:   "ou_anycompany_sandbox",
+		Name:           "Partner Integration",
+		Email:          "partner-integration@anycompany.example",
+		EffectiveAt:    "2026-02-01T00:00:00+13:00",
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount() error = %v", err)
+	}
+	if created.Account.Status != AccountStatusActive ||
+		created.Account.OUPath != "Root/Sandbox" ||
+		created.Account.PayerAccountID != AnyCompanyRetailManagementAccountID ||
+		created.Account.IsManagementAccount {
+		t.Fatalf("created account = %+v, want active member in Sandbox billed to management", created.Account)
+	}
+	if created.Event.EventType != AccountLifecycleEventCreated ||
+		created.Event.NewParentUnitID != "ou_anycompany_sandbox" ||
+		created.Event.NewStatus != AccountStatusActive ||
+		created.Event.EffectiveAt != "2026-01-31T11:00:00Z" {
+		t.Fatalf("created lifecycle event = %+v, want canonical UTC creation event", created.Event)
+	}
+
+	moved, err := repo.MoveAccount(ctx, AccountMoveRequest{
+		AccountID:    "777788889999",
+		ParentUnitID: "ou_anycompany_workloads",
+		EffectiveAt:  "2026-02-05T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("MoveAccount() error = %v", err)
+	}
+	if moved.Account.OUPath != "Root/Workloads" {
+		t.Fatalf("moved account OUPath = %q, want Root/Workloads", moved.Account.OUPath)
+	}
+	if moved.Event.EventType != AccountLifecycleEventMoved ||
+		moved.Event.PreviousParentUnitID != "ou_anycompany_sandbox" ||
+		moved.Event.NewParentUnitID != "ou_anycompany_workloads" ||
+		moved.Event.PreviousStatus != AccountStatusActive ||
+		moved.Event.NewStatus != AccountStatusActive {
+		t.Fatalf("move lifecycle event = %+v, want OU transfer with active status", moved.Event)
+	}
+
+	suspended, err := repo.SuspendAccount(ctx, AccountSuspendRequest{
+		AccountID:   "777788889999",
+		EffectiveAt: "2026-02-10T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("SuspendAccount() error = %v", err)
+	}
+	if suspended.Account.Status != AccountStatusSuspended || suspended.Account.LeftAt != "" {
+		t.Fatalf("suspended account = %+v, want suspended membership without left_at", suspended.Account)
+	}
+	if suspended.Event.EventType != AccountLifecycleEventSuspended ||
+		suspended.Event.PreviousStatus != AccountStatusActive ||
+		suspended.Event.NewStatus != AccountStatusSuspended {
+		t.Fatalf("suspend lifecycle event = %+v, want active to suspended", suspended.Event)
+	}
+
+	closed, err := repo.CloseAccount(ctx, AccountCloseRequest{
+		AccountID:   "777788889999",
+		EffectiveAt: "2026-02-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CloseAccount() error = %v", err)
+	}
+	if closed.Account.Status != AccountStatusClosed || closed.Account.LeftAt != "2026-02-15T00:00:00Z" {
+		t.Fatalf("closed account = %+v, want closed membership with left_at", closed.Account)
+	}
+	if closed.Event.EventType != AccountLifecycleEventClosed ||
+		closed.Event.PreviousStatus != AccountStatusSuspended ||
+		closed.Event.NewStatus != AccountStatusClosed {
+		t.Fatalf("close lifecycle event = %+v, want suspended to closed", closed.Event)
+	}
+
+	events, err := repo.ListAccountLifecycleEvents(ctx, AnyCompanyRetailOrganizationID, 200)
+	if err != nil {
+		t.Fatalf("ListAccountLifecycleEvents() after operations error = %v", err)
+	}
+	accountEvents := accountLifecycleEventsByAccount(events)["777788889999"]
+	if len(accountEvents) != 4 {
+		t.Fatalf("new account lifecycle event count = %d, want 4: %+v", len(accountEvents), accountEvents)
+	}
+	if accountEvents[0].EventType != AccountLifecycleEventClosed ||
+		accountEvents[1].EventType != AccountLifecycleEventSuspended ||
+		accountEvents[2].EventType != AccountLifecycleEventMoved ||
+		accountEvents[3].EventType != AccountLifecycleEventCreated {
+		t.Fatalf("new account event order = %+v, want newest-first close/suspend/move/create", accountEvents)
+	}
+}
+
+func TestOrganizationRepositoryAccountLifecycleValidation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewOrganizationRepository(db)
+
+	if _, err := repo.MoveAccount(ctx, AccountMoveRequest{
+		AccountID:    AnyCompanyRetailManagementAccountID,
+		ParentUnitID: "ou_anycompany_sandbox",
+		EffectiveAt:  "2026-02-01T00:00:00Z",
+	}); err == nil || !strings.Contains(err.Error(), "management account") {
+		t.Fatalf("MoveAccount(management) error = %v, want management guard", err)
+	}
+	if _, err := repo.SuspendAccount(ctx, AccountSuspendRequest{
+		AccountID:   "666677778888",
+		EffectiveAt: "2026-02-01T00:00:00Z",
+	}); err == nil || !strings.Contains(err.Error(), "must be active") {
+		t.Fatalf("SuspendAccount(already suspended) error = %v, want active-state guard", err)
+	}
+	if _, err := repo.CloseAccount(ctx, AccountCloseRequest{
+		AccountID:   "111122223333",
+		EffectiveAt: "2026-01-01T00:00:00Z",
+	}); err == nil || !strings.Contains(err.Error(), "after joined_at") {
+		t.Fatalf("CloseAccount(joined_at boundary) error = %v, want left_at ordering guard", err)
+	}
+
+	if _, err := repo.CreateAccount(ctx, AccountCreateRequest{
+		ID:             "777788889990",
+		OrganizationID: AnyCompanyRetailOrganizationID,
+		ParentUnitID:   "ou_anycompany_sandbox",
+		Name:           "Late Ordering",
+		Email:          "late-ordering@anycompany.example",
+		EffectiveAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAccount(ordering fixture) error = %v", err)
+	}
+	if _, err := repo.MoveAccount(ctx, AccountMoveRequest{
+		AccountID:    "777788889990",
+		ParentUnitID: "ou_anycompany_workloads",
+		EffectiveAt:  "2026-02-10T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("MoveAccount(ordering fixture) error = %v", err)
+	}
+	if _, err := repo.SuspendAccount(ctx, AccountSuspendRequest{
+		AccountID:   "777788889990",
+		EffectiveAt: "2026-02-09T00:00:00Z",
+	}); err == nil || !strings.Contains(err.Error(), "latest event") {
+		t.Fatalf("SuspendAccount(before latest event) error = %v, want lifecycle ordering guard", err)
+	}
+	if _, err := repo.MoveAccount(ctx, AccountMoveRequest{
+		AccountID:    "777788889990",
+		ParentUnitID: "ou_anycompany_workloads",
+		EffectiveAt:  "2026-02-11T00:00:00Z",
+	}); err == nil || !strings.Contains(err.Error(), "already belongs") {
+		t.Fatalf("MoveAccount(same OU) error = %v, want same-OU guard", err)
+	}
+}
+
 func assertSeedAccount(t *testing.T, account OrganizationAccount, wantID, wantUnitPath, wantType, wantStatus string) {
 	t.Helper()
 
@@ -270,4 +456,12 @@ func organizationAccountNames(accounts []OrganizationAccount) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func accountLifecycleEventsByAccount(events []AccountLifecycleEvent) map[string][]AccountLifecycleEvent {
+	byAccount := make(map[string][]AccountLifecycleEvent, len(events))
+	for _, event := range events {
+		byAccount[event.AccountID] = append(byAccount[event.AccountID], event)
+	}
+	return byAccount
 }

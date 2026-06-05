@@ -109,6 +109,18 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/organization", func(w http.ResponseWriter, r *http.Request) {
 		newOrganizationHandler(workspace.DB()).handleOrganization(w, r)
 	})
+	mux.HandleFunc("/organization/accounts/create", func(w http.ResponseWriter, r *http.Request) {
+		newOrganizationHandler(workspace.DB()).handleCreateAccount(w, r)
+	})
+	mux.HandleFunc("/organization/accounts/move", func(w http.ResponseWriter, r *http.Request) {
+		newOrganizationHandler(workspace.DB()).handleMoveAccount(w, r)
+	})
+	mux.HandleFunc("/organization/accounts/suspend", func(w http.ResponseWriter, r *http.Request) {
+		newOrganizationHandler(workspace.DB()).handleSuspendAccount(w, r)
+	})
+	mux.HandleFunc("/organization/accounts/close", func(w http.ResponseWriter, r *http.Request) {
+		newOrganizationHandler(workspace.DB()).handleCloseAccount(w, r)
+	})
 	mux.HandleFunc("/resources", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
 		h.handleResources(w, r)
 	}))

@@ -104,7 +104,7 @@ type OrganizationAccount struct {
 	SortOrder             int
 }
 
-// OrganizationRepository reads the simulated organization hierarchy from a workspace database.
+// OrganizationRepository reads and updates the simulated organization hierarchy from a workspace database.
 type OrganizationRepository struct {
 	db *sql.DB
 }

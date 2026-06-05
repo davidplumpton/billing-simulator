@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 )
@@ -289,6 +290,230 @@ func TestCostCategoryRepositoryPreviewsAssignmentsAndRuleOrderEffects(t *testing
 	}
 }
 
+func TestCostCategoryRepositoryRefreshesOpenAssignmentsAfterRulesAndPricing(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	items := seedCostCategoryAssignmentSpend(t, ctx, db)
+	repo := NewCostCategoryRepository(db)
+
+	product, err := repo.CreateCategory(ctx, CostCategoryCreateRequest{
+		Name:         "Product",
+		DefaultValue: "Unmapped",
+	})
+	if err != nil {
+		t.Fatalf("CreateCategory(Product) error = %v", err)
+	}
+	assignments, err := repo.ListLineItemAssignments(ctx, CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     product.ID,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(defaults) error = %v", err)
+	}
+	if len(assignments) != 2 ||
+		requireAssignmentByLineItem(t, assignments, items["ec2"].ID).AssignmentSource != costCategoryAssignmentSourceDefault ||
+		requireAssignmentByLineItem(t, assignments, items["s3"].ID).AssignedValue != "Unmapped" {
+		t.Fatalf("default assignments = %+v, want two open-period defaults", assignments)
+	}
+
+	storageRule, err := repo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      10,
+		Value:          "Storage",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchService, Values: []string{serviceAmazonS3}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRule(Storage) error = %v", err)
+	}
+	assignments, err = repo.ListLineItemAssignments(ctx, CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     product.ID,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(after rule) error = %v", err)
+	}
+	ec2Assignment := requireAssignmentByLineItem(t, assignments, items["ec2"].ID)
+	if ec2Assignment.AssignedValue != "Unmapped" || ec2Assignment.AssignmentSource != costCategoryAssignmentSourceDefault || ec2Assignment.MatchedRuleID != "" {
+		t.Fatalf("EC2 assignment = %+v, want default Unmapped", ec2Assignment)
+	}
+	s3Assignment := requireAssignmentByLineItem(t, assignments, items["s3"].ID)
+	if s3Assignment.AssignedValue != "Storage" ||
+		s3Assignment.AssignmentSource != costCategoryAssignmentSourceRule ||
+		s3Assignment.MatchedRuleID != storageRule.ID ||
+		s3Assignment.MatchedRuleOrder != 10 ||
+		s3Assignment.MatchedRuleValue != "Storage" ||
+		s3Assignment.LineItemStatus != billLineItemStatusEstimated {
+		t.Fatalf("S3 assignment = %+v, want Storage rule snapshot", s3Assignment)
+	}
+
+	newS3 := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cost-category-new-s3",
+			AccountID:    "222233334444",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonS3,
+			ResourceType: "s3_bucket",
+			ResourceName: "Assignment refresh bucket",
+			Status:       "active",
+			StartedAt:    "2026-02-04T00:00:00Z",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cost-category-new-s3",
+			ResourceID:          "resource-cost-category-new-s3",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-04T00:00:00Z",
+			UsageEndTime:        "2026-02-05T00:00:00Z",
+			UsageQuantityMicros: 1_000_000_000,
+			UsageUnit:           "Request",
+		},
+	)
+	assignments, err = repo.ListLineItemAssignments(ctx, CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     product.ID,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(after new pricing) error = %v", err)
+	}
+	if len(assignments) != 3 {
+		t.Fatalf("assignments after new pricing = %+v, want three product assignments", assignments)
+	}
+	newAssignment := requireAssignmentByLineItem(t, assignments, newS3.ID)
+	if newAssignment.AssignedValue != "Storage" || newAssignment.MatchedRuleID != storageRule.ID {
+		t.Fatalf("new S3 assignment = %+v, want automatic Storage assignment after pricing", newAssignment)
+	}
+}
+
+func TestCostCategoryRepositoryPreservesFinalizedAssignments(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageItem := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cost-category-finalized-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Finalized assignment web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cost-category-finalized-ec2",
+			ResourceID:          "resource-cost-category-finalized-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	repo := NewCostCategoryRepository(db)
+	product, err := repo.CreateCategory(ctx, CostCategoryCreateRequest{
+		Name:         "Product",
+		DefaultValue: "Unmapped",
+	})
+	if err != nil {
+		t.Fatalf("CreateCategory(Product) error = %v", err)
+	}
+	if _, err := repo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      10,
+		Value:          "Storefront",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchService, Values: []string{serviceAmazonEC2}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Storefront) error = %v", err)
+	}
+
+	if _, err := NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: AnyCompanyRetailManagementAccountID,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+	if closeResult.FinalizedLineItems != 2 {
+		t.Fatalf("ClosePreviousPeriod() finalized line items = %d, want usage plus support", closeResult.FinalizedLineItems)
+	}
+	lineItems, err := NewBillLineItemRepository(db).ListBillLineItems(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListBillLineItems() error = %v", err)
+	}
+	supportItem := requireBillLineItemByService(t, lineItems, serviceAWSSupport)
+
+	assignments, err := repo.ListLineItemAssignments(ctx, CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     product.ID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(finalized) error = %v", err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("finalized assignments = %+v, want usage and support assignments", assignments)
+	}
+	usageAssignment := requireAssignmentByLineItem(t, assignments, usageItem.ID)
+	if usageAssignment.AssignedValue != "Storefront" ||
+		usageAssignment.AssignmentSource != costCategoryAssignmentSourceRule ||
+		usageAssignment.LineItemStatus != billLineItemStatusFinal {
+		t.Fatalf("usage assignment = %+v, want finalized Storefront rule assignment", usageAssignment)
+	}
+	supportAssignment := requireAssignmentByLineItem(t, assignments, supportItem.ID)
+	if supportAssignment.AssignedValue != "Unmapped" ||
+		supportAssignment.AssignmentSource != costCategoryAssignmentSourceDefault ||
+		supportAssignment.LineItemStatus != billLineItemStatusFinal {
+		t.Fatalf("support assignment = %+v, want finalized default assignment", supportAssignment)
+	}
+
+	if _, err := repo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      20,
+		Value:          "Shared Platform",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchService, Values: []string{serviceAWSSupport}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Shared Platform) error = %v", err)
+	}
+	assignments, err = repo.ListLineItemAssignments(ctx, CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     product.ID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(after closed rule change) error = %v", err)
+	}
+	if got := requireAssignmentByLineItem(t, assignments, supportItem.ID); got.AssignedValue != "Unmapped" || got.MatchedRuleID != "" {
+		t.Fatalf("closed support assignment after rule change = %+v, want preserved default", got)
+	}
+	refresh, err := repo.RefreshAssignmentsForBillingPeriod(ctx, "2026-02-01", "2026-03-01")
+	if err != nil {
+		t.Fatalf("RefreshAssignmentsForBillingPeriod(closed) error = %v", err)
+	}
+	if refresh.LineItemsEvaluated != 0 || refresh.AssignmentsRefreshed != 0 {
+		t.Fatalf("RefreshAssignmentsForBillingPeriod(closed) = %+v, want no closed-period rewrites", refresh)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE cost_category_line_item_assignments SET assigned_value = ? WHERE line_item_id = ? AND cost_category_id = ?`, "Changed", usageItem.ID, product.ID); err == nil || !strings.Contains(err.Error(), "closed billing period") {
+		t.Fatalf("direct closed assignment update error = %v, want closed-period trigger", err)
+	}
+}
+
 func TestCostCategoryRepositoryValidatesRules(t *testing.T) {
 	t.Parallel()
 
@@ -381,4 +606,67 @@ func costCategoryConditionsByDimension(conditions []CostCategoryRuleCondition) m
 		byDimension[condition.Dimension] = condition
 	}
 	return byDimension
+}
+
+func seedCostCategoryAssignmentSpend(t *testing.T, ctx context.Context, db *sql.DB) map[string]BillLineItem {
+	t.Helper()
+
+	items := map[string]BillLineItem{}
+	items["ec2"] = recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cost-category-assignment-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Assignment web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cost-category-assignment-ec2",
+			ResourceID:          "resource-cost-category-assignment-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	items["s3"] = recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cost-category-assignment-s3",
+			AccountID:    "222233334444",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonS3,
+			ResourceType: "s3_bucket",
+			ResourceName: "Assignment bucket",
+			Status:       "active",
+			StartedAt:    "2026-02-02T00:00:00Z",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cost-category-assignment-s3",
+			ResourceID:          "resource-cost-category-assignment-s3",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	)
+	return items
+}
+
+func requireAssignmentByLineItem(t *testing.T, assignments []CostCategoryLineItemAssignment, lineItemID string) CostCategoryLineItemAssignment {
+	t.Helper()
+
+	for _, assignment := range assignments {
+		if assignment.LineItemID == lineItemID {
+			return assignment
+		}
+	}
+	t.Fatalf("assignment for line item %q not found in %+v", lineItemID, assignments)
+	return CostCategoryLineItemAssignment{}
 }

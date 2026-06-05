@@ -201,6 +201,9 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 		if err != nil {
 			return err
 		}
+		if _, err := refreshCostCategoryAssignmentsInTx(ctx, tx, request.PeriodStart, request.PeriodEnd); err != nil {
+			return err
+		}
 		aggregate, err := aggregateFinalBill(ctx, tx, request)
 		if err != nil {
 			return err

@@ -144,6 +144,11 @@ func (r BillLineItemRepository) generateBillLineItems(ctx context.Context, reque
 				result.Items = append(result.Items, item)
 			}
 		}
+		if result.ItemsCreated > 0 {
+			if _, err := refreshCostCategoryAssignmentsInTx(ctx, tx, "", ""); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {

@@ -78,6 +78,11 @@ func (r SupportChargeRepository) GenerateSupportCharges(ctx context.Context, req
 		if err != nil {
 			return err
 		}
+		if generated.ItemsCreated > 0 || generated.ItemsUpdated > 0 || generated.ItemsDeleted > 0 {
+			if _, err := refreshCostCategoryAssignmentsInTx(ctx, tx, request.PeriodStart, request.PeriodEnd); err != nil {
+				return err
+			}
+		}
 		result = generated
 		return nil
 	})

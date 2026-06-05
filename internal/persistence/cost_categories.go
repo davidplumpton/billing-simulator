@@ -805,6 +805,9 @@ func refreshCostCategoryAssignmentsInTx(ctx context.Context, tx costCategoryAssi
 		}
 	}
 	result.BillingPeriodsRefreshed = len(periods)
+	if _, err := refreshCostCategorySplitAllocationsInTx(ctx, tx, periodStart, periodEnd); err != nil {
+		return CostCategoryAssignmentRefreshResult{}, err
+	}
 	return result, nil
 }
 

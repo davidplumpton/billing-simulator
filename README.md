@@ -78,10 +78,10 @@ Requirements:
 
 - Go 1.24 or newer compatible with the module in [go.mod](go.mod).
 
-Start the app with an explicit local port and workspace:
+Start the app with an explicit local port, workspace, and app state file:
 
 ```bash
-go run ./cmd/billing-sim -http 127.0.0.1:8080 -workspace ./tmp/workspace -browser=false
+GOCACHE="$PWD/tmp/go-build-cache" go run ./cmd/billing-sim -http 127.0.0.1:8080 -workspace ./tmp/workspace -state ./tmp/state.json -browser=false
 ```
 
 Then open:
@@ -90,7 +90,7 @@ Then open:
 http://127.0.0.1:8080/
 ```
 
-You can also run without `-workspace`; the app will show the workspace selector first. By default, the CLI opens the browser and stores the last workspace path in the per-user app state file.
+You can also run without `-workspace`; the app will show the workspace selector first. By default, the CLI opens the browser and stores the last workspace path in the per-user app state file. Agents and automated smoke runs should always pass a project-local `-state` path such as `./tmp/state.json` when opening workspaces.
 
 Useful flags:
 

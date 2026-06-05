@@ -1,2 +1,5 @@
 # bv (beads viewer) local config and caches
 .bv/
+
+# Project-local workspaces, app state, logs, and tool caches
+/tmp/

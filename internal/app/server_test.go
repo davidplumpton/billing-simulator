@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +140,150 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	}
 	if catalogCount != 18 {
 		t.Fatalf("price_catalog_items count = %d, want 18", catalogCount)
+	}
+}
+
+func TestLocalServerSmokeFlowCreatesWorkspaceAndServesDashboard(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "smoke-workspace")
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	client := http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL() + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if strings.TrimSpace(body) != "ok" {
+		t.Fatalf("GET /healthz body = %q, want ok", body)
+	}
+
+	resp, err = client.Get(server.URL() + "/")
+	if err != nil {
+		t.Fatalf("GET / error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/workspaces" {
+		t.Fatalf("GET / final path = %q, want /workspaces", got)
+	}
+	for _, want := range []string{
+		`<title>Workspaces - AWS Billing Simulator</title>`,
+		`<link rel="stylesheet" href="/assets/app.css">`,
+		`<script src="/assets/app.js" defer></script>`,
+		"No workspace open",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET / workspace selector missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/workspaces/open", url.Values{
+		"workspace_path": {workspacePath},
+	})
+	if err != nil {
+		t.Fatalf("POST /workspaces/open error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /workspaces/open final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/resources" {
+		t.Fatalf("POST /workspaces/open final path = %q, want /resources", got)
+	}
+	for _, want := range []string{
+		`<title>Resources - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/resources">Resources</a>`,
+		"Opened workspace",
+		"Create Resource",
+		"Simulator Clock",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /workspaces/open resource dashboard missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Workspace Required") {
+		t.Fatalf("resource dashboard still requires a workspace: %s", body)
+	}
+	if _, err := os.Stat(persistence.WorkspaceDBPath(workspacePath)); err != nil {
+		t.Fatalf("workspace database was not created: %v", err)
+	}
+
+	resp, err = client.Get(server.URL() + "/")
+	if err != nil {
+		t.Fatalf("GET / after workspace open error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / after workspace open final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/resources" {
+		t.Fatalf("GET / after workspace open final path = %q, want /resources", got)
+	}
+	if !strings.Contains(body, "Create Resource") || strings.Contains(body, "Workspace Required") {
+		t.Fatalf("GET / after workspace open did not render dashboard: %s", body)
+	}
+
+	assets := []struct {
+		path        string
+		contentType string
+		wants       []string
+	}{
+		{
+			path:        "/assets/app.css",
+			contentType: "text/css",
+			wants:       []string{"--accent: #0f766e", "@media (max-width: 980px)"},
+		},
+		{
+			path:        "/assets/app.js",
+			contentType: "text/javascript",
+			wants:       []string{"data-partial-form", "X-AWS-Billing-Simulator-Fragment"},
+		},
+	}
+	for _, asset := range assets {
+		resp, err := client.Get(server.URL() + asset.path)
+		if err != nil {
+			t.Fatalf("GET %s error = %v", asset.path, err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d; body=%s", asset.path, resp.StatusCode, http.StatusOK, body)
+		}
+		if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, asset.contentType) {
+			t.Fatalf("GET %s Content-Type = %q, want prefix %q", asset.path, got, asset.contentType)
+		}
+		for _, want := range asset.wants {
+			if !strings.Contains(body, want) {
+				t.Fatalf("GET %s missing %q: %s", asset.path, want, body)
+			}
+		}
 	}
 }
 

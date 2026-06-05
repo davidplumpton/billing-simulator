@@ -1445,6 +1445,321 @@ func TestCostCategoryPreviewWorkflow(t *testing.T) {
 	}
 }
 
+// TestCostCategoryRulesFeatureWorksInFreshWorkspace keeps bd-2rx.2 guarded through the browser-facing category workflow.
+func TestCostCategoryRulesFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "cost-category-feature-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL() + "/cost-categories")
+	if err != nil {
+		t.Fatalf("GET /cost-categories fresh workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-categories fresh workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Cost Categories - AWS Billing Simulator</title>`,
+		"Cost Category Preview",
+		"No cost categories",
+		"Line Items",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-categories fresh workspace body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Feature category web"},
+		"status":         {"active"},
+		"started_at":     {"2026-02-01T00:00"},
+		"tags":           {"app=storefront\nenv=prod"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Feature category web") || !strings.Contains(body, "env=prod") {
+		t.Fatalf("resource create response missing category feature resource/tag: %s", body)
+	}
+
+	resourceID := readOnlyResourceIDByName(t, db, "Feature category web")
+	resp, err = client.PostForm(server.URL()+"/resources/generate", url.Values{
+		"resource_id":           {resourceID},
+		"generation_pattern":    {"daily_instance_hours"},
+		"generation_start_date": {"2026-02-01"},
+		"generation_days":       {"1"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/generate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/generate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated 1 usage events") ||
+		!strings.Contains(body, "instance-hours:t3.medium") ||
+		!strings.Contains(body, "env=prod") {
+		t.Fatalf("generator response missing category feature usage/tag snapshot: %s", body)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-02T00:00:00Z") ||
+		!strings.Contains(body, "daily metering created 1 metering records and 2 bill line items") ||
+		!strings.Contains(body, "AWSSupport") {
+		t.Fatalf("clock advance response missing priced category workflow data: %s", body)
+	}
+
+	var usageLineItemID, supportLineItemID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT id
+		FROM bill_line_items
+		WHERE resource_id = ? AND service_code = 'AmazonEC2'
+	`, resourceID).Scan(&usageLineItemID); err != nil {
+		t.Fatalf("read EC2 bill line item: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT id
+		FROM bill_line_items
+		WHERE service_code = 'AWSSupport'
+	`).Scan(&supportLineItemID); err != nil {
+		t.Fatalf("read Support bill line item: %v", err)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/categories/create", url.Values{
+		"name":          {"Environment"},
+		"default_value": {"Unknown"},
+		"description":   {"Deployment lifecycle"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Environment category error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Environment category final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	environmentID := readCostCategoryID(t, db, "Environment")
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/rules/create", url.Values{
+		"category_id": {environmentID},
+		"rule_order":  {"10"},
+		"value":       {"Production"},
+		"dimension":   {persistence.CostCategoryRuleMatchTag},
+		"operator":    {persistence.CostCategoryRuleOperatorIn},
+		"values":      {"prod"},
+		"tag_key":     {"env"},
+		"description": {"Production resources carry env=prod"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Environment tag rule error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Environment tag rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Created rule 10 for Environment",
+		"tag env is prod",
+		"Production",
+		resourceID,
+		"env=prod",
+		"Unknown",
+		"AWS Support",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create Environment tag rule body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/categories/create", url.Values{
+		"name":          {"Product"},
+		"default_value": {"Unmapped"},
+		"description":   {"Business product showback"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product category error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product category final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	productID := readCostCategoryID(t, db, "Product")
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/rules/create", url.Values{
+		"category_id":            {productID},
+		"rule_order":             {"10"},
+		"value":                  {"Storefront"},
+		"dimension":              {persistence.CostCategoryRuleMatchCostCategory},
+		"operator":               {persistence.CostCategoryRuleOperatorIn},
+		"referenced_category_id": {environmentID},
+		"values":                 {"Production"},
+		"description":            {"Storefront product uses Production environment costs"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product referenced-category rule error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product referenced-category rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Created rule 10 for Product",
+		"Rule Order Effects",
+		"Line Item Preview",
+		"Storefront",
+		"Unmapped",
+		"cost category Environment is Production",
+		resourceID,
+		"app=storefront",
+		"env=prod",
+		"AWS Support",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create Product referenced-category rule body missing %q: %s", want, body)
+		}
+	}
+
+	repo := persistence.NewCostCategoryRepository(db)
+	assignments, err := repo.ListLineItemAssignments(ctx, persistence.CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     productID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(Product open period) error = %v", err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("Product assignments before close = %+v, want usage and Support rows", assignments)
+	}
+	usageAssignment := requireCostCategoryAssignmentByLineItem(t, assignments, usageLineItemID)
+	if usageAssignment.AssignedValue != "Storefront" ||
+		usageAssignment.AssignmentSource != "rule" ||
+		usageAssignment.MatchedRuleValue != "Storefront" ||
+		usageAssignment.LineItemStatus != "estimated" {
+		t.Fatalf("usage assignment before close = %+v, want estimated Storefront rule snapshot", usageAssignment)
+	}
+	supportAssignment := requireCostCategoryAssignmentByLineItem(t, assignments, supportLineItemID)
+	if supportAssignment.AssignedValue != "Unmapped" ||
+		supportAssignment.AssignmentSource != "default" ||
+		supportAssignment.LineItemStatus != "estimated" {
+		t.Fatalf("Support assignment before close = %+v, want estimated default snapshot", supportAssignment)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
+	if !strings.Contains(body, "Advanced clock to 2026-03-01T00:00:00Z") ||
+		!strings.Contains(body, "2026-03-01 to 2026-04-01 (31 days)") {
+		t.Fatalf("billing-period advance response missing March clock state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/resources/month-close", url.Values{
+		"payer_account_id": {"999988887777"},
+		"invoice_due_days": {"14"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/month-close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/month-close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Month-end close finalized 2 line items into bill",
+		"Issued Bills",
+		"SIM-INV-202602-",
+		"final",
+		"due",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("month-end close response missing %q: %s", want, body)
+		}
+	}
+
+	assignments, err = repo.ListLineItemAssignments(ctx, persistence.CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     productID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(Product closed period) error = %v", err)
+	}
+	if got := requireCostCategoryAssignmentByLineItem(t, assignments, usageLineItemID); got.AssignedValue != "Storefront" || got.LineItemStatus != "final" {
+		t.Fatalf("closed usage assignment = %+v, want final Storefront", got)
+	}
+	if got := requireCostCategoryAssignmentByLineItem(t, assignments, supportLineItemID); got.AssignedValue != "Unmapped" || got.LineItemStatus != "final" {
+		t.Fatalf("closed Support assignment = %+v, want preserved final Unmapped", got)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/rules/create", url.Values{
+		"category_id": {productID},
+		"rule_order":  {"20"},
+		"value":       {"Shared Platform"},
+		"dimension":   {persistence.CostCategoryRuleMatchService},
+		"operator":    {persistence.CostCategoryRuleOperatorIn},
+		"values":      {"AWSSupport"},
+		"description": {"Support should not rewrite closed-period assignments"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product Support rule after close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product Support rule after close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Created rule 20 for Product") || !strings.Contains(body, "No line items in the current billing period") {
+		t.Fatalf("POST create Product Support rule after close missing March preview state: %s", body)
+	}
+
+	assignments, err = repo.ListLineItemAssignments(ctx, persistence.CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     productID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(Product after closed rule change) error = %v", err)
+	}
+	if got := requireCostCategoryAssignmentByLineItem(t, assignments, supportLineItemID); got.AssignedValue != "Unmapped" || got.MatchedRuleID != "" {
+		t.Fatalf("closed Support assignment after rule change = %+v, want preserved default", got)
+	}
+}
+
 func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -3252,6 +3567,19 @@ func readCostCategoryID(t *testing.T, db *sql.DB, name string) string {
 		t.Fatalf("read cost category %q ID: %v", name, err)
 	}
 	return id
+}
+
+// requireCostCategoryAssignmentByLineItem returns the persisted category assignment for one billed line item.
+func requireCostCategoryAssignmentByLineItem(t *testing.T, assignments []persistence.CostCategoryLineItemAssignment, lineItemID string) persistence.CostCategoryLineItemAssignment {
+	t.Helper()
+
+	for _, assignment := range assignments {
+		if assignment.LineItemID == lineItemID {
+			return assignment
+		}
+	}
+	t.Fatalf("cost category assignments = %+v, want line item %q", assignments, lineItemID)
+	return persistence.CostCategoryLineItemAssignment{}
 }
 
 func postClockAdvance(t *testing.T, client *http.Client, serverURL, amount, unit string) string {

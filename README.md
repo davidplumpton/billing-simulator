@@ -117,6 +117,8 @@ br close <id>
 br sync --flush-only
 ```
 
+`br stats` is useful as a dashboard check, but the installed tracker may still print a stale footer that says to use `bd list`, and its Recent Activity issue counters may show zero despite recent `.beads/issues.jsonl` changes. In this repository, ignore those external CLI hints and use `br list`, `br ready`, `br show`, and `br count` for issue details.
+
 The local agent workflow and repository rules are documented in [AGENTS.md](AGENTS.md). Project context and session notes are indexed in [MIND_MAP.md](MIND_MAP.md).
 
 ## Safety Boundaries

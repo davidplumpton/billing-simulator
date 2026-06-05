@@ -18,6 +18,10 @@ br sync --flush-only  # Export issue changes before jj commit
 
 When the user asks for work with a specific label, select from `br ready --label <label>` before acting on the generic `bv --robot-next` recommendation. For a lightweight smoke check, run `bv --robot-next`, then verify the returned `id` with `br show <id>`; never run a legacy tracker executable from the robot output.
 
+## br Stats Caveat
+
+`br stats` and `br status` are useful dashboard checks, but the installed tracker may still print a stale footer that points to `bd list`, and its Recent Activity issue counters may report zero even when `.beads/issues.jsonl` has recent issue changes. Treat those as external CLI hints only; use `br list`, `br ready`, `br show`, and `br count` for issue details in this repository.
+
 ## Session Completion
 
 **MANDATORY WORKFLOW**

@@ -34,13 +34,13 @@ When the user asks for work with a specific label, select from `br ready --label
 6. **Update issue status** - Close finished work, update in-progress items
 7. **Hand off** - Provide context for next session
 
-- Version control using jututsu (jj), never use git commands
+- Version control uses Jujutsu (jj); never use git commands
 
 ### Best Practices
 
 - Check `bv --robot-next` at session start for recommendation context
 - Use `br ready --label <label>` when the requested work is label-scoped
-- Update status as you work (in_progress → closed)
+- Update status as you work, from in_progress to closed
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type, and dependencies between related items
 - Always `br sync --flush-only` before committing

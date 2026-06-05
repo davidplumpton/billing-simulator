@@ -127,32 +127,4 @@ func pageNavItems(active string) []pageNavItem {
 	return items
 }
 
-var pageLayoutTemplate = template.Must(template.New("page-layout").Parse(`<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>{{.Title}}</title>
-	<link rel="stylesheet" href="/assets/app.css">
-</head>
-<body>
-	<header class="topbar">
-		<div class="brand">AWS Billing Simulator</div>
-		<nav aria-label="Primary">
-			{{range .NavItems}}
-				{{if .Path}}
-					{{if .Active}}<a class="active" aria-current="page" href="{{.Path}}">{{.Label}}</a>{{else}}<a href="{{.Path}}">{{.Label}}</a>{{end}}
-				{{else}}
-					{{if .Active}}<span class="active" aria-disabled="true">{{.Label}}</span>{{else}}<span aria-disabled="true">{{.Label}}</span>{{end}}
-				{{end}}
-			{{end}}
-		</nav>
-	</header>
-
-	<main class="page{{if .MainClass}} {{.MainClass}}{{end}}">
-		{{.Body}}
-	</main>
-	<script src="/assets/app.js" defer></script>
-</body>
-</html>
-`))
+var pageLayoutTemplate = mustEmbeddedTemplate("page-layout", "layout.html")

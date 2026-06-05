@@ -1,0 +1,19 @@
+sku,service_code,service_name,product_family,usage_type,operation,region_code,unit,rate_micros,currency_code,effective_date,price_source
+SIM-EC2-T3-MEDIUM-HR,AmazonEC2,Amazon EC2,Compute Instance,instance-hours:t3.medium,RunInstances,us-east-1,InstanceHour,41600,USD,2026-01-01,synthetic
+SIM-EBS-GP3-GBMO,AmazonEBS,Amazon EBS,Block Storage,storage:gp3-gb-month,VolumeStorage,us-east-1,GBMonth,80000,USD,2026-01-01,synthetic
+SIM-S3-STANDARD-GBMO,AmazonS3,Amazon S3,Object Storage,storage:standard-gb-month,StandardStorage,us-east-1,GBMonth,23000,USD,2026-01-01,synthetic
+SIM-S3-PUT-1K,AmazonS3,Amazon S3,API Request,requests:put-1k,PutObject,us-east-1,ThousandRequests,5000,USD,2026-01-01,synthetic
+SIM-S3-GET-1K,AmazonS3,Amazon S3,API Request,requests:get-1k,GetObject,us-east-1,ThousandRequests,400,USD,2026-01-01,synthetic
+SIM-S3-RETRIEVAL-GB,AmazonS3,Amazon S3,Data Retrieval,retrieval:standard-gb,GetObjectRetrieval,us-east-1,GB,10000,USD,2026-01-01,synthetic
+SIM-LAMBDA-REQUESTS-1M,AWSLambda,AWS Lambda,Serverless Compute,requests:lambda-1m,Invoke,us-east-1,MillionRequests,200000,USD,2026-01-01,synthetic
+SIM-LAMBDA-GBS,AWSLambda,AWS Lambda,Serverless Compute,compute:lambda-gb-second,Invoke,us-east-1,GBSecond,17,USD,2026-01-01,synthetic
+SIM-RDS-T3-MEDIUM-HR,AmazonRDS,Amazon RDS,Managed Database,instance-hours:db.t3.medium,CreateDBInstance,us-east-1,InstanceHour,68000,USD,2026-01-01,synthetic
+SIM-RDS-STORAGE-GBMO,AmazonRDS,Amazon RDS,Database Storage,storage:rds-gp3-gb-month,DatabaseStorage,us-east-1,GBMonth,115000,USD,2026-01-01,synthetic
+SIM-NAT-GATEWAY-HR,AmazonVPCNATGateway,NAT Gateway,Network Appliance,nat-gateway-hours,NatGateway,us-east-1,GatewayHour,45000,USD,2026-01-01,synthetic
+SIM-NAT-GATEWAY-GB,AmazonVPCNATGateway,NAT Gateway,Network Appliance,nat-gateway-data-processed-gb,NatGatewayDataProcessing,us-east-1,GB,45000,USD,2026-01-01,synthetic
+SIM-CWLOGS-INGEST-GB,AmazonCloudWatchLogs,CloudWatch Logs,Log Management,logs-ingestion-gb,PutLogEvents,us-east-1,GB,500000,USD,2026-01-01,synthetic
+SIM-CWLOGS-STORAGE-GBMO,AmazonCloudWatchLogs,CloudWatch Logs,Log Management,logs-storage-gb-month,LogStorage,us-east-1,GBMonth,30000,USD,2026-01-01,synthetic
+SIM-DATAXFER-INTERNET-GB,AWSDataTransfer,AWS Data Transfer,Data Transfer,data-transfer-out-internet-gb,DataTransferOut,global,GB,90000,USD,2026-01-01,synthetic
+SIM-DATAXFER-INTERREGION-GB,AWSDataTransfer,AWS Data Transfer,Data Transfer,data-transfer-inter-region-gb,InterRegionDataTransfer,global,GB,20000,USD,2026-01-01,synthetic
+SIM-SUPPORT-BUSINESS-PCT,AWSSupport,AWS Support,Support,support-business-eligible-usd,BusinessSupport,global,EligibleUSD,100000,USD,2026-01-01,synthetic
+SIM-MARKETPLACE-SECURITY-MONTH,AWSMarketplace,AWS Marketplace,Marketplace Subscription,marketplace-security-tool-month,MonthlySubscription,global,SubscriptionMonth,250000000,USD,2026-01-01,synthetic

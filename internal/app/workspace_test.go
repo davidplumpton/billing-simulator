@@ -38,6 +38,33 @@ func TestWorkspaceStateStorePersistsLastWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestEmbeddedSharedTemplatesRenderPagePartials(t *testing.T) {
+	t.Parallel()
+
+	tmpl := newPageTemplate("embedded-template-test", `{{template "ui.notices" .Notices}}{{template "ui.empty-state" .WorkspaceEmptyState}}`)
+	data := struct {
+		Notices             []uiNoticeView
+		WorkspaceEmptyState uiEmptyStateView
+	}{
+		Notices:             uiNotices("Saved", ""),
+		WorkspaceEmptyState: uiWorkspaceRequiredState(),
+	}
+	var body strings.Builder
+	if err := tmpl.Execute(&body, data); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	rendered := body.String()
+	for _, want := range []string{
+		`<div class="notice success">Saved</div>`,
+		`<h2>Workspace Required</h2>`,
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered embedded partials missing %q: %s", want, rendered)
+		}
+	}
+}
+
 func TestStartOpensLastUsedWorkspacePath(t *testing.T) {
 	t.Parallel()
 

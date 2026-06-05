@@ -26,6 +26,11 @@ func TestPriceCatalogSeededForMVPServices(t *testing.T) {
 	if len(items) != 18 {
 		t.Fatalf("price catalog item count = %d, want 18", len(items))
 	}
+	seedItems, err := SyntheticPriceCatalogSeedItems()
+	if err != nil {
+		t.Fatalf("SyntheticPriceCatalogSeedItems() error = %v", err)
+	}
+	assertPriceCatalogSeedManifestMatchesWorkspace(t, seedItems, items)
 
 	requiredServices := map[string]bool{
 		"Amazon EC2":        false,
@@ -69,6 +74,37 @@ func TestPriceCatalogSeededForMVPServices(t *testing.T) {
 	for serviceName, seen := range requiredServices {
 		if !seen {
 			t.Fatalf("required service %q was not seeded in the price catalog", serviceName)
+		}
+	}
+}
+
+func assertPriceCatalogSeedManifestMatchesWorkspace(t *testing.T, seedItems, workspaceItems []PriceCatalogItem) {
+	t.Helper()
+
+	if len(seedItems) != len(workspaceItems) {
+		t.Fatalf("packaged seed item count = %d, workspace item count = %d", len(seedItems), len(workspaceItems))
+	}
+	workspaceBySKU := make(map[string]PriceCatalogItem, len(workspaceItems))
+	for _, item := range workspaceItems {
+		workspaceBySKU[item.SKU] = item
+	}
+	for _, seed := range seedItems {
+		item, ok := workspaceBySKU[seed.SKU]
+		if !ok {
+			t.Fatalf("packaged seed SKU %q is missing from migrated workspace catalog", seed.SKU)
+		}
+		if item.ServiceCode != seed.ServiceCode ||
+			item.ServiceName != seed.ServiceName ||
+			item.ProductFamily != seed.ProductFamily ||
+			item.UsageType != seed.UsageType ||
+			item.Operation != seed.Operation ||
+			item.RegionCode != seed.RegionCode ||
+			item.Unit != seed.Unit ||
+			item.RateMicros != seed.RateMicros ||
+			item.CurrencyCode != seed.CurrencyCode ||
+			item.EffectiveDate != seed.EffectiveDate ||
+			item.PriceSource != seed.PriceSource {
+			t.Fatalf("workspace catalog item %q = %+v, want packaged seed %+v", seed.SKU, item, seed)
 		}
 	}
 }

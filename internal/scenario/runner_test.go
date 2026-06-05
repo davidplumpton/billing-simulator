@@ -26,6 +26,34 @@ func TestRunnerAppliesScenarioEventsDeterministically(t *testing.T) {
 	}
 }
 
+func TestPackagedScenarioSeedsParse(t *testing.T) {
+	t.Parallel()
+
+	keys, err := SeedDefinitionKeys()
+	if err != nil {
+		t.Fatalf("SeedDefinitionKeys() error = %v", err)
+	}
+	if !containsScenarioSeedKey(keys, UntaggedDataTransferSpikeSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, UntaggedDataTransferSpikeSeedKey)
+	}
+	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition() error = %v", err)
+	}
+	if definition.Name != "Find the untagged data-transfer spike" || len(definition.Events) != 5 {
+		t.Fatalf("packaged scenario definition = %+v, want MVP data-transfer spike fixture", definition)
+	}
+}
+
+func containsScenarioSeedKey(keys []string, want string) bool {
+	for _, key := range keys {
+		if key == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunnerAllowsSameDefinitionRerunInOneWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -183,63 +211,10 @@ func runScenarioFixture(t *testing.T) scenarioFixtureResult {
 
 	ctx := context.Background()
 	db := openScenarioTestWorkspace(t)
-	definition := parseScenarioDefinitionForTest(t, `{
-		"name": "Find the untagged data-transfer spike",
-		"clock": {"start": "2026-03-01"},
-		"organization_template": "anycompany-retail",
-		"random_seed": 42,
-		"events": [
-			{
-				"id": "create-assets",
-				"day": 3,
-				"action": "create_resource",
-				"account": "Storefront Prod",
-				"service": "Amazon S3",
-				"resource": "s3://storefront-assets",
-				"resource_type": "bucket",
-				"region": "us-east-1",
-				"tags": {
-					"app": "storefront",
-					"env": "prod",
-					"owner": "web-platform"
-				},
-				"attributes": {
-					"storage_class": "standard"
-				}
-			},
-			{
-				"id": "generate-assets",
-				"day": 4,
-				"action": "generate_usage",
-				"resource": "s3://storefront-assets",
-				"pattern": "storage_growth",
-				"days": 2
-			},
-			{
-				"id": "data-transfer-spike",
-				"day": 12,
-				"action": "add_usage",
-				"service": "AWS Data Transfer",
-				"account": "Shared Networking",
-				"amount_gb": 4000,
-				"tags": {}
-			},
-			{
-				"id": "meter-march",
-				"day": 32,
-				"action": "run_daily_metering",
-				"payer_account": "Management"
-			},
-			{
-				"id": "close-march",
-				"day": 33,
-				"action": "close_billing_period",
-				"payer_account": "Management",
-				"billing_period_start": "2026-03-01",
-				"billing_period_end": "2026-04-01"
-			}
-		]
-	}`)
+	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition() error = %v", err)
+	}
 
 	result, err := NewRunner(db).Run(ctx, definition)
 	if err != nil {

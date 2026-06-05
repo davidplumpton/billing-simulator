@@ -59,7 +59,7 @@ type uiTableView struct {
 
 // newPageTemplate attaches shared UI partials before parsing one page template.
 func newPageTemplate(name, text string) *template.Template {
-	return template.Must(template.Must(template.New(name).Parse(sharedUITemplateText)).Parse(text))
+	return template.Must(mustEmbeddedTemplateSet(name, "shared.html").Parse(text))
 }
 
 // uiNotices returns the ordered flash and validation messages for page chrome.
@@ -122,57 +122,3 @@ func uiTable(headers []string, emptyMessage string) uiTableView {
 func uiTableHeaders(headers ...string) []string {
 	return headers
 }
-
-var sharedUITemplateText = `
-{{define "ui.notices"}}
-	{{range .}}
-		{{if .Message}}<div class="notice {{.Kind}}">{{.Message}}</div>{{end}}
-	{{end}}
-{{end}}
-
-{{define "ui.empty-state"}}
-	<section class="empty">
-		<h2>{{.Title}}</h2>
-		<p>{{.Message}}</p>
-		{{if .HasAction}}<a class="button-link" href="{{.Action.Href}}">{{.Action.Label}}</a>{{end}}
-	</section>
-{{end}}
-
-{{define "ui.action-bar"}}
-	{{if .Actions}}
-		<div class="page-actions">
-			{{range .Actions}}<a class="button-link" href="{{.Href}}">{{.Label}}</a>{{end}}
-		</div>
-	{{end}}
-{{end}}
-
-{{define "ui.input-field"}}
-	<label class="form-row{{if .Class}} {{.Class}}{{end}}">{{.Label}}
-		<input{{if .Type}} type="{{.Type}}"{{end}} name="{{.Name}}" value="{{.Value}}"{{if .InputMode}} inputmode="{{.InputMode}}"{{end}}{{if .Required}} required{{end}}>
-	</label>
-{{end}}
-
-{{define "ui.select-field"}}
-	<label class="form-row{{if .Class}} {{.Class}}{{end}}">{{.Label}}
-		<select name="{{.Name}}"{{if .Required}} required{{end}}>
-			{{range .Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
-		</select>
-	</label>
-{{end}}
-
-{{define "ui.submit-button"}}
-	<button type="submit">{{.Label}}</button>
-{{end}}
-
-{{define "ui.dense-table-head"}}
-	<thead>
-		<tr>
-			{{range .Headers}}<th>{{.}}</th>{{end}}
-		</tr>
-	</thead>
-{{end}}
-
-{{define "ui.dense-table-empty-row"}}
-	<tr><td colspan="{{.ColumnCount}}" class="empty-cell">{{.EmptyMessage}}</td></tr>
-{{end}}
-`

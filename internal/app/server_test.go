@@ -1228,6 +1228,197 @@ func TestResourcesUICreatesResourceAndUsage(t *testing.T) {
 	}
 }
 
+func TestCostAllocationTagsUIRequiresWorkspace(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags without workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Tags - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/tags">Tags</a>`,
+		"Workspace Required",
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /tags without workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/tags/activate", url.Values{"tag_key": {"app"}})
+	if err != nil {
+		t.Fatalf("POST /tags/activate without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /tags/activate without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before activating cost allocation tags.") {
+		t.Fatalf("POST /tags/activate without workspace missing workspace message: %s", body)
+	}
+}
+
+func TestCostAllocationTagManagerWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	for _, request := range []persistence.ResourceCreateRequest{
+		{
+			ID:           "resource-tags-web",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  "AmazonEC2",
+			ResourceType: "ec2_instance",
+			ResourceName: "Tagged web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app":   "storefront",
+				"owner": "web-platform",
+			},
+		},
+		{
+			ID:           "resource-tags-worker",
+			AccountID:    "444455556666",
+			RegionCode:   "us-east-1",
+			ServiceCode:  "AWSLambda",
+			ResourceType: "lambda_function",
+			ResourceName: "Tagged worker",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app": "storefront",
+			},
+		},
+	} {
+		if _, err := usageRepo.CreateResource(ctx, request); err != nil {
+			t.Fatalf("CreateResource(%s) error = %v", request.ID, err)
+		}
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Cost Allocation Tag Manager",
+		"Tag Key Coverage",
+		"Discovered Values",
+		"app",
+		"storefront",
+		"2 resources",
+		"owner",
+		"Not activated",
+		`action="/tags/activate"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /tags body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/tags/activate", url.Values{"tag_key": {"app"}})
+	if err != nil {
+		t.Fatalf("POST /tags/activate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /tags/activate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Activated app for cost allocation",
+		"Pending until 2026-02-02T00:00:00Z",
+		"Cost Explorer 2026-02-02T00:00:00Z",
+		`action="/tags/deactivate"`,
+		"Activation History",
+		"activate",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /tags/activate response missing %q: %s", want, body)
+		}
+	}
+
+	var activationStatus string
+	var visibleAt sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT activation_status, cost_explorer_visible_at FROM cost_allocation_tag_keys WHERE tag_key = ?`, "app").Scan(&activationStatus, &visibleAt); err != nil {
+		t.Fatalf("read activated app tag key: %v", err)
+	}
+	if activationStatus != "active" || !visibleAt.Valid || visibleAt.String != "2026-02-02T00:00:00Z" {
+		t.Fatalf("activated app state = %q/%v, want active visible on 2026-02-02", activationStatus, visibleAt)
+	}
+
+	if _, err := persistence.NewSimulatorClockRepository(db).Advance(ctx, persistence.SimulatorClockAdvanceRequest{
+		Amount: 1,
+		Unit:   persistence.SimulatorClockAdvanceDays,
+	}); err != nil {
+		t.Fatalf("Advance(clock) error = %v", err)
+	}
+	resp, err = client.Get(server.URL + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags after clock advance error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags after clock advance status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Visible since 2026-02-02T00:00:00Z") || strings.Contains(body, "Pending until 2026-02-02T00:00:00Z") {
+		t.Fatalf("GET /tags after clock advance did not show billing-visible state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/tags/deactivate", url.Values{"tag_key": {"app"}})
+	if err != nil {
+		t.Fatalf("POST /tags/deactivate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /tags/deactivate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Deactivated app for cost allocation",
+		"deactivated",
+		"Not visible after deactivation",
+		"deactivate",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /tags/deactivate response missing %q: %s", want, body)
+		}
+	}
+
+	if err := db.QueryRowContext(ctx, `SELECT activation_status, cost_explorer_visible_at FROM cost_allocation_tag_keys WHERE tag_key = ?`, "app").Scan(&activationStatus, &visibleAt); err != nil {
+		t.Fatalf("read deactivated app tag key: %v", err)
+	}
+	if activationStatus != "deactivated" || visibleAt.Valid {
+		t.Fatalf("deactivated app state = %q/%v, want deactivated with cleared visibility", activationStatus, visibleAt)
+	}
+}
+
 func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 	t.Parallel()
 

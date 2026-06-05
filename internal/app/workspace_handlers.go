@@ -148,6 +148,15 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/clock/advance", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
 		h.handleAdvanceClock(w, r)
 	}))
+	mux.HandleFunc("/tags", func(w http.ResponseWriter, r *http.Request) {
+		newCostAllocationTagsHandler(workspace.DB()).handleTags(w, r)
+	})
+	mux.HandleFunc("/tags/activate", func(w http.ResponseWriter, r *http.Request) {
+		newCostAllocationTagsHandler(workspace.DB()).handleActivateTag(w, r)
+	})
+	mux.HandleFunc("/tags/deactivate", func(w http.ResponseWriter, r *http.Request) {
+		newCostAllocationTagsHandler(workspace.DB()).handleDeactivateTag(w, r)
+	})
 	mux.HandleFunc("/bills", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleBills(w, r)
 	})

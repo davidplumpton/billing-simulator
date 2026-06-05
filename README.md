@@ -41,7 +41,7 @@ The current codebase already includes these working foundations:
 - Billing pipeline persistence for usage events, metering records, priced bill line items, billing-period service summaries, support charges, month-end closes, issued bills, invoice obligations, and invoice documents.
 - Bills UI with bill state summaries, charge breakdowns, resource-level charge rows, reconciliation data, printable invoice pages, and invoice line-item CSV export.
 - Scenario JSON parsing and execution for deterministic lab setup, including a packaged "Find the untagged data-transfer spike" scenario seed.
-- Cost allocation tag persistence with discovery, activation, deactivation, 24-hour billing visibility timing, and usage-window tag snapshots.
+- Cost allocation tag manager UI with discovered key/value coverage, activation, deactivation, 24-hour pending visibility timing, and usage-window tag snapshots.
 - Saved Cost Explorer report persistence for later report-builder UI work.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 
@@ -51,7 +51,7 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 
 The broader MVP and later phases include:
 
-- Cost allocation tag manager UI and tag coverage reporting.
+- Cost allocation tag coverage reporting by spend, account, service, untagged spend, and case-mismatched keys.
 - Cost Explorer-style filters, groupings, summary tables, report builder, charts, and saved report execution.
 - Budgets and forecast/actual alert simulation.
 - Payment methods, payment profiles, payment state workflows, past-due handling, and remediation labs.

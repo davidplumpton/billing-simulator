@@ -407,6 +407,21 @@ code {
 	font-weight: 650;
 }
 
+.status.status-discovered {
+	background: #eef1f4;
+	color: #42515d;
+}
+
+.status.status-pending {
+	background: #fff4ce;
+	color: #7a4f01;
+}
+
+.status.status-deactivated {
+	background: #f4e7e5;
+	color: var(--danger);
+}
+
 .status.status-suspended {
 	background: #fff4ce;
 	color: #7a4f01;
@@ -574,6 +589,31 @@ code {
 	flex-wrap: wrap;
 	gap: 8px;
 	margin-top: 12px;
+}
+
+.inline-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.inline-actions form {
+	margin: 0;
+}
+
+.inline-actions button {
+	margin-top: 0;
+}
+
+.inline-actions button.secondary {
+	border: 1px solid var(--line);
+	background: var(--surface);
+	color: var(--text);
+}
+
+.inline-actions button.secondary:hover {
+	border-color: var(--accent);
+	color: var(--accent-strong);
 }
 
 .invoice-document {

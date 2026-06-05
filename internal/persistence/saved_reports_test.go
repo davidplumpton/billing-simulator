@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"aws-billing-simulator/internal/billingvisibility"
 )
 
 func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testing.T) {
@@ -144,6 +146,113 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 	}
 	if _, err := repo.Get(ctx, report.ID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("Get(deleted) error = %v, want not found", err)
+	}
+}
+
+func TestSavedReportRepositoryScopesCostExplorerReportsByViewer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewSavedReportRepository(db)
+
+	managementPolicy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:      billingvisibility.RoleManagementAccount,
+		AccountID: AnyCompanyRetailManagementAccountID,
+	})
+	if err != nil {
+		t.Fatalf("PolicyForViewer(management) error = %v", err)
+	}
+	memberPolicy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:      billingvisibility.RoleMemberAccount,
+		AccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("PolicyForViewer(member) error = %v", err)
+	}
+	if !managementPolicy.AllowsView(billingvisibility.ViewCostExplorer) ||
+		!managementPolicy.AllowsView(billingvisibility.ViewExports) ||
+		!memberPolicy.AllowsView(billingvisibility.ViewCostExplorer) ||
+		!memberPolicy.AllowsView(billingvisibility.ViewExports) {
+		t.Fatalf("viewer policies should allow Cost Explorer report and export surfaces: management=%+v member=%+v", managementPolicy, memberPolicy)
+	}
+
+	managementReport, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-management-visibility",
+		Name:           "Monthly account spend",
+		OwnerAccountID: AnyCompanyRetailManagementAccountID,
+		OwnerRole:      managementPolicy.Role.String(),
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Filters: map[string][]string{
+			"linked_account": {"111122223333", "222233334444"},
+		},
+		Groupings: []SavedReportGrouping{
+			{Type: "dimension", Key: "linked_account"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(management report) error = %v", err)
+	}
+	memberReport, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-member-visibility",
+		Name:           "Monthly account spend",
+		OwnerAccountID: "111122223333",
+		OwnerRole:      memberPolicy.Role.String(),
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Filters: map[string][]string{
+			"linked_account": {"111122223333"},
+		},
+		Groupings: []SavedReportGrouping{
+			{Type: "dimension", Key: "service"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(member report) error = %v", err)
+	}
+	otherMemberReport, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-other-member-visibility",
+		Name:           "Monthly account spend",
+		OwnerAccountID: "222233334444",
+		OwnerRole:      memberPolicy.Role.String(),
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("Create(other member report) error = %v", err)
+	}
+
+	managementReports, err := repo.List(ctx, SavedReportListRequest{
+		OwnerAccountID: AnyCompanyRetailManagementAccountID,
+		OwnerRole:      managementPolicy.Role.String(),
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("List(management viewer) error = %v", err)
+	}
+	if len(managementReports) != 1 || managementReports[0].ID != managementReport.ID {
+		t.Fatalf("management reports = %+v, want only management-owned Cost Explorer report", managementReports)
+	}
+
+	memberReports, err := repo.List(ctx, SavedReportListRequest{
+		OwnerAccountID: "111122223333",
+		OwnerRole:      memberPolicy.Role.String(),
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("List(member viewer) error = %v", err)
+	}
+	if len(memberReports) != 1 || memberReports[0].ID != memberReport.ID {
+		t.Fatalf("member reports = %+v, want only account-scoped member Cost Explorer report", memberReports)
+	}
+
+	memberByName, err := repo.GetByName(ctx, "111122223333", "monthly ACCOUNT spend")
+	if err != nil {
+		t.Fatalf("GetByName(member viewer) error = %v", err)
+	}
+	if memberByName.ID != memberReport.ID || memberByName.ID == managementReport.ID || memberByName.ID == otherMemberReport.ID {
+		t.Fatalf("member report by name = %+v, want same-name report owned by member account", memberByName)
 	}
 }
 

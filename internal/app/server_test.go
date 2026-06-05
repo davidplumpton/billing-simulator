@@ -1745,6 +1745,8 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	invoicePath := invoicePathForID(invoiceID)
 	invoiceCSVPath := invoiceCSVPathForID(invoiceID)
 	invoicePDFPath := invoicePDFPathForID(invoiceID)
+	managementViewerQuery := "?viewer_role=management-account&viewer_account_id=999988887777"
+	memberViewerQuery := "?viewer_role=member-account&viewer_account_id=111122223333"
 	if !strings.Contains(body, invoicePath) {
 		t.Fatalf("GET /bills after close missing printable invoice link %q: %s", invoiceID, body)
 	}
@@ -1781,13 +1783,25 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		}
 	}
 
-	resp, err = client.Get(server.URL + invoicePath + "?viewer_role=member-account&viewer_account_id=111122223333")
+	resp, err = client.Get(server.URL + invoicePath + memberViewerQuery)
 	if err != nil {
 		t.Fatalf("GET /invoices/{id} member viewer error = %v", err)
 	}
 	body = readResponseBody(t, resp)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("GET /invoices/{id} member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+
+	resp, err = client.Get(server.URL + invoicePath + managementViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id} management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /invoices/{id} management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Invoice "+invoiceID) || !strings.Contains(body, "Workflow web") {
+		t.Fatalf("GET /invoices/{id} management viewer missing invoice details: %s", body)
 	}
 
 	resp, err = client.Get(server.URL + invoiceCSVPath)
@@ -1822,13 +1836,34 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		}
 	}
 
-	resp, err = client.Get(server.URL + invoiceCSVPath + "?viewer_role=member-account&viewer_account_id=111122223333")
+	resp, err = client.Get(server.URL + invoiceCSVPath + memberViewerQuery)
 	if err != nil {
 		t.Fatalf("GET /invoices/{id}/line-items.csv member viewer error = %v", err)
 	}
 	body = readResponseBody(t, resp)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("GET /invoices/{id}/line-items.csv member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+
+	resp, err = client.Get(server.URL + invoiceCSVPath + managementViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/line-items.csv management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /invoices/{id}/line-items.csv management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, invoiceID) || !strings.Contains(body, "Workflow web") || !strings.Contains(body, "999988887777") {
+		t.Fatalf("GET /invoices/{id}/line-items.csv management viewer missing export details: %s", body)
+	}
+
+	resp, err = client.Get(server.URL + invoicePDFPath + memberViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/document.pdf member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /invoices/{id}/document.pdf member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
 
 	resp, err = client.Get(server.URL + invoicePDFPath)
@@ -1843,6 +1878,18 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		!strings.Contains(body, "packaged HTML-to-PDF renderer") ||
 		!strings.Contains(body, invoicePath) {
 		t.Fatalf("GET /invoices/{id}/document.pdf missing implementation plan: headers=%v body=%s", resp.Header, body)
+	}
+
+	resp, err = client.Get(server.URL + invoicePDFPath + managementViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/document.pdf management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("GET /invoices/{id}/document.pdf management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotImplemented, body)
+	}
+	if !strings.Contains(body, "packaged HTML-to-PDF renderer") || !strings.Contains(body, invoicePath) {
+		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing implementation plan: %s", body)
 	}
 }
 

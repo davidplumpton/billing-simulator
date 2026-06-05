@@ -1459,6 +1459,218 @@ func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	}
 }
 
+// TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace keeps bd-2rx.1 guarded through the browser-facing tag workflow.
+func TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "tag-lifecycle-feature-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL() + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags fresh workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags fresh workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Tags - AWS Billing Simulator</title>`,
+		"Cost Allocation Tag Manager",
+		"Discovered Keys",
+		"No resource tag keys discovered",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /tags fresh workspace body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/resources/create", url.Values{
+		"account_id":     {"111122223333"},
+		"region_code":    {"us-east-1"},
+		"service_preset": {"ec2_t3_medium"},
+		"size":           {"t3.medium"},
+		"resource_name":  {"Feature tagged web"},
+		"status":         {"active"},
+		"started_at":     {"2026-02-01T00:00"},
+		"tags":           {"app=storefront\nowner=web-platform"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Feature tagged web") || !strings.Contains(body, "app=storefront") {
+		t.Fatalf("resource create response missing feature resource/tag: %s", body)
+	}
+
+	resourceID := readOnlyResourceIDByName(t, db, "Feature tagged web")
+	resp, err = client.PostForm(server.URL()+"/resources/generate", url.Values{
+		"resource_id":           {resourceID},
+		"generation_pattern":    {"daily_instance_hours"},
+		"generation_start_date": {"2026-02-01"},
+		"generation_days":       {"1"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/generate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/generate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated 1 usage events") ||
+		!strings.Contains(body, "instance-hours:t3.medium") ||
+		!strings.Contains(body, "owner=web-platform") {
+		t.Fatalf("generator response missing feature usage/tag snapshot: %s", body)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-02T00:00:00Z") ||
+		!strings.Contains(body, "daily metering created 1 metering records") ||
+		!strings.Contains(body, "Bill Line Items") {
+		t.Fatalf("clock advance response missing priced tag workflow data: %s", body)
+	}
+
+	resp, err = client.Get(server.URL() + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags with billed spend error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags with billed spend status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Spend Coverage",
+		"Account Coverage",
+		"Service Coverage",
+		"Tag Key Coverage",
+		"app",
+		"storefront",
+		"owner",
+		"web-platform",
+		"Not activated",
+		"Untagged Spend",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /tags with billed spend body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/tags/activate", url.Values{"tag_key": {"app"}})
+	if err != nil {
+		t.Fatalf("POST /tags/activate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /tags/activate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Activated app for cost allocation",
+		"Pending until 2026-02-03T00:00:00Z",
+		`action="/tags/deactivate"`,
+		"Activation History",
+		"activate",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /tags/activate response missing %q: %s", want, body)
+		}
+	}
+
+	var snapshot string
+	if err := db.QueryRowContext(ctx, `
+		SELECT tag_snapshot_json
+		FROM bill_line_items
+		WHERE resource_id = ? AND service_code = 'AmazonEC2'
+		ORDER BY usage_start_time
+		LIMIT 1
+	`, resourceID).Scan(&snapshot); err != nil {
+		t.Fatalf("read feature line item tag snapshot: %v", err)
+	}
+	for _, want := range []string{`"app":"storefront"`, `"owner":"web-platform"`} {
+		if !strings.Contains(snapshot, want) {
+			t.Fatalf("line item tag snapshot = %s, want %s", snapshot, want)
+		}
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-03T00:00:00Z") {
+		t.Fatalf("second clock advance response missing visible timestamp: %s", body)
+	}
+	resp, err = client.Get(server.URL() + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags after visibility delay error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags after visibility delay status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Visible since 2026-02-03T00:00:00Z") || strings.Contains(body, "Pending until 2026-02-03T00:00:00Z") {
+		t.Fatalf("GET /tags after visibility delay did not show visible state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/tags/deactivate", url.Values{"tag_key": {"app"}})
+	if err != nil {
+		t.Fatalf("POST /tags/deactivate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /tags/deactivate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Deactivated app for cost allocation") ||
+		!strings.Contains(body, "Not visible after deactivation") ||
+		!strings.Contains(body, "deactivate") {
+		t.Fatalf("POST /tags/deactivate response missing lifecycle close-out: %s", body)
+	}
+
+	var activationStatus string
+	var eventCount int
+	if err := db.QueryRowContext(ctx, `
+		SELECT activation_status
+		FROM cost_allocation_tag_keys
+		WHERE tag_key = ?
+	`, "app").Scan(&activationStatus); err != nil {
+		t.Fatalf("read app activation status: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM cost_allocation_tag_activation_events
+		WHERE tag_key = ?
+	`, "app").Scan(&eventCount); err != nil {
+		t.Fatalf("count app activation events: %v", err)
+	}
+	if activationStatus != "deactivated" || eventCount != 2 {
+		t.Fatalf("app lifecycle state = %q with %d events, want deactivated with activate/deactivate history", activationStatus, eventCount)
+	}
+}
+
 func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 	t.Parallel()
 
@@ -2821,6 +3033,17 @@ func readOnlyResourceID(t *testing.T, db *sql.DB) string {
 	var resourceID string
 	if err := db.QueryRowContext(context.Background(), `SELECT id FROM resources LIMIT 1`).Scan(&resourceID); err != nil {
 		t.Fatalf("read resource ID: %v", err)
+	}
+	return resourceID
+}
+
+// readOnlyResourceIDByName finds one test-created resource without mutating workspace state.
+func readOnlyResourceIDByName(t *testing.T, db *sql.DB, resourceName string) string {
+	t.Helper()
+
+	var resourceID string
+	if err := db.QueryRowContext(context.Background(), `SELECT id FROM resources WHERE resource_name = ?`, resourceName).Scan(&resourceID); err != nil {
+		t.Fatalf("read resource ID for %q: %v", resourceName, err)
 	}
 	return resourceID
 }

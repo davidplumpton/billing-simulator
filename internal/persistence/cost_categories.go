@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
 const (
-	defaultCostCategoryValue     = "Uncategorized"
-	defaultCostCategoryStatus    = "active"
-	defaultCostCategoryMatchType = "all"
+	defaultCostCategoryValue                = "Uncategorized"
+	defaultCostCategoryStatus               = "active"
+	defaultCostCategoryMatchType            = "all"
+	defaultCostCategoryPreviewLineItemLimit = 100
+	maxCostCategoryPreviewLineItemLimit     = 500
 
 	// CostCategoryRuleMatchAccount matches usage-account identifiers on bill line items.
 	CostCategoryRuleMatchAccount = "account"
@@ -92,6 +95,77 @@ type CostCategoryRuleCreateRequest struct {
 	Description      string
 	MatchType        string
 	Conditions       []CostCategoryRuleCondition
+}
+
+// CostCategoryPreviewRequest selects the category, period, and sample size used for previewing assignments.
+type CostCategoryPreviewRequest struct {
+	CostCategoryID     string
+	CostCategoryName   string
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	LineItemLimit      int
+}
+
+// CostCategoryPreview shows how ordered rules would assign one category without persisting assignments.
+type CostCategoryPreview struct {
+	Category               CostCategory
+	BillingPeriodStart     string
+	BillingPeriodEnd       string
+	CurrencyCode           string
+	TotalLineItemCount     int
+	MatchedLineItemCount   int
+	UnmatchedLineItemCount int
+	TotalCostMicros        int64
+	MatchedCostMicros      int64
+	UnmatchedCostMicros    int64
+	RuleSummaries          []CostCategoryPreviewRuleSummary
+	LineItems              []CostCategoryPreviewLineItem
+	HasMoreLineItems       bool
+}
+
+// CostCategoryPreviewRuleSummary reports first-match and shadowed match effects for one ordered rule.
+type CostCategoryPreviewRuleSummary struct {
+	RuleID                string
+	RuleOrder             int
+	Value                 string
+	Description           string
+	MatchedLineItemCount  int
+	MatchedCostMicros     int64
+	ShadowedLineItemCount int
+	ShadowedCostMicros    int64
+	ConditionDescriptions []string
+}
+
+// CostCategoryPreviewLineItem shows the before-and-after assignment for one billed line item.
+type CostCategoryPreviewLineItem struct {
+	ID               string
+	ResourceID       string
+	PayerAccountID   string
+	UsageAccountID   string
+	ServiceCode      string
+	ServiceName      string
+	UsageType        string
+	LineItemType     string
+	LineItemStatus   string
+	RegionCode       string
+	UsageStartTime   string
+	UsageEndTime     string
+	CurrencyCode     string
+	CostMicros       int64
+	BeforeValue      string
+	PreviewValue     string
+	MatchedRuleID    string
+	MatchedRuleOrder int
+	MatchedRuleValue string
+	ShadowedRules    []CostCategoryPreviewShadowedRule
+	TagSnapshot      map[string]string
+}
+
+// CostCategoryPreviewShadowedRule names a later matching rule hidden by first-match ordering.
+type CostCategoryPreviewShadowedRule struct {
+	RuleID    string
+	RuleOrder int
+	Value     string
 }
 
 // CostCategoryRepository manages cost category dimensions and ordered rules.
@@ -393,6 +467,200 @@ func (r CostCategoryRepository) ListRules(ctx context.Context, costCategoryID st
 	return rules, nil
 }
 
+// PreviewCategory evaluates ordered rules against bill line items without writing assignments.
+func (r CostCategoryRepository) PreviewCategory(ctx context.Context, request CostCategoryPreviewRequest) (CostCategoryPreview, error) {
+	if r.db == nil {
+		return CostCategoryPreview{}, fmt.Errorf("database handle is required")
+	}
+	request = normalizeCostCategoryPreviewRequest(request)
+	if err := validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd); err != nil {
+		return CostCategoryPreview{}, err
+	}
+	categoryID, err := resolveCostCategoryID(ctx, r.db, request.CostCategoryID, request.CostCategoryName)
+	if err != nil {
+		return CostCategoryPreview{}, err
+	}
+	category, err := r.GetCategory(ctx, categoryID)
+	if err != nil {
+		return CostCategoryPreview{}, err
+	}
+	evaluator, err := r.newCostCategoryPreviewEvaluator(ctx)
+	if err != nil {
+		return CostCategoryPreview{}, err
+	}
+	items, err := r.listCostCategoryPreviewLineItems(ctx, request)
+	if err != nil {
+		return CostCategoryPreview{}, err
+	}
+
+	targetRules := evaluator.rulesByCategory[category.ID]
+	preview := CostCategoryPreview{
+		Category:           category,
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		CurrencyCode:       "USD",
+		RuleSummaries:      make([]CostCategoryPreviewRuleSummary, 0, len(targetRules)),
+	}
+	ruleSummaryIndex := map[string]int{}
+	for _, rule := range targetRules {
+		ruleSummaryIndex[rule.ID] = len(preview.RuleSummaries)
+		preview.RuleSummaries = append(preview.RuleSummaries, CostCategoryPreviewRuleSummary{
+			RuleID:                rule.ID,
+			RuleOrder:             rule.RuleOrder,
+			Value:                 rule.Value,
+			Description:           rule.Description,
+			ConditionDescriptions: costCategoryRuleConditionDescriptions(rule.Conditions),
+		})
+	}
+
+	for _, item := range items {
+		matchingRules, err := evaluator.matchingRules(item, category.ID, map[string]bool{})
+		if err != nil {
+			return CostCategoryPreview{}, err
+		}
+
+		preview.TotalLineItemCount++
+		preview.TotalCostMicros += item.UnblendedCostMicros
+		preview.CurrencyCode = mergeCostCategoryPreviewCurrency(preview.CurrencyCode, item.CurrencyCode)
+
+		lineItem := CostCategoryPreviewLineItem{
+			ID:             item.ID,
+			ResourceID:     item.ResourceID,
+			PayerAccountID: item.PayerAccountID,
+			UsageAccountID: item.UsageAccountID,
+			ServiceCode:    item.ServiceCode,
+			ServiceName:    item.ServiceName,
+			UsageType:      item.UsageType,
+			LineItemType:   item.LineItemType,
+			LineItemStatus: item.LineItemStatus,
+			RegionCode:     item.RegionCode,
+			UsageStartTime: item.UsageStartTime,
+			UsageEndTime:   item.UsageEndTime,
+			CurrencyCode:   item.CurrencyCode,
+			CostMicros:     item.UnblendedCostMicros,
+			BeforeValue:    category.DefaultValue,
+			PreviewValue:   category.DefaultValue,
+			TagSnapshot:    normalizeStringMap(item.TagSnapshot),
+		}
+
+		if len(matchingRules) == 0 {
+			preview.UnmatchedLineItemCount++
+			preview.UnmatchedCostMicros += item.UnblendedCostMicros
+		} else {
+			firstMatch := matchingRules[0]
+			lineItem.PreviewValue = firstMatch.Value
+			lineItem.MatchedRuleID = firstMatch.ID
+			lineItem.MatchedRuleOrder = firstMatch.RuleOrder
+			lineItem.MatchedRuleValue = firstMatch.Value
+			preview.MatchedLineItemCount++
+			preview.MatchedCostMicros += item.UnblendedCostMicros
+			if idx, ok := ruleSummaryIndex[firstMatch.ID]; ok {
+				preview.RuleSummaries[idx].MatchedLineItemCount++
+				preview.RuleSummaries[idx].MatchedCostMicros += item.UnblendedCostMicros
+			}
+			for _, shadowedRule := range matchingRules[1:] {
+				lineItem.ShadowedRules = append(lineItem.ShadowedRules, CostCategoryPreviewShadowedRule{
+					RuleID:    shadowedRule.ID,
+					RuleOrder: shadowedRule.RuleOrder,
+					Value:     shadowedRule.Value,
+				})
+				if idx, ok := ruleSummaryIndex[shadowedRule.ID]; ok {
+					preview.RuleSummaries[idx].ShadowedLineItemCount++
+					preview.RuleSummaries[idx].ShadowedCostMicros += item.UnblendedCostMicros
+				}
+			}
+		}
+
+		if len(preview.LineItems) < request.LineItemLimit {
+			preview.LineItems = append(preview.LineItems, lineItem)
+		} else {
+			preview.HasMoreLineItems = true
+		}
+	}
+	return preview, nil
+}
+
+func (r CostCategoryRepository) newCostCategoryPreviewEvaluator(ctx context.Context) (costCategoryPreviewEvaluator, error) {
+	categories, err := r.ListCategories(ctx)
+	if err != nil {
+		return costCategoryPreviewEvaluator{}, err
+	}
+	evaluator := costCategoryPreviewEvaluator{
+		categories:      map[string]CostCategory{},
+		rulesByCategory: map[string][]CostCategoryRule{},
+	}
+	for _, category := range categories {
+		evaluator.categories[category.ID] = category
+		rules, err := r.ListRules(ctx, category.ID)
+		if err != nil {
+			return costCategoryPreviewEvaluator{}, err
+		}
+		evaluator.rulesByCategory[category.ID] = rules
+	}
+	return evaluator, nil
+}
+
+func (r CostCategoryRepository) listCostCategoryPreviewLineItems(ctx context.Context, request CostCategoryPreviewRequest) ([]BillLineItem, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			id,
+			metering_record_id,
+			usage_event_id,
+			resource_id,
+			billing_period_start,
+			billing_period_end,
+			billing_period_days,
+			payer_account_id,
+			usage_account_id,
+			service_code,
+			service_name,
+			product_family,
+			usage_type,
+			operation,
+			region_code,
+			line_item_type,
+			line_item_status,
+			usage_start_time,
+			usage_end_time,
+			usage_quantity_micros,
+			usage_unit,
+			pricing_unit,
+			pricing_quantity_micros,
+			unblended_rate_micros,
+			unblended_cost_micros,
+			currency_code,
+			price_catalog_sku,
+			price_effective_date,
+			tag_snapshot_json,
+			description,
+			created_at
+		 FROM bill_line_items
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		 ORDER BY usage_start_time, id`,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cost category preview line items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []BillLineItem
+	for rows.Next() {
+		item, err := scanBillLineItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cost category preview line items: %w", err)
+	}
+	return items, nil
+}
+
 func (r CostCategoryRepository) listRuleConditions(ctx context.Context, ruleID string) ([]CostCategoryRuleCondition, error) {
 	rows, err := r.db.QueryContext(
 		ctx,
@@ -671,4 +939,212 @@ func validateCostCategoryRuleCondition(index int, condition CostCategoryRuleCond
 		seen[value] = true
 	}
 	return nil
+}
+
+type costCategoryPreviewEvaluator struct {
+	categories      map[string]CostCategory
+	rulesByCategory map[string][]CostCategoryRule
+}
+
+type costCategoryPreviewAssignment struct {
+	Value     string
+	RuleID    string
+	RuleOrder int
+	Matched   bool
+}
+
+func (e costCategoryPreviewEvaluator) evaluateCategory(item BillLineItem, categoryID string, stack map[string]bool) (costCategoryPreviewAssignment, error) {
+	category, ok := e.categories[categoryID]
+	if !ok {
+		return costCategoryPreviewAssignment{}, fmt.Errorf("cost category %q is not loaded for preview", categoryID)
+	}
+	matches, err := e.matchingRules(item, categoryID, stack)
+	if err != nil {
+		return costCategoryPreviewAssignment{}, err
+	}
+	if len(matches) == 0 {
+		return costCategoryPreviewAssignment{Value: category.DefaultValue}, nil
+	}
+	return costCategoryPreviewAssignment{
+		Value:     matches[0].Value,
+		RuleID:    matches[0].ID,
+		RuleOrder: matches[0].RuleOrder,
+		Matched:   true,
+	}, nil
+}
+
+func (e costCategoryPreviewEvaluator) matchingRules(item BillLineItem, categoryID string, stack map[string]bool) ([]CostCategoryRule, error) {
+	if stack[categoryID] {
+		categoryName := categoryID
+		if category, ok := e.categories[categoryID]; ok {
+			categoryName = category.Name
+		}
+		return nil, fmt.Errorf("cost category rule reference cycle includes %q", categoryName)
+	}
+	if _, ok := e.categories[categoryID]; !ok {
+		return nil, fmt.Errorf("cost category %q is not loaded for preview", categoryID)
+	}
+	stack[categoryID] = true
+	defer delete(stack, categoryID)
+
+	var matches []CostCategoryRule
+	for _, rule := range e.rulesByCategory[categoryID] {
+		matched, err := e.ruleMatches(item, rule, stack)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			matches = append(matches, rule)
+		}
+	}
+	return matches, nil
+}
+
+func (e costCategoryPreviewEvaluator) ruleMatches(item BillLineItem, rule CostCategoryRule, stack map[string]bool) (bool, error) {
+	for _, condition := range rule.Conditions {
+		matched, err := e.conditionMatches(item, condition, stack)
+		if err != nil {
+			return false, err
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (e costCategoryPreviewEvaluator) conditionMatches(item BillLineItem, condition CostCategoryRuleCondition, stack map[string]bool) (bool, error) {
+	actualValues, err := e.conditionActualValues(item, condition, stack)
+	if err != nil {
+		return false, err
+	}
+	matched := costCategoryPreviewAnyValueMatches(actualValues, condition.Values)
+	switch condition.Operator {
+	case CostCategoryRuleOperatorNotIn:
+		return !matched, nil
+	default:
+		return matched, nil
+	}
+}
+
+func (e costCategoryPreviewEvaluator) conditionActualValues(item BillLineItem, condition CostCategoryRuleCondition, stack map[string]bool) ([]string, error) {
+	switch condition.Dimension {
+	case CostCategoryRuleMatchAccount:
+		return []string{item.UsageAccountID}, nil
+	case CostCategoryRuleMatchService:
+		return uniqueNonEmptyStrings(item.ServiceCode, item.ServiceName), nil
+	case CostCategoryRuleMatchRegion:
+		return []string{item.RegionCode}, nil
+	case CostCategoryRuleMatchUsageType:
+		return []string{item.UsageType}, nil
+	case CostCategoryRuleMatchLineItemType:
+		return []string{item.LineItemType}, nil
+	case CostCategoryRuleMatchTag:
+		value, ok := item.TagSnapshot[condition.TagKey]
+		if !ok {
+			return nil, nil
+		}
+		return []string{value}, nil
+	case CostCategoryRuleMatchCostCategory:
+		assignment, err := e.evaluateCategory(item, condition.CostCategoryID, stack)
+		if err != nil {
+			return nil, err
+		}
+		return []string{assignment.Value}, nil
+	default:
+		return nil, fmt.Errorf("cost category rule condition dimension %q is not supported", condition.Dimension)
+	}
+}
+
+func costCategoryPreviewAnyValueMatches(actualValues, expectedValues []string) bool {
+	for _, actual := range actualValues {
+		actual = strings.TrimSpace(actual)
+		if actual == "" {
+			continue
+		}
+		for _, expected := range expectedValues {
+			if actual == strings.TrimSpace(expected) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeCostCategoryPreviewRequest(request CostCategoryPreviewRequest) CostCategoryPreviewRequest {
+	request.CostCategoryID = strings.TrimSpace(request.CostCategoryID)
+	request.CostCategoryName = strings.TrimSpace(request.CostCategoryName)
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	if request.LineItemLimit <= 0 {
+		request.LineItemLimit = defaultCostCategoryPreviewLineItemLimit
+	}
+	if request.LineItemLimit > maxCostCategoryPreviewLineItemLimit {
+		request.LineItemLimit = maxCostCategoryPreviewLineItemLimit
+	}
+	return request
+}
+
+func mergeCostCategoryPreviewCurrency(current, next string) string {
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return current
+	}
+	current = strings.TrimSpace(current)
+	if current == "" {
+		return next
+	}
+	if current != next {
+		return "mixed"
+	}
+	return current
+}
+
+func costCategoryRuleConditionDescriptions(conditions []CostCategoryRuleCondition) []string {
+	descriptions := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		descriptions = append(descriptions, costCategoryRuleConditionDescription(condition))
+	}
+	return descriptions
+}
+
+func costCategoryRuleConditionDescription(condition CostCategoryRuleCondition) string {
+	dimension := condition.Dimension
+	switch condition.Dimension {
+	case CostCategoryRuleMatchAccount:
+		dimension = "account"
+	case CostCategoryRuleMatchService:
+		dimension = "service"
+	case CostCategoryRuleMatchRegion:
+		dimension = "region"
+	case CostCategoryRuleMatchUsageType:
+		dimension = "usage type"
+	case CostCategoryRuleMatchLineItemType:
+		dimension = "line item type"
+	case CostCategoryRuleMatchTag:
+		dimension = "tag " + condition.TagKey
+	case CostCategoryRuleMatchCostCategory:
+		dimension = "cost category " + condition.CostCategoryName
+	}
+	operator := "is"
+	if condition.Operator == CostCategoryRuleOperatorNotIn {
+		operator = "is not"
+	}
+	values := append([]string(nil), condition.Values...)
+	sort.Strings(values)
+	return dimension + " " + operator + " " + strings.Join(values, ", ")
+}
+
+func uniqueNonEmptyStrings(values ...string) []string {
+	seen := map[string]bool{}
+	var unique []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		unique = append(unique, value)
+	}
+	return unique
 }

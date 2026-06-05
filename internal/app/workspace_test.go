@@ -535,6 +535,11 @@ func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
 			activeLink: `<a class="active" aria-current="page" href="/resources">Resources</a>`,
 		},
 		{
+			path:       "/cost-categories",
+			title:      "<title>Cost Categories - AWS Billing Simulator</title>",
+			activeLink: `<a class="active" aria-current="page" href="/cost-categories">Cost Categories</a>`,
+		},
+		{
 			path:       "/bills",
 			title:      "<title>Bills - AWS Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/bills">Bills</a>`,

@@ -157,6 +157,15 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/tags/deactivate", func(w http.ResponseWriter, r *http.Request) {
 		newCostAllocationTagsHandler(workspace.DB()).handleDeactivateTag(w, r)
 	})
+	mux.HandleFunc("/cost-categories", func(w http.ResponseWriter, r *http.Request) {
+		newCostCategoriesHandler(workspace.DB()).handleCostCategories(w, r)
+	})
+	mux.HandleFunc("/cost-categories/categories/create", func(w http.ResponseWriter, r *http.Request) {
+		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategory(w, r)
+	})
+	mux.HandleFunc("/cost-categories/rules/create", func(w http.ResponseWriter, r *http.Request) {
+		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategoryRule(w, r)
+	})
 	mux.HandleFunc("/bills", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleBills(w, r)
 	})

@@ -1267,6 +1267,184 @@ func TestCostAllocationTagsUIRequiresWorkspace(t *testing.T) {
 	}
 }
 
+func TestCostCategoriesUIRequiresWorkspace(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/cost-categories")
+	if err != nil {
+		t.Fatalf("GET /cost-categories without workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-categories without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Cost Categories - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/cost-categories">Cost Categories</a>`,
+		"Workspace Required",
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-categories without workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-categories/categories/create", url.Values{"name": {"Product"}})
+	if err != nil {
+		t.Fatalf("POST /cost-categories/categories/create without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /cost-categories/categories/create without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before creating cost categories.") {
+		t.Fatalf("POST /cost-categories/categories/create without workspace missing workspace message: %s", body)
+	}
+}
+
+func TestCostCategoryPreviewWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedCostCategoryPreviewSpend(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/cost-categories")
+	if err != nil {
+		t.Fatalf("GET /cost-categories error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-categories status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Cost Category Preview",
+		"New Category",
+		"Categories",
+		"No cost categories",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-categories body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-categories/categories/create", url.Values{
+		"name":          {"Environment"},
+		"default_value": {"Unknown"},
+		"description":   {"Deployment lifecycle"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Environment category error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Environment category final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	environmentID := readCostCategoryID(t, db, "Environment")
+
+	resp, err = client.PostForm(server.URL+"/cost-categories/rules/create", url.Values{
+		"category_id": {environmentID},
+		"rule_order":  {"1"},
+		"value":       {"Production"},
+		"dimension":   {persistence.CostCategoryRuleMatchService},
+		"operator":    {persistence.CostCategoryRuleOperatorIn},
+		"values":      {"AmazonEC2"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Environment rule error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Environment rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-categories/categories/create", url.Values{
+		"name":          {"Product"},
+		"default_value": {"Unmapped"},
+		"description":   {"Showback product"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product category error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product category final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	productID := readCostCategoryID(t, db, "Product")
+
+	for _, form := range []url.Values{
+		{
+			"category_id":            {productID},
+			"rule_order":             {"10"},
+			"value":                  {"Storefront"},
+			"dimension":              {persistence.CostCategoryRuleMatchCostCategory},
+			"operator":               {persistence.CostCategoryRuleOperatorIn},
+			"referenced_category_id": {environmentID},
+			"values":                 {"Production"},
+		},
+		{
+			"category_id": {productID},
+			"rule_order":  {"20"},
+			"value":       {"Compute"},
+			"dimension":   {persistence.CostCategoryRuleMatchService},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"AmazonEC2"},
+		},
+	} {
+		resp, err = client.PostForm(server.URL+"/cost-categories/rules/create", form)
+		if err != nil {
+			t.Fatalf("POST create Product rule error = %v", err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST create Product rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + "/cost-categories?category_id=" + url.QueryEscape(productID))
+	if err != nil {
+		t.Fatalf("GET /cost-categories Product preview error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-categories Product preview status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Rule Order Effects",
+		"Line Item Preview",
+		"Storefront",
+		"Compute",
+		"cost category Environment is Production",
+		"$0.0832",
+		"$0.0075",
+		"Unmapped",
+		"No rule",
+		"resource-cost-category-web",
+		"app=storefront",
+		`<a class="active" aria-current="page" href="/cost-categories">Cost Categories</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-categories Product preview missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -2997,6 +3175,83 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	if !strings.Contains(body, "packaged HTML-to-PDF renderer") || !strings.Contains(body, invoicePath) {
 		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing implementation plan: %s", body)
 	}
+}
+
+func seedCostCategoryPreviewSpend(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	for _, request := range []persistence.ResourceCreateRequest{
+		{
+			ID:           "resource-cost-category-web",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  "AmazonEC2",
+			ResourceType: "ec2_instance",
+			ResourceName: "Cost category web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app": "storefront",
+			},
+		},
+		{
+			ID:           "resource-cost-category-bucket",
+			AccountID:    "222233334444",
+			RegionCode:   "us-east-1",
+			ServiceCode:  "AmazonS3",
+			ResourceType: "s3_bucket",
+			ResourceName: "Cost category bucket",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+		},
+	} {
+		if _, err := usageRepo.CreateResource(ctx, request); err != nil {
+			t.Fatalf("CreateResource(%s) error = %v", request.ID, err)
+		}
+	}
+	for _, request := range []persistence.UsageEventCreateRequest{
+		{
+			ID:                  "usage-cost-category-web",
+			ResourceID:          "resource-cost-category-web",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+		{
+			ID:                  "usage-cost-category-bucket",
+			ResourceID:          "resource-cost-category-bucket",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	} {
+		if _, err := usageRepo.RecordUsageEvent(ctx, request); err != nil {
+			t.Fatalf("RecordUsageEvent(%s) error = %v", request.ID, err)
+		}
+	}
+	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+}
+
+func readCostCategoryID(t *testing.T, db *sql.DB, name string) string {
+	t.Helper()
+
+	var id string
+	if err := db.QueryRowContext(context.Background(), `SELECT id FROM cost_categories WHERE name = ?`, name).Scan(&id); err != nil {
+		t.Fatalf("read cost category %q ID: %v", name, err)
+	}
+	return id
 }
 
 func postClockAdvance(t *testing.T, client *http.Client, serverURL, amount, unit string) string {

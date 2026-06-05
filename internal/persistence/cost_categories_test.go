@@ -127,6 +127,168 @@ func TestCostCategoryRepositoryCreatesOrderedRuleModel(t *testing.T) {
 	}
 }
 
+func TestCostCategoryRepositoryPreviewsAssignmentsAndRuleOrderEffects(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	for _, request := range []ResourceCreateRequest{
+		{
+			ID:           "resource-cost-category-web",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Preview web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app": "storefront",
+			},
+		},
+		{
+			ID:           "resource-cost-category-bucket",
+			AccountID:    "222233334444",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonS3,
+			ResourceType: "s3_bucket",
+			ResourceName: "Preview bucket",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+		},
+	} {
+		if _, err := usageRepo.CreateResource(ctx, request); err != nil {
+			t.Fatalf("CreateResource(%s) error = %v", request.ID, err)
+		}
+	}
+	for _, request := range []UsageEventCreateRequest{
+		{
+			ID:                  "usage-cost-category-web",
+			ResourceID:          "resource-cost-category-web",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+		{
+			ID:                  "usage-cost-category-bucket",
+			ResourceID:          "resource-cost-category-bucket",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	} {
+		if _, err := usageRepo.RecordUsageEvent(ctx, request); err != nil {
+			t.Fatalf("RecordUsageEvent(%s) error = %v", request.ID, err)
+		}
+	}
+	if _, err := NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := NewBillLineItemRepository(db).GenerateBillLineItems(ctx, BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+
+	repo := NewCostCategoryRepository(db)
+	environment, err := repo.CreateCategory(ctx, CostCategoryCreateRequest{
+		Name:         "Environment",
+		DefaultValue: "Unknown",
+	})
+	if err != nil {
+		t.Fatalf("CreateCategory(Environment) error = %v", err)
+	}
+	if _, err := repo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: environment.ID,
+		RuleOrder:      1,
+		Value:          "Production",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchService, Values: []string{serviceAmazonEC2}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Environment Production) error = %v", err)
+	}
+	product, err := repo.CreateCategory(ctx, CostCategoryCreateRequest{
+		Name:         "Product",
+		DefaultValue: "Unmapped",
+	})
+	if err != nil {
+		t.Fatalf("CreateCategory(Product) error = %v", err)
+	}
+	if _, err := repo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      10,
+		Value:          "Storefront",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchTag, TagKey: "app", Values: []string{"storefront"}},
+			{Dimension: CostCategoryRuleMatchCostCategory, CostCategoryID: environment.ID, Values: []string{"Production"}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Product Storefront) error = %v", err)
+	}
+	if _, err := repo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      20,
+		Value:          "Compute",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchService, Values: []string{serviceAmazonEC2}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Product Compute) error = %v", err)
+	}
+
+	preview, err := repo.PreviewCategory(ctx, CostCategoryPreviewRequest{
+		CostCategoryID:     product.ID,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("PreviewCategory(Product) error = %v", err)
+	}
+	if preview.TotalLineItemCount != 2 || preview.MatchedLineItemCount != 1 || preview.UnmatchedLineItemCount != 1 {
+		t.Fatalf("preview line item counts = total %d matched %d unmatched %d, want 2/1/1", preview.TotalLineItemCount, preview.MatchedLineItemCount, preview.UnmatchedLineItemCount)
+	}
+	if preview.TotalCostMicros != 90_700 || preview.MatchedCostMicros != 83_200 || preview.UnmatchedCostMicros != 7_500 {
+		t.Fatalf("preview costs = total %d matched %d unmatched %d, want 90700/83200/7500", preview.TotalCostMicros, preview.MatchedCostMicros, preview.UnmatchedCostMicros)
+	}
+	if len(preview.RuleSummaries) != 2 {
+		t.Fatalf("preview rule summaries = %d, want 2", len(preview.RuleSummaries))
+	}
+	if preview.RuleSummaries[0].Value != "Storefront" ||
+		preview.RuleSummaries[0].MatchedLineItemCount != 1 ||
+		preview.RuleSummaries[0].MatchedCostMicros != 83_200 ||
+		!strings.Contains(strings.Join(preview.RuleSummaries[0].ConditionDescriptions, " | "), "cost category Environment is Production") {
+		t.Fatalf("Storefront rule summary = %+v, want first-match spend and referenced category description", preview.RuleSummaries[0])
+	}
+	if preview.RuleSummaries[1].Value != "Compute" ||
+		preview.RuleSummaries[1].MatchedLineItemCount != 0 ||
+		preview.RuleSummaries[1].ShadowedLineItemCount != 1 ||
+		preview.RuleSummaries[1].ShadowedCostMicros != 83_200 {
+		t.Fatalf("Compute rule summary = %+v, want shadowed EC2 spend", preview.RuleSummaries[1])
+	}
+
+	itemsByResource := map[string]CostCategoryPreviewLineItem{}
+	for _, item := range preview.LineItems {
+		itemsByResource[item.ResourceID] = item
+	}
+	web := itemsByResource["resource-cost-category-web"]
+	if web.BeforeValue != "Unmapped" || web.PreviewValue != "Storefront" || web.MatchedRuleOrder != 10 || web.TagSnapshot["app"] != "storefront" {
+		t.Fatalf("web preview row = %+v, want Unmapped -> Storefront by rule 10", web)
+	}
+	if len(web.ShadowedRules) != 1 || web.ShadowedRules[0].Value != "Compute" || web.ShadowedRules[0].RuleOrder != 20 {
+		t.Fatalf("web shadowed rules = %+v, want Compute rule 20", web.ShadowedRules)
+	}
+	bucket := itemsByResource["resource-cost-category-bucket"]
+	if bucket.BeforeValue != "Unmapped" || bucket.PreviewValue != "Unmapped" || bucket.MatchedRuleID != "" {
+		t.Fatalf("bucket preview row = %+v, want unmatched default assignment", bucket)
+	}
+}
+
 func TestCostCategoryRepositoryValidatesRules(t *testing.T) {
 	t.Parallel()
 

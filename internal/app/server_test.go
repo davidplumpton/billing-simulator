@@ -653,6 +653,144 @@ func TestAnyCompanySeedOrganizationFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 }
 
+// TestOrganizationAccountSimulationEpicWorksInFreshWorkspace keeps the parent epic guarded across its browser-facing surfaces.
+func TestOrganizationAccountSimulationEpicWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "organization-epic-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL() + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"AnyCompany Retail",
+		"999988887777",
+		"Storefront Prod",
+		"Root/Workloads",
+		"storefront-team",
+		"4100-storefront",
+		"12 active, 1 suspended, 0 closed",
+		`action="/organization/accounts/create"`,
+		`action="/organization/accounts/move"`,
+		`action="/organization/accounts/suspend"`,
+		`action="/organization/accounts/close"`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333&amp;viewer_account_id=111122223333&amp;viewer_role=member-account"`,
+		`href="/bills?payer_account_id=999988887777&amp;viewer_account_id=999988887777&amp;viewer_role=management-account">Bills</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /organization body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL() + "/resources")
+	if err != nil {
+		t.Fatalf("GET /resources error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /resources status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, `name="account_id" value="111122223333"`) {
+		t.Fatalf("GET /resources body missing Storefront Prod usage account default: %s", body)
+	}
+	if count := strings.Count(body, `name="payer_account_id" value="999988887777"`); count != 3 {
+		t.Fatalf("GET /resources management payer defaults = %d, want 3: %s", count, body)
+	}
+	if strings.Contains(body, `name="payer_account_id" value="111122223333"`) {
+		t.Fatalf("GET /resources still defaults payer forms to member account: %s", body)
+	}
+
+	seedFilterableUsage(t, ctx, db)
+
+	var managementLineItems int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bill_line_items WHERE payer_account_id = ?`, persistence.AnyCompanyRetailManagementAccountID).Scan(&managementLineItems); err != nil {
+		t.Fatalf("count management bill_line_items: %v", err)
+	}
+	if managementLineItems != 2 {
+		t.Fatalf("management bill_line_items = %d, want 2", managementLineItems)
+	}
+
+	resp, err = client.Get(server.URL() + "/bills?viewer_role=management-account&viewer_account_id=999988887777")
+	if err != nil {
+		t.Fatalf("GET /bills management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<option value="management-account" selected>Management</option>`,
+		`name="viewer_account_id" value="999988887777"`,
+		"Filter web",
+		"Filter bucket",
+		"111122223333",
+		"222233334444",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills management viewer body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL() + "/bills?viewer_role=member-account&viewer_account_id=111122223333")
+	if err != nil {
+		t.Fatalf("GET /bills member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<option value="member-account" selected>Member</option>`,
+		`name="viewer_account_id" value="111122223333"`,
+		"Filter web",
+		"111122223333",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills member viewer body missing %q: %s", want, body)
+		}
+	}
+	for _, leaked := range []string{
+		"Filter bucket",
+		"222233334444",
+	} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("GET /bills member viewer leaked %q: %s", leaked, body)
+		}
+	}
+}
+
 func TestRunStartedServerClosesWorkspaceAfterUnexpectedServeExit(t *testing.T) {
 	t.Parallel()
 

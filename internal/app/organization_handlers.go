@@ -632,8 +632,13 @@ func organizationResourcePath(accountID string) string {
 func organizationBillsPath(account persistence.OrganizationAccount) string {
 	query := url.Values{}
 	query.Set("payer_account_id", account.PayerAccountID)
-	if !account.IsManagementAccount {
+	if account.IsManagementAccount {
+		query.Set("viewer_role", "management-account")
+		query.Set("viewer_account_id", account.ID)
+	} else {
 		query.Set("usage_account_id", account.ID)
+		query.Set("viewer_role", "member-account")
+		query.Set("viewer_account_id", account.ID)
 	}
 	return "/bills?" + query.Encode()
 }

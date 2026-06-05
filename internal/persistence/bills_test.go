@@ -282,6 +282,132 @@ func TestBillsRepositoryReconcilesBillsToFinalLineItems(t *testing.T) {
 	}
 }
 
+func TestBillsRepositoryAppliesBillingVisibilityFilters(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	ec2Item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-visibility-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Visibility web",
+			Status:       "active",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-visibility-ec2",
+			ResourceID:          "resource-visibility-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	s3Item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-visibility-s3",
+			AccountID:    "222233334444",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonS3,
+			ResourceType: "s3_bucket",
+			ResourceName: "Visibility bucket",
+			Status:       "active",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-visibility-s3",
+			ResourceID:          "resource-visibility-s3",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	)
+	if _, err := NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: AnyCompanyRetailManagementAccountID,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+
+	repo := NewBillsRepository(db)
+	managementVisibility := BillingVisibilityFilter{PayerAccountID: AnyCompanyRetailManagementAccountID}
+	memberVisibility := BillingVisibilityFilter{UsageAccountID: "111122223333"}
+
+	managementSummaries, err := repo.ListBillStateSummaries(ctx, BillStateSummaryRequest{
+		Limit:                 10,
+		DefaultPayerAccountID: AnyCompanyRetailManagementAccountID,
+		Visibility:            managementVisibility,
+	})
+	if err != nil {
+		t.Fatalf("ListBillStateSummaries(management) error = %v", err)
+	}
+	managementIssued := requireBillStateSummary(t, managementSummaries, billStateIssued, "2026-02-01")
+	if managementIssued.LineItemCount != 3 ||
+		managementIssued.TotalMicros != ec2Item.UnblendedCostMicros+s3Item.UnblendedCostMicros+supportBusinessMinimumCostMicros ||
+		managementIssued.InvoiceID == "" {
+		t.Fatalf("management issued summary = %+v, want consolidated financial bill", managementIssued)
+	}
+
+	memberSummaries, err := repo.ListBillStateSummaries(ctx, BillStateSummaryRequest{
+		Limit:                 10,
+		DefaultPayerAccountID: AnyCompanyRetailManagementAccountID,
+		Visibility:            memberVisibility,
+	})
+	if err != nil {
+		t.Fatalf("ListBillStateSummaries(member) error = %v", err)
+	}
+	memberIssued := requireBillStateSummary(t, memberSummaries, billStateIssued, "2026-02-01")
+	if memberIssued.LineItemCount != 1 ||
+		memberIssued.TotalMicros != ec2Item.UnblendedCostMicros ||
+		memberIssued.InvoiceID != "" {
+		t.Fatalf("member issued summary = %+v, want informational usage-account total without invoice", memberIssued)
+	}
+
+	memberBreakdowns, err := repo.ListChargeBreakdowns(ctx, BillChargeBreakdownRequest{
+		Limit:      10,
+		Visibility: memberVisibility,
+	})
+	if err != nil {
+		t.Fatalf("ListChargeBreakdowns(member) error = %v", err)
+	}
+	requireBillChargeSummary(t, memberBreakdowns.Summaries, serviceAmazonEC2, AnyCompanyRetailManagementAccountID, "111122223333", "instance-hours:t3.medium")
+	for _, summary := range memberBreakdowns.Summaries {
+		if summary.UsageAccountID != "111122223333" {
+			t.Fatalf("member charge summary = %+v, want only usage account 111122223333", summary)
+		}
+	}
+
+	memberReconciliations, err := repo.ListBillReconciliations(ctx, BillReconciliationRequest{
+		Limit:      10,
+		Visibility: memberVisibility,
+	})
+	if err != nil {
+		t.Fatalf("ListBillReconciliations(member) error = %v", err)
+	}
+	if len(memberReconciliations) != 0 {
+		t.Fatalf("member reconciliations = %+v, want no financial bill reconciliation rows", memberReconciliations)
+	}
+	managementReconciliations, err := repo.ListBillReconciliations(ctx, BillReconciliationRequest{
+		Limit:      10,
+		Visibility: managementVisibility,
+	})
+	if err != nil {
+		t.Fatalf("ListBillReconciliations(management) error = %v", err)
+	}
+	requireBillReconciliation(t, managementReconciliations, closeResult.Bill.ID)
+}
+
 func TestBillsRepositoryRejectsNilDB(t *testing.T) {
 	t.Parallel()
 

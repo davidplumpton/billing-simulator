@@ -366,7 +366,7 @@ func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
 		`action="/organization/accounts/suspend"`,
 		`action="/organization/accounts/close"`,
 		`href="/resources?account_id=111122223333"`,
-		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333"`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333&amp;viewer_account_id=111122223333&amp;viewer_role=member-account"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /organization with workspace missing %q: %s", want, body)
@@ -435,7 +435,7 @@ func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
 		"17 events",
 		"Suspended -&gt; Closed",
 		`href="/resources?account_id=777788889901"`,
-		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=777788889901"`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=777788889901&amp;viewer_account_id=777788889901&amp;viewer_role=member-account"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("POST close account body missing %q: %s", want, body)
@@ -740,8 +740,8 @@ func TestOrganizationUIRendersHierarchyAndBillingLinks(t *testing.T) {
 		"Lifecycle History",
 		"13 events",
 		`href="/resources?account_id=111122223333"`,
-		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333"`,
-		`href="/bills?payer_account_id=999988887777">Bills</a>`,
+		`href="/bills?payer_account_id=999988887777&amp;usage_account_id=111122223333&amp;viewer_account_id=111122223333&amp;viewer_role=member-account"`,
+		`href="/bills?payer_account_id=999988887777&amp;viewer_account_id=999988887777&amp;viewer_role=management-account">Bills</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /organization body missing %q: %s", want, body)
@@ -1533,6 +1533,77 @@ func TestBillsUIFiltersAndPartialRefresh(t *testing.T) {
 	}
 }
 
+func TestBillsUIFiltersBySimulatedViewer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedFilterableUsage(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/bills?viewer_role=member-account&viewer_account_id=111122223333")
+	if err != nil {
+		t.Fatalf("GET /bills member viewer error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<option value="member-account" selected>Member</option>`,
+		`name="viewer_account_id" value="111122223333"`,
+		"Filter web",
+		"Amazon EC2",
+		"111122223333",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills member viewer body missing %q: %s", want, body)
+		}
+	}
+	for _, leaked := range []string{
+		"Filter bucket",
+		"Amazon S3",
+		"222233334444",
+	} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("GET /bills member viewer leaked %q: %s", leaked, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + "/bills?viewer_role=management-account&viewer_account_id=999988887777")
+	if err != nil {
+		t.Fatalf("GET /bills management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<option value="management-account" selected>Management</option>`,
+		`name="viewer_account_id" value="999988887777"`,
+		"Filter web",
+		"Amazon EC2",
+		"Filter bucket",
+		"Amazon S3",
+		"222233334444",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills management viewer body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -1710,6 +1781,15 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		}
 	}
 
+	resp, err = client.Get(server.URL + invoicePath + "?viewer_role=member-account&viewer_account_id=111122223333")
+	if err != nil {
+		t.Fatalf("GET /invoices/{id} member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /invoices/{id} member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+
 	resp, err = client.Get(server.URL + invoiceCSVPath)
 	if err != nil {
 		t.Fatalf("GET /invoices/{id}/line-items.csv error = %v", err)
@@ -1740,6 +1820,15 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /invoices/{id}/line-items.csv body missing %q: %s", want, body)
 		}
+	}
+
+	resp, err = client.Get(server.URL + invoiceCSVPath + "?viewer_role=member-account&viewer_account_id=111122223333")
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/line-items.csv member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /invoices/{id}/line-items.csv member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
 
 	resp, err = client.Get(server.URL + invoicePDFPath)

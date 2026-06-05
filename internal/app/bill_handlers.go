@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"aws-billing-simulator/internal/billingvisibility"
 	"aws-billing-simulator/internal/persistence"
 )
 
@@ -174,12 +175,16 @@ type billsTablesView struct {
 }
 
 type billsFilterView struct {
-	PayerAccountID string
-	UsageAccountID string
-	ServiceCode    string
-	HasFilters     bool
-	ApplyButton    uiSubmitButtonView
-	ClearPath      string
+	PayerAccountID     string
+	UsageAccountID     string
+	ServiceCode        string
+	ViewerRole         string
+	ViewerAccountID    string
+	ViewerRoleSelect   uiSelectFieldView
+	ViewerAccountField uiInputFieldView
+	HasFilters         bool
+	ApplyButton        uiSubmitButtonView
+	ClearPath          string
 }
 
 type invoiceTablesView struct {
@@ -321,14 +326,40 @@ func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status
 func billsFilterFromRequest(r *http.Request) billsFilterView {
 	query := r.URL.Query()
 	filter := billsFilterView{
-		PayerAccountID: strings.TrimSpace(query.Get("payer_account_id")),
-		UsageAccountID: strings.TrimSpace(query.Get("usage_account_id")),
-		ServiceCode:    strings.TrimSpace(query.Get("service_code")),
-		ApplyButton:    uiSubmitButton("Apply Filters"),
-		ClearPath:      "/bills",
+		PayerAccountID:  strings.TrimSpace(query.Get("payer_account_id")),
+		UsageAccountID:  strings.TrimSpace(query.Get("usage_account_id")),
+		ServiceCode:     strings.TrimSpace(query.Get("service_code")),
+		ViewerRole:      strings.TrimSpace(query.Get("viewer_role")),
+		ViewerAccountID: strings.TrimSpace(query.Get("viewer_account_id")),
+		ApplyButton:     uiSubmitButton("Apply Filters"),
+		ClearPath:       "/bills",
 	}
-	filter.HasFilters = filter.PayerAccountID != "" || filter.UsageAccountID != "" || filter.ServiceCode != ""
+	filter.ViewerRoleSelect = billsViewerRoleSelect(filter.ViewerRole)
+	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
+	filter.HasFilters = filter.PayerAccountID != "" ||
+		filter.UsageAccountID != "" ||
+		filter.ServiceCode != "" ||
+		filter.ViewerRole != "" ||
+		filter.ViewerAccountID != ""
 	return filter
+}
+
+func billsViewerRoleSelect(selected string) uiSelectFieldView {
+	options := []uiSelectOptionView{
+		{Value: "", Label: "All viewers"},
+		{Value: billingvisibility.RoleManagementAccount.String(), Label: "Management"},
+		{Value: billingvisibility.RoleFinance.String(), Label: "Finance"},
+		{Value: billingvisibility.RoleMemberAccount.String(), Label: "Member"},
+		{Value: billingvisibility.RoleInstructor.String(), Label: "Instructor"},
+	}
+	for idx := range options {
+		options[idx].Selected = options[idx].Value == selected
+	}
+	return uiSelectFieldView{
+		Label:   "Viewer Role",
+		Name:    "viewer_role",
+		Options: options,
+	}
 }
 
 // renderInvoice builds the printable invoice page from the invoice read model.
@@ -339,6 +370,12 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 		Error:          errorMessage,
 	}
 	if h.db != nil && errorMessage == "" {
+		if err := h.ensureInvoiceViewerAccess(r.Context(), r); err != nil {
+			status = http.StatusForbidden
+			data.Error = err.Error()
+		}
+	}
+	if h.db != nil && data.Error == "" {
 		printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -399,6 +436,10 @@ func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "workspace required", http.StatusConflict)
 		return
 	}
+	if err := h.ensureInvoiceViewerAccess(r.Context(), r); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
 	printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -424,6 +465,10 @@ func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, i
 func (h billsHandler) handleInvoicePDFPlan(w http.ResponseWriter, r *http.Request, invoiceID string) {
 	if h.db == nil {
 		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+	if err := h.ensureInvoiceViewerAccess(r.Context(), r); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 	if _, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID); err != nil {
@@ -456,9 +501,14 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	if err != nil {
 		return err
 	}
+	visibility, err := h.billingVisibilityFilter(ctx, data.Filters)
+	if err != nil {
+		return err
+	}
 	summaries, err := h.bills.ListBillStateSummaries(ctx, persistence.BillStateSummaryRequest{
 		Limit:                 50,
 		DefaultPayerAccountID: defaultPayerAccountID,
+		Visibility:            visibility,
 	})
 	if err != nil {
 		return err
@@ -470,7 +520,8 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	}
 
 	reconciliations, err := h.bills.ListBillReconciliations(ctx, persistence.BillReconciliationRequest{
-		Limit: 50,
+		Limit:      50,
+		Visibility: visibility,
 	})
 	if err != nil {
 		return err
@@ -481,7 +532,8 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	}
 
 	breakdowns, err := h.bills.ListChargeBreakdowns(ctx, persistence.BillChargeBreakdownRequest{
-		Limit: 75,
+		Limit:      75,
+		Visibility: visibility,
 	})
 	if err != nil {
 		return err
@@ -493,6 +545,71 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	}
 	for _, summary := range breakdowns.Resources {
 		data.ResourceChargeBreakdowns = append(data.ResourceChargeBreakdowns, billResourceChargeBreakdownViewFromSummary(summary))
+	}
+	return nil
+}
+
+// billingVisibilityFilter resolves optional simulated-viewer controls into repository account constraints.
+func (h billsHandler) billingVisibilityFilter(ctx context.Context, filter billsFilterView) (persistence.BillingVisibilityFilter, error) {
+	policy, scoped, err := h.billingPolicyFromFilter(ctx, filter)
+	if err != nil || !scoped {
+		return persistence.BillingVisibilityFilter{}, err
+	}
+	if !policy.AllowsView(billingvisibility.ViewBills) {
+		return persistence.BillingVisibilityFilter{}, fmt.Errorf("billing role %q cannot view bills", policy.Role)
+	}
+	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
+		return persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}, nil
+	}
+	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
+		return persistence.BillingVisibilityFilter{UsageAccountID: usageAccountID}, nil
+	}
+	return persistence.BillingVisibilityFilter{}, nil
+}
+
+// billingPolicyFromFilter builds the domain visibility policy from explicit viewer query fields.
+func (h billsHandler) billingPolicyFromFilter(ctx context.Context, filter billsFilterView) (billingvisibility.Policy, bool, error) {
+	roleValue := strings.TrimSpace(filter.ViewerRole)
+	accountID := strings.TrimSpace(filter.ViewerAccountID)
+	if roleValue == "" && accountID == "" {
+		return billingvisibility.Policy{}, false, nil
+	}
+	if roleValue == "" {
+		return billingvisibility.Policy{}, false, fmt.Errorf("viewer role is required when viewer account ID is set")
+	}
+	role, err := billingvisibility.ParseRole(roleValue)
+	if err != nil {
+		return billingvisibility.Policy{}, false, err
+	}
+	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return billingvisibility.Policy{}, false, err
+	}
+	if role == billingvisibility.RoleManagementAccount && accountID == "" {
+		accountID = managementAccountID
+	}
+	if role == billingvisibility.RoleFinance && accountID == "" {
+		accountID = managementAccountID
+	}
+	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:                role,
+		AccountID:           accountID,
+		ManagementAccountID: managementAccountID,
+	})
+	if err != nil {
+		return billingvisibility.Policy{}, false, err
+	}
+	return policy, true, nil
+}
+
+// ensureInvoiceViewerAccess enforces financial-document access when a simulated viewer is selected.
+func (h billsHandler) ensureInvoiceViewerAccess(ctx context.Context, r *http.Request) error {
+	policy, scoped, err := h.billingPolicyFromFilter(ctx, billsFilterFromRequest(r))
+	if err != nil || !scoped {
+		return err
+	}
+	if !policy.AllowsView(billingvisibility.ViewInvoices) {
+		return fmt.Errorf("billing role %q cannot view invoices", policy.Role)
 	}
 	return nil
 }
@@ -980,6 +1097,8 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 		{{else}}
 			<section class="filter-bar" aria-label="Bill filters">
 				<form method="get" action="/bills" class="filter-form" data-partial-form="bills" data-partial-target="#bills-refresh" data-partial-auto="true">
+					{{template "ui.select-field" .Filters.ViewerRoleSelect}}
+					{{template "ui.input-field" .Filters.ViewerAccountField}}
 					<label>Payer Account ID
 						<input name="payer_account_id" value="{{.Filters.PayerAccountID}}">
 					</label>

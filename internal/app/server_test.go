@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"aws-billing-simulator/internal/persistence"
+	"aws-billing-simulator/internal/scenario"
 )
 
 func TestStartServesHealthCheck(t *testing.T) {
@@ -466,6 +467,189 @@ func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 	if count := organizationLifecycleEventCountForAccount(events, "777788889901"); count != 4 {
 		t.Fatalf("created account lifecycle event count = %d, want 4", count)
+	}
+}
+
+func TestAnyCompanySeedOrganizationFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "anycompany-seed-workspace")
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.StatePath = filepath.Join(root, "state.json")
+	cfg.WorkspacePath = workspacePath
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	repo := persistence.NewOrganizationRepository(db)
+	client := http.Client{Timeout: time.Second}
+
+	resp, err := client.Get(server.URL() + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"AnyCompany Retail",
+		"anycompany-retail",
+		"999988887777",
+		"13 accounts",
+		"12 active, 1 suspended, 0 closed",
+		"Storefront Prod",
+		"Root/Workloads",
+		"storefront-team",
+		"4100-storefront",
+		"Deprecated Prototype",
+		"9900-deprecated",
+		`href="/resources?account_id=111122223333"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /organization seed body missing %q: %s", want, body)
+		}
+	}
+
+	organization, err := repo.GetOrganizationByTemplate(ctx, persistence.AnyCompanyRetailTemplateKey)
+	if err != nil {
+		t.Fatalf("GetOrganizationByTemplate() error = %v", err)
+	}
+	if organization.ID != persistence.AnyCompanyRetailOrganizationID ||
+		organization.ManagementAccountID != persistence.AnyCompanyRetailManagementAccountID {
+		t.Fatalf("organization = %+v, want AnyCompany Retail seed identifiers", organization)
+	}
+	accounts, err := repo.ListAccounts(ctx, organization.ID)
+	if err != nil {
+		t.Fatalf("ListAccounts() error = %v", err)
+	}
+	if len(accounts) != 13 {
+		t.Fatalf("seed account count = %d, want 13", len(accounts))
+	}
+	tags, err := repo.ListAccountTags(ctx, organization.ID)
+	if err != nil {
+		t.Fatalf("ListAccountTags() error = %v", err)
+	}
+	if len(tags) != 65 {
+		t.Fatalf("seed account tag count = %d, want 65", len(tags))
+	}
+	events, err := repo.ListAccountLifecycleEvents(ctx, organization.ID, 200)
+	if err != nil {
+		t.Fatalf("ListAccountLifecycleEvents() error = %v", err)
+	}
+	if len(events) != 13 {
+		t.Fatalf("seed lifecycle event count = %d, want 13", len(events))
+	}
+
+	if _, err := repo.CreateAccount(ctx, persistence.AccountCreateRequest{
+		ID:             "777788889902",
+		OrganizationID: organization.ID,
+		ParentUnitID:   "ou_anycompany_sandbox",
+		Name:           "Seed Drift Account",
+		Email:          "seed-drift@anycompany.example",
+		EffectiveAt:    "2026-02-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CreateAccount(drift) error = %v", err)
+	}
+	if _, err := repo.MoveAccount(ctx, persistence.AccountMoveRequest{
+		AccountID:    "111122223333",
+		ParentUnitID: "ou_anycompany_sandbox",
+		EffectiveAt:  "2026-02-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("MoveAccount(Storefront Prod drift) error = %v", err)
+	}
+	if _, err := repo.SuspendAccount(ctx, persistence.AccountSuspendRequest{
+		AccountID:   "111122223333",
+		EffectiveAt: "2026-02-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SuspendAccount(Storefront Prod drift) error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE account_tags SET tag_value = ? WHERE account_id = ? AND tag_key = ?`, "drifted-owner", "111122223333", "owner"); err != nil {
+		t.Fatalf("update account tag drift: %v", err)
+	}
+
+	resp, err = client.Get(server.URL() + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization after drift error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization after drift status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Seed Drift Account") ||
+		!strings.Contains(body, "14 accounts") ||
+		!strings.Contains(body, "drifted-owner") {
+		t.Fatalf("GET /organization after drift missing visible drift: %s", body)
+	}
+
+	definition, err := scenario.LoadSeedDefinition(scenario.UntaggedDataTransferSpikeSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition() error = %v", err)
+	}
+	result, err := scenario.NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(packaged scenario) error = %v", err)
+	}
+	if result.Run.Status != "succeeded" ||
+		result.ResourcesCreated != 2 ||
+		result.UsageEventsCreated != 3 ||
+		result.BillsIssued != 1 {
+		t.Fatalf("Run(packaged scenario) result = %+v, want successful AnyCompany lab execution", result)
+	}
+
+	resp, err = client.Get(server.URL() + "/organization")
+	if err != nil {
+		t.Fatalf("GET /organization after scenario reset error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /organization after scenario reset status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"AnyCompany Retail",
+		"13 accounts",
+		"12 active, 1 suspended, 0 closed",
+		"Storefront Prod",
+		"Root/Workloads",
+		"storefront-team",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /organization after scenario reset missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Seed Drift Account") || strings.Contains(body, "drifted-owner") {
+		t.Fatalf("GET /organization after scenario reset retained drift: %s", body)
+	}
+	storefrontProd, err := repo.GetAccount(ctx, "111122223333")
+	if err != nil {
+		t.Fatalf("GetAccount(Storefront Prod) after reset error = %v", err)
+	}
+	if storefrontProd.ParentUnitID != "ou_anycompany_workloads" ||
+		storefrontProd.Status != persistence.AccountStatusActive ||
+		storefrontProd.Owner != "storefront-team" ||
+		storefrontProd.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID {
+		t.Fatalf("Storefront Prod after scenario reset = %+v, want seed OU/status/owner/payer", storefrontProd)
 	}
 }
 

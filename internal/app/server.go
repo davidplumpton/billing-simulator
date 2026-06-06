@@ -165,6 +165,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/budgets/create", budgets.handleCreateBudget)
 	mux.HandleFunc("/budgets/refresh", budgets.handleRefreshBudgets)
 	mux.HandleFunc("/bills", bills.handleBills)
+	mux.HandleFunc("/invoices", bills.handleInvoiceIndex)
 	mux.HandleFunc("/invoices/", bills.handleInvoice)
 	mux.HandleFunc("/payments", payments.handlePayments)
 	mux.HandleFunc("/payments/action", payments.handlePaymentAction)

@@ -293,6 +293,19 @@ func (h billsHandler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleInvoiceIndex sends collection-level invoice requests to the bill list that exposes invoice links.
+func (h billsHandler) handleInvoiceIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	target := "/bills"
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 // renderBills builds the dedicated bills state page from the current workspace.
 func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status int, errorMessage string) {
 	data := billsPageData{

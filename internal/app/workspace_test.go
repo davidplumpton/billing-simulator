@@ -619,6 +619,28 @@ func TestWorkspaceMuxRoutesInvoices(t *testing.T) {
 	if !strings.Contains(body, "Invoice not found.") {
 		t.Fatalf("GET /invoices/{id} did not route to invoice handler: %s", body)
 	}
+
+	client := server.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req, err := http.NewRequest(method, server.URL+"/invoices?viewer_role=finance", nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%s /invoices) error = %v", method, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s /invoices error = %v", method, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("%s /invoices status = %d, want %d; body=%s", method, resp.StatusCode, http.StatusSeeOther, body)
+		}
+		if location := resp.Header.Get("Location"); location != "/bills?viewer_role=finance" {
+			t.Fatalf("%s /invoices Location = %q, want /bills?viewer_role=finance", method, location)
+		}
+	}
 }
 
 func writeWorkspaceState(t *testing.T, statePath, workspacePath string) {

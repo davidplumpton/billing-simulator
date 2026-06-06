@@ -199,6 +199,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/bills", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleBills(w, r)
 	})
+	mux.HandleFunc("/invoices", func(w http.ResponseWriter, r *http.Request) {
+		newBillsHandler(workspace.DB()).handleInvoiceIndex(w, r)
+	})
 	mux.HandleFunc("/invoices/", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleInvoice(w, r)
 	})

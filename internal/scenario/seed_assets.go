@@ -16,6 +16,9 @@ const (
 	// MissingTagsSeedKey identifies the packaged cost allocation tag cleanup lab.
 	MissingTagsSeedKey = "missing-tags"
 
+	// SharedNetworkingAllocationSeedKey identifies the packaged shared networking allocation lab.
+	SharedNetworkingAllocationSeedKey = "shared-networking-allocation"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

@@ -42,6 +42,9 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, MissingTagsSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, MissingTagsSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, SharedNetworkingAllocationSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, SharedNetworkingAllocationSeedKey)
+	}
 	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition() error = %v", err)
@@ -66,6 +69,18 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 		definition.Events[9].Action != EventActionActivateCostAllocationTag ||
 		definition.Events[9].TagKey != "owner" {
 		t.Fatalf("missing tags definition = %+v, want cost allocation tag lab fixture", definition)
+	}
+	definition, err = LoadSeedDefinition(SharedNetworkingAllocationSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", SharedNetworkingAllocationSeedKey, err)
+	}
+	if definition.Name != "Shared Networking allocation" ||
+		len(definition.Events) != 13 ||
+		len(definition.Checks) != 2 ||
+		definition.Events[8].Action != EventActionCreateCostCategory ||
+		definition.Events[9].Action != EventActionCreateCostCategoryRule ||
+		definition.Events[12].Action != EventActionCreateCostCategorySplitRule {
+		t.Fatalf("shared networking allocation definition = %+v, want Cost Category split lab fixture", definition)
 	}
 }
 
@@ -409,6 +424,122 @@ func TestRunnerAppliesMissingTagsSeed(t *testing.T) {
 	}
 }
 
+func TestRunnerAppliesSharedNetworkingAllocationSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(SharedNetworkingAllocationSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", SharedNetworkingAllocationSeedKey, err)
+	}
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(shared networking allocation) error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded ||
+		result.Run.EventsSucceeded != 13 ||
+		result.ResourcesCreated != 4 ||
+		result.UsageEventsCreated != 4 ||
+		result.MeteringRecordsCreated != 4 ||
+		result.BillLineItemsCreated != 5 ||
+		result.BillsIssued != 0 {
+		t.Fatalf("Run() result = %+v, want successful shared networking allocation lab counts", result)
+	}
+
+	categoryRepo := persistence.NewCostCategoryRepository(db)
+	product, err := categoryRepo.GetCategoryByName(ctx, "Product")
+	if err != nil {
+		t.Fatalf("GetCategoryByName(Product) error = %v", err)
+	}
+	if product.DefaultValue != "Unallocated" {
+		t.Fatalf("Product category = %+v, want Unallocated default", product)
+	}
+	rules, err := categoryRepo.ListRules(ctx, product.ID)
+	if err != nil {
+		t.Fatalf("ListRules(Product) error = %v", err)
+	}
+	if len(rules) != 3 ||
+		rules[0].Value != "Storefront" ||
+		rules[1].Value != "Payments" ||
+		rules[2].Value != "Shared Networking" ||
+		rules[2].Conditions[0].Dimension != persistence.CostCategoryRuleMatchAccount ||
+		strings.Join(rules[2].Conditions[0].Values, ",") != "222233334444" {
+		t.Fatalf("Product rules = %+v, want Storefront, Payments, and Shared Networking account rules", rules)
+	}
+
+	var sourceCostMicros int64
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(SUM(unblended_cost_micros), 0)
+		FROM cost_category_line_item_assignments
+		WHERE billing_period_start = ?
+		  AND billing_period_end = ?
+		  AND cost_category_id = ?
+		  AND assigned_value = ?`,
+		"2026-03-01",
+		"2026-04-01",
+		product.ID,
+		"Shared Networking",
+	).Scan(&sourceCostMicros); err != nil {
+		t.Fatalf("read Shared Networking assigned source cost: %v", err)
+	}
+	if sourceCostMicros == 0 {
+		t.Fatal("Shared Networking assigned source cost = 0, want NAT Gateway and data-transfer spend")
+	}
+	for _, serviceCode := range []string{"AmazonVPCNATGateway", "AWSDataTransfer"} {
+		if got := countScenarioRows(t, db, `SELECT COUNT(*)
+			FROM cost_category_line_item_assignments a
+			JOIN bill_line_items li ON li.id = a.line_item_id
+			WHERE a.billing_period_start = ?
+			  AND a.billing_period_end = ?
+			  AND a.cost_category_id = ?
+			  AND a.assigned_value = ?
+			  AND li.service_code = ?`,
+			"2026-03-01",
+			"2026-04-01",
+			product.ID,
+			"Shared Networking",
+			serviceCode); got != 1 {
+			t.Fatalf("Shared Networking assigned %s rows = %d, want 1", serviceCode, got)
+		}
+	}
+
+	splitRepo := persistence.NewCostCategorySplitChargeRepository(db)
+	splitRules, err := splitRepo.ListRules(ctx, product.ID)
+	if err != nil {
+		t.Fatalf("ListRules(Product split) error = %v", err)
+	}
+	if len(splitRules) != 1 ||
+		splitRules[0].SourceValue != "Shared Networking" ||
+		splitRules[0].Method != persistence.CostCategorySplitMethodFixed ||
+		len(splitRules[0].Targets) != 2 {
+		t.Fatalf("split rules = %+v, want one fixed Shared Networking rule", splitRules)
+	}
+
+	comparison, err := splitRepo.CompareAllocations(ctx, persistence.CostCategorySplitChargeComparisonRequest{
+		CostCategoryID:     product.ID,
+		BillingPeriodStart: "2026-03-01",
+		BillingPeriodEnd:   "2026-04-01",
+	})
+	if err != nil {
+		t.Fatalf("CompareAllocations(Product) error = %v", err)
+	}
+	if comparison.SplitOutCostMicros != sourceCostMicros ||
+		comparison.SplitInCostMicros != sourceCostMicros ||
+		comparison.UnallocatedResidualCostMicros != 0 {
+		t.Fatalf("comparison = %+v, want fully reallocated Shared Networking source cost %d", comparison, sourceCostMicros)
+	}
+	storefront := scenarioSplitComparisonRow(comparison.Rows, "Storefront")
+	payments := scenarioSplitComparisonRow(comparison.Rows, "Payments")
+	shared := scenarioSplitComparisonRow(comparison.Rows, "Shared Networking")
+	if storefront.SplitInCostMicros != sourceCostMicros*6/10 ||
+		payments.SplitInCostMicros != sourceCostMicros*4/10 ||
+		shared.SplitOutCostMicros != sourceCostMicros ||
+		shared.TotalAllocatedCostMicros != 0 {
+		t.Fatalf("split rows = storefront %+v payments %+v shared %+v, want 60/40 target allocation and zero shared total", storefront, payments, shared)
+	}
+}
+
 func TestRunnerRecordsFailedExecutionEventAndRun(t *testing.T) {
 	t.Parallel()
 
@@ -703,6 +834,15 @@ func scenarioTagCoverageRow(rows []persistence.CostAllocationTagCoverageRow, key
 		}
 	}
 	return persistence.CostAllocationTagCoverageRow{}
+}
+
+func scenarioSplitComparisonRow(rows []persistence.CostCategorySplitChargeComparisonRow, value string) persistence.CostCategorySplitChargeComparisonRow {
+	for _, row := range rows {
+		if row.Value == value {
+			return row
+		}
+	}
+	return persistence.CostCategorySplitChargeComparisonRow{}
 }
 
 func countScenarioRows(t *testing.T, db *sql.DB, query string, args ...any) int {

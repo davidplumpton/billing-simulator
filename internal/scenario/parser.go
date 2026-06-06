@@ -64,44 +64,74 @@ const (
 
 	// EventActionActivateCostAllocationTag activates one discovered resource tag key for billing reports.
 	EventActionActivateCostAllocationTag EventAction = "activate_cost_allocation_tag"
+
+	// EventActionCreateCostCategory creates or reuses one learner-facing Cost Category dimension.
+	EventActionCreateCostCategory EventAction = "create_cost_category"
+
+	// EventActionCreateCostCategoryRule creates or reuses one ordered Cost Category rule.
+	EventActionCreateCostCategoryRule EventAction = "create_cost_category_rule"
+
+	// EventActionCreateCostCategorySplitRule creates or reuses one Cost Category split-charge rule.
+	EventActionCreateCostCategorySplitRule EventAction = "create_cost_category_split_rule"
 )
 
 // Event describes one ordered resource, usage, clock, or billing operation.
 type Event struct {
-	ID                 string            `json:"id,omitempty"`
-	Sequence           int               `json:"-"`
-	Day                int               `json:"day,omitempty"`
-	At                 string            `json:"at,omitempty"`
-	Action             EventAction       `json:"action"`
-	Account            string            `json:"account,omitempty"`
-	AccountID          string            `json:"account_id,omitempty"`
-	AccountEmail       string            `json:"account_email,omitempty"`
-	OrganizationID     string            `json:"organization_id,omitempty"`
-	ParentUnitID       string            `json:"parent_unit_id,omitempty"`
-	PayerAccount       string            `json:"payer_account,omitempty"`
-	PayerAccountID     string            `json:"payer_account_id,omitempty"`
-	Service            string            `json:"service,omitempty"`
-	ServiceCode        string            `json:"service_code,omitempty"`
-	Resource           string            `json:"resource,omitempty"`
-	ResourceID         string            `json:"resource_id,omitempty"`
-	ResourceType       string            `json:"resource_type,omitempty"`
-	Region             string            `json:"region,omitempty"`
-	Status             string            `json:"status,omitempty"`
-	TagKey             string            `json:"tag_key,omitempty"`
-	Tags               map[string]string `json:"tags,omitempty"`
-	Attributes         map[string]string `json:"attributes,omitempty"`
-	UsageType          string            `json:"usage_type,omitempty"`
-	Operation          string            `json:"operation,omitempty"`
-	Amount             int               `json:"amount,omitempty"`
-	AmountGB           *json.Number      `json:"amount_gb,omitempty"`
-	AmountHours        *json.Number      `json:"amount_hours,omitempty"`
-	Quantity           *json.Number      `json:"quantity,omitempty"`
-	QuantityMicros     int64             `json:"quantity_micros,omitempty"`
-	Unit               string            `json:"unit,omitempty"`
-	Pattern            string            `json:"pattern,omitempty"`
-	Days               int               `json:"days,omitempty"`
-	BillingPeriodStart string            `json:"billing_period_start,omitempty"`
-	BillingPeriodEnd   string            `json:"billing_period_end,omitempty"`
+	ID                   string              `json:"id,omitempty"`
+	Sequence             int                 `json:"-"`
+	Day                  int                 `json:"day,omitempty"`
+	At                   string              `json:"at,omitempty"`
+	Action               EventAction         `json:"action"`
+	Account              string              `json:"account,omitempty"`
+	AccountID            string              `json:"account_id,omitempty"`
+	AccountEmail         string              `json:"account_email,omitempty"`
+	OrganizationID       string              `json:"organization_id,omitempty"`
+	ParentUnitID         string              `json:"parent_unit_id,omitempty"`
+	PayerAccount         string              `json:"payer_account,omitempty"`
+	PayerAccountID       string              `json:"payer_account_id,omitempty"`
+	Service              string              `json:"service,omitempty"`
+	ServiceCode          string              `json:"service_code,omitempty"`
+	Resource             string              `json:"resource,omitempty"`
+	ResourceID           string              `json:"resource_id,omitempty"`
+	ResourceType         string              `json:"resource_type,omitempty"`
+	Region               string              `json:"region,omitempty"`
+	Status               string              `json:"status,omitempty"`
+	TagKey               string              `json:"tag_key,omitempty"`
+	Tags                 map[string]string   `json:"tags,omitempty"`
+	Attributes           map[string]string   `json:"attributes,omitempty"`
+	UsageType            string              `json:"usage_type,omitempty"`
+	Operation            string              `json:"operation,omitempty"`
+	Amount               int                 `json:"amount,omitempty"`
+	AmountGB             *json.Number        `json:"amount_gb,omitempty"`
+	AmountHours          *json.Number        `json:"amount_hours,omitempty"`
+	Quantity             *json.Number        `json:"quantity,omitempty"`
+	QuantityMicros       int64               `json:"quantity_micros,omitempty"`
+	Unit                 string              `json:"unit,omitempty"`
+	Pattern              string              `json:"pattern,omitempty"`
+	Days                 int                 `json:"days,omitempty"`
+	BillingPeriodStart   string              `json:"billing_period_start,omitempty"`
+	BillingPeriodEnd     string              `json:"billing_period_end,omitempty"`
+	Category             string              `json:"category,omitempty"`
+	CategoryID           string              `json:"category_id,omitempty"`
+	DefaultValue         string              `json:"default_value,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	RuleOrder            int                 `json:"rule_order,omitempty"`
+	Value                string              `json:"value,omitempty"`
+	MatchType            string              `json:"match_type,omitempty"`
+	Dimension            string              `json:"dimension,omitempty"`
+	Operator             string              `json:"operator,omitempty"`
+	Values               []string            `json:"values,omitempty"`
+	ReferencedCategory   string              `json:"referenced_category,omitempty"`
+	ReferencedCategoryID string              `json:"referenced_category_id,omitempty"`
+	SourceValue          string              `json:"source_value,omitempty"`
+	Method               string              `json:"method,omitempty"`
+	Targets              []SplitChargeTarget `json:"targets,omitempty"`
+}
+
+// SplitChargeTarget describes one scenario-authored split-charge allocation target.
+type SplitChargeTarget struct {
+	Value            string `json:"value"`
+	FixedShareMicros int    `json:"fixed_share_micros,omitempty"`
 }
 
 // CheckType identifies an expected learner outcome.
@@ -265,8 +295,26 @@ func normalizeEvent(event Event, index int) Event {
 	event.Pattern = strings.TrimSpace(event.Pattern)
 	event.BillingPeriodStart = strings.TrimSpace(event.BillingPeriodStart)
 	event.BillingPeriodEnd = strings.TrimSpace(event.BillingPeriodEnd)
+	event.Category = strings.TrimSpace(event.Category)
+	event.CategoryID = strings.TrimSpace(event.CategoryID)
+	event.DefaultValue = strings.TrimSpace(event.DefaultValue)
+	event.Description = strings.TrimSpace(event.Description)
+	event.Value = strings.TrimSpace(event.Value)
+	event.MatchType = strings.TrimSpace(event.MatchType)
+	event.Dimension = strings.TrimSpace(event.Dimension)
+	event.Operator = strings.TrimSpace(event.Operator)
+	event.ReferencedCategory = strings.TrimSpace(event.ReferencedCategory)
+	event.ReferencedCategoryID = strings.TrimSpace(event.ReferencedCategoryID)
+	event.SourceValue = strings.TrimSpace(event.SourceValue)
+	event.Method = strings.TrimSpace(event.Method)
 	event.Tags = normalizeStringMap(event.Tags)
 	event.Attributes = normalizeStringMap(event.Attributes)
+	for i := range event.Values {
+		event.Values[i] = strings.TrimSpace(event.Values[i])
+	}
+	for i := range event.Targets {
+		event.Targets[i].Value = strings.TrimSpace(event.Targets[i].Value)
+	}
 	return event
 }
 
@@ -320,6 +368,12 @@ func validateEvent(event Event, index int, problems *validationProblems) {
 		// The scheduled timestamp is enough; resource tags are discovered from workspace state.
 	case EventActionActivateCostAllocationTag:
 		validateCostAllocationTagEvent(path, event, problems)
+	case EventActionCreateCostCategory:
+		validateCreateCostCategoryEvent(path, event, problems)
+	case EventActionCreateCostCategoryRule:
+		validateCreateCostCategoryRuleEvent(path, event, problems)
+	case EventActionCreateCostCategorySplitRule:
+		validateCreateCostCategorySplitRuleEvent(path, event, problems)
 	default:
 		problems.add("%s.action %q is not supported", path, event.Action)
 	}
@@ -434,6 +488,111 @@ func validateCostAllocationTagEvent(path string, event Event, problems *validati
 		return
 	}
 	validateScenarioTagKey(path+".tag_key", event.TagKey, problems)
+}
+
+// validateCreateCostCategoryEvent checks the dimension fields needed for scenario-authored allocation labs.
+func validateCreateCostCategoryEvent(path string, event Event, problems *validationProblems) {
+	if event.Category == "" {
+		problems.add("%s.category is required for create_cost_category", path)
+	}
+}
+
+// validateCreateCostCategoryRuleEvent checks the single-condition rule shape supported by the scenario DSL.
+func validateCreateCostCategoryRuleEvent(path string, event Event, problems *validationProblems) {
+	if event.Category == "" && event.CategoryID == "" {
+		problems.add("%s.category or %s.category_id is required for create_cost_category_rule", path, path)
+	}
+	if event.RuleOrder <= 0 {
+		problems.add("%s.rule_order must be greater than zero for create_cost_category_rule", path)
+	}
+	if event.Value == "" {
+		problems.add("%s.value is required for create_cost_category_rule", path)
+	}
+	validateCostCategoryRuleConditionEvent(path, event, problems)
+}
+
+func validateCostCategoryRuleConditionEvent(path string, event Event, problems *validationProblems) {
+	switch event.Dimension {
+	case persistence.CostCategoryRuleMatchAccount,
+		persistence.CostCategoryRuleMatchService,
+		persistence.CostCategoryRuleMatchRegion,
+		persistence.CostCategoryRuleMatchUsageType,
+		persistence.CostCategoryRuleMatchLineItemType,
+		persistence.CostCategoryRuleMatchTag,
+		persistence.CostCategoryRuleMatchCostCategory:
+	default:
+		problems.add("%s.dimension %q is not supported for create_cost_category_rule", path, event.Dimension)
+	}
+	switch event.Operator {
+	case "", persistence.CostCategoryRuleOperatorIn, persistence.CostCategoryRuleOperatorNotIn:
+	default:
+		problems.add("%s.operator %q is not supported for create_cost_category_rule", path, event.Operator)
+	}
+	if event.Dimension == persistence.CostCategoryRuleMatchTag {
+		if event.TagKey == "" {
+			problems.add("%s.tag_key is required for tag cost category rules", path)
+		} else {
+			validateScenarioTagKey(path+".tag_key", event.TagKey, problems)
+		}
+	}
+	if event.Dimension == persistence.CostCategoryRuleMatchCostCategory && event.ReferencedCategory == "" && event.ReferencedCategoryID == "" {
+		problems.add("%s.referenced_category or %s.referenced_category_id is required for cost_category rule conditions", path, path)
+	}
+	if len(event.Values) == 0 {
+		problems.add("%s.values is required for create_cost_category_rule", path)
+	}
+	validateScenarioStringList(path+".values", event.Values, problems)
+}
+
+// validateCreateCostCategorySplitRuleEvent checks target and method fields for scenario split-charge rules.
+func validateCreateCostCategorySplitRuleEvent(path string, event Event, problems *validationProblems) {
+	if event.Category == "" && event.CategoryID == "" {
+		problems.add("%s.category or %s.category_id is required for create_cost_category_split_rule", path, path)
+	}
+	if event.SourceValue == "" {
+		problems.add("%s.source_value is required for create_cost_category_split_rule", path)
+	}
+	switch event.Method {
+	case persistence.CostCategorySplitMethodEven,
+		persistence.CostCategorySplitMethodFixed,
+		persistence.CostCategorySplitMethodProportional:
+	default:
+		problems.add("%s.method %q is not supported for create_cost_category_split_rule", path, event.Method)
+	}
+	if len(event.Targets) < 2 {
+		problems.add("%s.targets must include at least two target values for create_cost_category_split_rule", path)
+	}
+	seen := map[string]bool{}
+	fixedShareSum := 0
+	for i, target := range event.Targets {
+		targetPath := fmt.Sprintf("%s.targets[%d]", path, i)
+		if target.Value == "" {
+			problems.add("%s.value is required", targetPath)
+		}
+		if target.Value != "" && target.Value == event.SourceValue {
+			problems.add("%s.value must not match source_value %q", targetPath, event.SourceValue)
+		}
+		if target.Value != "" {
+			if seen[target.Value] {
+				problems.add("%s.value %q is duplicated", targetPath, target.Value)
+			}
+			seen[target.Value] = true
+		}
+		if target.FixedShareMicros < 0 {
+			problems.add("%s.fixed_share_micros must be zero or greater", targetPath)
+		}
+		if event.Method == persistence.CostCategorySplitMethodFixed {
+			if target.FixedShareMicros <= 0 {
+				problems.add("%s.fixed_share_micros must be greater than zero for fixed split rules", targetPath)
+			}
+			fixedShareSum += target.FixedShareMicros
+		} else if target.FixedShareMicros != 0 {
+			problems.add("%s.fixed_share_micros is only valid for fixed split rules", targetPath)
+		}
+	}
+	if event.Method == persistence.CostCategorySplitMethodFixed && fixedShareSum != 1_000_000 {
+		problems.add("%s.targets fixed_share_micros sum to %d, want 1000000", path, fixedShareSum)
+	}
 }
 
 func validateCheck(check Check, index int, problems *validationProblems) {
@@ -632,6 +791,21 @@ func validateStringMap(path string, values map[string]string, problems *validati
 		if strings.TrimSpace(key) == "" {
 			problems.add("%s key is required", path)
 		}
+	}
+}
+
+func validateScenarioStringList(path string, values []string, problems *validationProblems) {
+	seen := map[string]bool{}
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			problems.add("%s[%d] is required", path, i)
+			continue
+		}
+		if seen[value] {
+			problems.add("%s[%d] %q is duplicated", path, i, value)
+		}
+		seen[value] = true
 	}
 }
 

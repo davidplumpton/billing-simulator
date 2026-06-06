@@ -1,0 +1,191 @@
+{
+  "name": "Shared Networking allocation",
+  "clock": {
+    "start": "2026-03-01"
+  },
+  "organization_template": "anycompany-retail",
+  "random_seed": 67,
+  "events": [
+    {
+      "id": "create-storefront-api",
+      "day": 2,
+      "action": "create_resource",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-shared-cost-api",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "env": "prod",
+        "owner": "storefront-team",
+        "product": "Storefront"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "storefront-api-hours",
+      "day": 3,
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-shared-cost-api",
+      "amount_hours": 240
+    },
+    {
+      "id": "create-payments-worker",
+      "day": 4,
+      "action": "create_resource",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-shared-cost-worker",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "env": "prod",
+        "owner": "payments-team",
+        "product": "Payments"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "payments-worker-hours",
+      "day": 5,
+      "action": "add_usage",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-shared-cost-worker",
+      "amount_hours": 120
+    },
+    {
+      "id": "create-central-nat",
+      "day": 6,
+      "action": "create_resource",
+      "account": "Shared Networking",
+      "service": "NAT Gateway",
+      "resource": "central-egress-nat",
+      "resource_type": "nat_gateway",
+      "region": "us-east-1",
+      "tags": {
+        "env": "prod",
+        "owner": "network-platform",
+        "product": "Shared Networking"
+      }
+    },
+    {
+      "id": "central-nat-processing",
+      "day": 12,
+      "action": "add_usage",
+      "account": "Shared Networking",
+      "service": "NAT Gateway",
+      "resource": "central-egress-nat",
+      "amount_gb": 1800
+    },
+    {
+      "id": "central-internet-egress",
+      "day": 13,
+      "action": "add_usage",
+      "account": "Shared Networking",
+      "service": "AWS Data Transfer",
+      "resource": "central-internet-egress",
+      "amount_gb": 3200,
+      "tags": {
+        "env": "prod",
+        "owner": "network-platform",
+        "product": "Shared Networking"
+      }
+    },
+    {
+      "id": "meter-shared-networking",
+      "day": 28,
+      "action": "run_daily_metering",
+      "payer_account": "Management"
+    },
+    {
+      "id": "create-product-category",
+      "day": 29,
+      "action": "create_cost_category",
+      "category": "Product",
+      "description": "Classifies product teams and shared networking spend for allocation practice.",
+      "default_value": "Unallocated"
+    },
+    {
+      "id": "rule-storefront-product",
+      "day": 29,
+      "action": "create_cost_category_rule",
+      "category": "Product",
+      "rule_order": 10,
+      "value": "Storefront",
+      "dimension": "tag",
+      "operator": "in",
+      "tag_key": "product",
+      "values": [
+        "Storefront"
+      ],
+      "description": "Assign Storefront-tagged workload charges."
+    },
+    {
+      "id": "rule-payments-product",
+      "day": 29,
+      "action": "create_cost_category_rule",
+      "category": "Product",
+      "rule_order": 20,
+      "value": "Payments",
+      "dimension": "tag",
+      "operator": "in",
+      "tag_key": "product",
+      "values": [
+        "Payments"
+      ],
+      "description": "Assign Payments-tagged workload charges."
+    },
+    {
+      "id": "rule-shared-networking",
+      "day": 29,
+      "action": "create_cost_category_rule",
+      "category": "Product",
+      "rule_order": 30,
+      "value": "Shared Networking",
+      "dimension": "account",
+      "operator": "in",
+      "values": [
+        "222233334444"
+      ],
+      "description": "Assign central NAT Gateway and data-transfer charges to the shared networking source bucket."
+    },
+    {
+      "id": "split-shared-networking",
+      "day": 30,
+      "action": "create_cost_category_split_rule",
+      "category": "Product",
+      "source_value": "Shared Networking",
+      "method": "fixed",
+      "description": "Allocate shared networking charges 60% to Storefront and 40% to Payments.",
+      "targets": [
+        {
+          "value": "Storefront",
+          "fixed_share_micros": 600000
+        },
+        {
+          "value": "Payments",
+          "fixed_share_micros": 400000
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "check-shared-networking-category",
+      "type": "cost_category_rule_created",
+      "category": "Product"
+    },
+    {
+      "id": "check-networking-driver",
+      "type": "identifies_top_driver",
+      "expected_service": "NAT Gateway"
+    }
+  ]
+}

@@ -29,6 +29,8 @@ type Runner struct {
 	clock        persistence.SimulatorClockRepository
 	usage        persistence.ResourceUsageRepository
 	tags         persistence.CostAllocationTagRepository
+	categories   persistence.CostCategoryRepository
+	splitCharges persistence.CostCategorySplitChargeRepository
 	daily        persistence.DailyMeteringJobRepository
 	monthEnd     persistence.MonthEndCloseRepository
 	organization persistence.OrganizationRepository
@@ -41,6 +43,8 @@ func NewRunner(db *sql.DB) Runner {
 		clock:        persistence.NewSimulatorClockRepository(db),
 		usage:        persistence.NewResourceUsageRepository(db),
 		tags:         persistence.NewCostAllocationTagRepository(db),
+		categories:   persistence.NewCostCategoryRepository(db),
+		splitCharges: persistence.NewCostCategorySplitChargeRepository(db),
 		daily:        persistence.NewDailyMeteringJobRepository(db),
 		monthEnd:     persistence.NewMonthEndCloseRepository(db),
 		organization: persistence.NewOrganizationRepository(db),
@@ -88,6 +92,7 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 		startTime:            startTime,
 		accountAliasesByKey:  map[string]string{},
 		resourceAliasesByKey: map[string]string{},
+		categoryAliasesByKey: map[string]string{},
 	}
 
 	if _, err := r.clock.Set(ctx, startTime.Format(time.RFC3339)); err != nil {
@@ -184,6 +189,7 @@ type scenarioExecutionState struct {
 	startTime            time.Time
 	accountAliasesByKey  map[string]string
 	resourceAliasesByKey map[string]string
+	categoryAliasesByKey map[string]string
 }
 
 type scenarioServiceDefaults struct {
@@ -289,6 +295,18 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		if _, err := r.activateCostAllocationTag(ctx, state, event, scheduledAt); err != nil {
 			return failScenarioRunEvent(audit, err)
 		}
+	case EventActionCreateCostCategory:
+		if _, err := r.createCostCategory(ctx, state, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionCreateCostCategoryRule:
+		if _, err := r.createCostCategoryRule(ctx, state, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionCreateCostCategorySplitRule:
+		if _, err := r.createCostCategorySplitRule(ctx, state, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
 	default:
 		err := fmt.Errorf("scenario event action %q is not executable", event.Action)
 		return failScenarioRunEvent(audit, err)
@@ -312,6 +330,139 @@ func (r Runner) activateCostAllocationTag(ctx context.Context, state *scenarioEx
 		ScenarioEventID:       event.ID,
 		ScenarioEventSequence: event.Sequence,
 	})
+}
+
+// createCostCategory prepares an allocation dimension for a scenario lab, reusing by name so reruns remain executable.
+func (r Runner) createCostCategory(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.CostCategory, error) {
+	if existing, err := r.categories.GetCategoryByName(ctx, event.Category); err == nil {
+		state.rememberCostCategory(event, existing.ID)
+		if _, refreshErr := r.categories.RefreshAssignmentsForOpenPeriods(ctx); refreshErr != nil {
+			return persistence.CostCategory{}, refreshErr
+		}
+		return existing, nil
+	} else if !strings.Contains(err.Error(), "not found") {
+		return persistence.CostCategory{}, err
+	}
+
+	category, err := r.categories.CreateCategory(ctx, persistence.CostCategoryCreateRequest{
+		ID:           stableScenarioID("cc_scn", state.runID, event.ID, event.Category),
+		Name:         event.Category,
+		Description:  event.Description,
+		DefaultValue: event.DefaultValue,
+		Status:       event.Status,
+	})
+	if err != nil {
+		return persistence.CostCategory{}, err
+	}
+	state.rememberCostCategory(event, category.ID)
+	return category, nil
+}
+
+// createCostCategoryRule adds a single-condition assignment rule and refreshes open-period snapshots for lab spend.
+func (r Runner) createCostCategoryRule(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.CostCategoryRule, error) {
+	categoryID := state.resolveCostCategoryID(event.CategoryID, event.Category)
+	if categoryID == "" {
+		return persistence.CostCategoryRule{}, fmt.Errorf("scenario cost category %q is not available", chooseFirst(event.CategoryID, event.Category))
+	}
+	if existing, ok, err := r.existingCostCategoryRule(ctx, categoryID, event.RuleOrder); err != nil {
+		return persistence.CostCategoryRule{}, err
+	} else if ok {
+		if _, refreshErr := r.categories.RefreshAssignmentsForOpenPeriods(ctx); refreshErr != nil {
+			return persistence.CostCategoryRule{}, refreshErr
+		}
+		return existing, nil
+	}
+
+	condition := persistence.CostCategoryRuleCondition{
+		ID:               stableScenarioID("ccrc_scn", state.runID, event.ID, event.Dimension, strings.Join(event.Values, "\x00")),
+		ConditionOrder:   1,
+		Dimension:        event.Dimension,
+		Operator:         event.Operator,
+		TagKey:           event.TagKey,
+		CostCategoryID:   state.resolveCostCategoryID(event.ReferencedCategoryID, event.ReferencedCategory),
+		CostCategoryName: event.ReferencedCategory,
+		Values:           append([]string(nil), event.Values...),
+	}
+	rule, err := r.categories.CreateRule(ctx, persistence.CostCategoryRuleCreateRequest{
+		ID:             stableScenarioID("ccr_scn", state.runID, event.ID, event.Value),
+		CostCategoryID: categoryID,
+		RuleOrder:      event.RuleOrder,
+		Value:          event.Value,
+		Description:    event.Description,
+		MatchType:      event.MatchType,
+		Conditions:     []persistence.CostCategoryRuleCondition{condition},
+	})
+	if err != nil {
+		return persistence.CostCategoryRule{}, err
+	}
+	return rule, nil
+}
+
+// createCostCategorySplitRule adds a split-charge rule and refreshes allocations for current open periods.
+func (r Runner) createCostCategorySplitRule(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.CostCategorySplitChargeRule, error) {
+	categoryID := state.resolveCostCategoryID(event.CategoryID, event.Category)
+	if categoryID == "" {
+		return persistence.CostCategorySplitChargeRule{}, fmt.Errorf("scenario cost category %q is not available", chooseFirst(event.CategoryID, event.Category))
+	}
+	if existing, ok, err := r.existingSplitChargeRule(ctx, categoryID, event.SourceValue); err != nil {
+		return persistence.CostCategorySplitChargeRule{}, err
+	} else if ok {
+		if _, refreshErr := r.splitCharges.RefreshAllocationsForOpenPeriods(ctx); refreshErr != nil {
+			return persistence.CostCategorySplitChargeRule{}, refreshErr
+		}
+		return existing, nil
+	}
+
+	targets := make([]persistence.CostCategorySplitChargeTargetCreateRequest, 0, len(event.Targets))
+	for i, target := range event.Targets {
+		targets = append(targets, persistence.CostCategorySplitChargeTargetCreateRequest{
+			ID:               stableScenarioID("ccst_scn", state.runID, event.ID, target.Value),
+			TargetOrder:      i + 1,
+			TargetValue:      target.Value,
+			FixedShareMicros: target.FixedShareMicros,
+		})
+	}
+	rule, err := r.splitCharges.CreateRule(ctx, persistence.CostCategorySplitChargeRuleCreateRequest{
+		ID:             stableScenarioID("ccs_scn", state.runID, event.ID, event.SourceValue),
+		CostCategoryID: categoryID,
+		SourceValue:    event.SourceValue,
+		Method:         event.Method,
+		Description:    event.Description,
+		Status:         event.Status,
+		Targets:        targets,
+	})
+	if err != nil {
+		return persistence.CostCategorySplitChargeRule{}, err
+	}
+	return rule, nil
+}
+
+// existingCostCategoryRule finds an already-created rule at the same order for rerunnable scenario definitions.
+func (r Runner) existingCostCategoryRule(ctx context.Context, categoryID string, ruleOrder int) (persistence.CostCategoryRule, bool, error) {
+	rules, err := r.categories.ListRules(ctx, categoryID)
+	if err != nil {
+		return persistence.CostCategoryRule{}, false, err
+	}
+	for _, rule := range rules {
+		if rule.RuleOrder == ruleOrder {
+			return rule, true, nil
+		}
+	}
+	return persistence.CostCategoryRule{}, false, nil
+}
+
+// existingSplitChargeRule finds an already-created split source for rerunnable scenario definitions.
+func (r Runner) existingSplitChargeRule(ctx context.Context, categoryID, sourceValue string) (persistence.CostCategorySplitChargeRule, bool, error) {
+	rules, err := r.splitCharges.ListRules(ctx, categoryID)
+	if err != nil {
+		return persistence.CostCategorySplitChargeRule{}, false, err
+	}
+	for _, rule := range rules {
+		if rule.SourceValue == sourceValue {
+			return rule, true, nil
+		}
+	}
+	return persistence.CostCategorySplitChargeRule{}, false, nil
 }
 
 // createAccount adds a scenario-owned member account and records lifecycle lineage.
@@ -776,6 +927,28 @@ func (s scenarioExecutionState) resolveResourceID(event Event) string {
 		if alias == event.ResourceID {
 			return event.ResourceID
 		}
+	}
+	return ""
+}
+
+// rememberCostCategory stores category aliases that later scenario events can reference.
+func (s *scenarioExecutionState) rememberCostCategory(event Event, categoryID string) {
+	for _, alias := range []string{categoryID, event.CategoryID, event.Category, event.ID} {
+		key := scenarioAliasKey(alias)
+		if key != "" {
+			s.categoryAliasesByKey[key] = categoryID
+		}
+	}
+}
+
+// resolveCostCategoryID maps explicit IDs and scenario-created category aliases to a category ID.
+func (s scenarioExecutionState) resolveCostCategoryID(explicitID, name string) string {
+	if strings.TrimSpace(explicitID) != "" {
+		return strings.TrimSpace(explicitID)
+	}
+	key := scenarioAliasKey(name)
+	if key != "" {
+		return s.categoryAliasesByKey[key]
 	}
 	return ""
 }

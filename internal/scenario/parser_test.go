@@ -226,6 +226,56 @@ func TestParseDefinitionValidatesCostAllocationTagEvents(t *testing.T) {
 	assertErrorContains(t, err, `events[2].tag_key key "aws:owner" must not start with aws:`)
 }
 
+func TestParseDefinitionValidatesCostCategoryEvents(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken allocation fixture",
+		"clock": {
+			"start": "2026-03-01"
+		},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "missing-category",
+				"day": 1,
+				"action": "create_cost_category"
+			},
+			{
+				"id": "bad-rule",
+				"day": 2,
+				"action": "create_cost_category_rule",
+				"category": "Product",
+				"rule_order": 0,
+				"value": "Shared",
+				"dimension": "tag",
+				"values": []
+			},
+			{
+				"id": "bad-split",
+				"day": 3,
+				"action": "create_cost_category_split_rule",
+				"category": "Product",
+				"source_value": "Shared",
+				"method": "fixed",
+				"targets": [
+					{"value": "Storefront", "fixed_share_micros": 700000},
+					{"value": "Storefront", "fixed_share_micros": 200000}
+				]
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want cost category validation errors")
+	}
+	assertErrorContains(t, err, "events[0].category is required for create_cost_category")
+	assertErrorContains(t, err, "events[1].rule_order must be greater than zero for create_cost_category_rule")
+	assertErrorContains(t, err, "events[1].tag_key is required for tag cost category rules")
+	assertErrorContains(t, err, "events[1].values is required for create_cost_category_rule")
+	assertErrorContains(t, err, `events[2].targets[1].value "Storefront" is duplicated`)
+	assertErrorContains(t, err, "events[2].targets fixed_share_micros sum to 900000, want 1000000")
+}
+
 func TestParseDefinitionReportsActionableScenarioErrors(t *testing.T) {
 	raw := []byte(`{
 		"name": "Broken authoring fixture",

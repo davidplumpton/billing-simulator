@@ -400,6 +400,13 @@ func scenarioCatalog() map[string]scenarioCatalogMetadata {
 			ResumeLabel:       "Resume in Tags",
 			ResumePath:        "/tags",
 		},
+		scenario.SharedNetworkingAllocationSeedKey: {
+			Phase:             "Phase 2",
+			Objective:         "Allocate shared NAT Gateway and data-transfer costs from Shared Networking to product teams.",
+			EstimatedDuration: "30 min",
+			ResumeLabel:       "Resume in Cost Categories",
+			ResumePath:        "/cost-categories",
+		},
 		scenario.UntaggedDataTransferSpikeSeedKey: {
 			Phase:             "Phase 2",
 			Objective:         "Find an untagged data-transfer spike and trace the cost through billed line items.",

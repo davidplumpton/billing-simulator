@@ -48,6 +48,15 @@ type CostExplorerQueryRow struct {
 	UnblendedCostMicros int64
 }
 
+// CostExplorerLineItemRequest selects source bill line items behind one aggregate report row.
+type CostExplorerLineItemRequest struct {
+	Query           CostExplorerQueryRequest
+	TimePeriodStart string
+	TimePeriodEnd   string
+	GroupValues     []CostExplorerGroupValue
+	Limit           int
+}
+
 // CostExplorerGroupValue names one grouping value on an aggregate row.
 type CostExplorerGroupValue struct {
 	Type  string
@@ -92,6 +101,42 @@ func (r CostExplorerRepository) Query(ctx context.Context, request CostExplorerQ
 		result.TotalUnblendedCostMicros += row.UnblendedCostMicros
 	}
 	return result, nil
+}
+
+// ListLineItems returns the source bill line items for a Cost Explorer aggregate row.
+func (r CostExplorerRepository) ListLineItems(ctx context.Context, request CostExplorerLineItemRequest) ([]BillLineItem, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	request.Query = normalizeCostExplorerQueryRequest(request.Query)
+	resolved, err := r.resolveQuery(ctx, request.Query)
+	if err != nil {
+		return nil, err
+	}
+	startUTC, endUTC, err := costExplorerLineItemWindow(request.TimePeriodStart, request.TimePeriodEnd)
+	if err != nil {
+		return nil, err
+	}
+	if len(request.GroupValues) != len(resolved.groupings) {
+		return nil, fmt.Errorf("cost explorer drilldown group count %d does not match report grouping count %d", len(request.GroupValues), len(resolved.groupings))
+	}
+	for i, value := range request.GroupValues {
+		grouping := resolved.groupings[i]
+		if value.Type != grouping.Type || value.Key != grouping.Key {
+			return nil, fmt.Errorf("cost explorer drilldown group %d is %s:%s, want %s:%s", i+1, value.Type, value.Key, grouping.Type, grouping.Key)
+		}
+		if strings.TrimSpace(value.Value) == "" {
+			return nil, fmt.Errorf("cost explorer drilldown group %d value is required", i+1)
+		}
+	}
+	limit := request.Limit
+	if limit <= 0 {
+		limit = defaultBillLineItemLimit
+	}
+	if limit > maxBillLineItemLimit {
+		limit = maxBillLineItemLimit
+	}
+	return r.listLineItems(ctx, resolved, startUTC, endUTC, request.GroupValues, limit)
 }
 
 type costExplorerResolvedQuery struct {
@@ -395,6 +440,123 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 		return nil, fmt.Errorf("iterate cost explorer aggregates: %w", err)
 	}
 	return resultRows, nil
+}
+
+func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExplorerResolvedQuery, startUTC, endUTC string, groupValues []CostExplorerGroupValue, limit int) ([]BillLineItem, error) {
+	whereClauses := []string{
+		"bli.usage_start_time >= ?",
+		"bli.usage_start_time < ?",
+		"bli.usage_start_time >= ?",
+		"bli.usage_start_time < ?",
+	}
+	whereArgs := []any{query.startUTC, query.endUTC, startUTC, endUTC}
+	for _, filter := range query.filters {
+		condition, args, err := costExplorerFilterCondition(filter)
+		if err != nil {
+			return nil, err
+		}
+		whereClauses = append(whereClauses, condition)
+		whereArgs = append(whereArgs, args...)
+	}
+	for i, grouping := range query.groupings {
+		expression, args, err := costExplorerGroupingExpression(grouping)
+		if err != nil {
+			return nil, err
+		}
+		whereClauses = append(whereClauses, expression+" = ?")
+		whereArgs = append(whereArgs, args...)
+		whereArgs = append(whereArgs, groupValues[i].Value)
+	}
+
+	args := append(whereArgs, limit)
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			bli.id,
+			bli.metering_record_id,
+			bli.usage_event_id,
+			bli.resource_id,
+			bli.billing_period_start,
+			bli.billing_period_end,
+			bli.billing_period_days,
+			bli.payer_account_id,
+			bli.usage_account_id,
+			bli.service_code,
+			bli.service_name,
+			bli.product_family,
+			bli.usage_type,
+			bli.operation,
+			bli.region_code,
+			bli.line_item_type,
+			bli.line_item_status,
+			bli.usage_start_time,
+			bli.usage_end_time,
+			bli.usage_quantity_micros,
+			bli.usage_unit,
+			bli.pricing_unit,
+			bli.pricing_quantity_micros,
+			bli.unblended_rate_micros,
+			bli.unblended_cost_micros,
+			bli.currency_code,
+			bli.price_catalog_sku,
+			bli.price_effective_date,
+			bli.tag_snapshot_json,
+			bli.description,
+			bli.created_at
+		 FROM bill_line_items bli
+		 WHERE `+strings.Join(whereClauses, "\n   AND ")+`
+		 ORDER BY bli.usage_start_time, bli.id
+		 LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cost explorer drilldown line items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []BillLineItem
+	for rows.Next() {
+		item, err := scanBillLineItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cost explorer drilldown line items: %w", err)
+	}
+	return items, nil
+}
+
+func costExplorerLineItemWindow(periodStart, periodEnd string) (string, string, error) {
+	start, err := parseCostExplorerLineItemBoundary(periodStart)
+	if err != nil {
+		return "", "", fmt.Errorf("cost explorer drilldown period start: %w", err)
+	}
+	end, err := parseCostExplorerLineItemBoundary(periodEnd)
+	if err != nil {
+		return "", "", fmt.Errorf("cost explorer drilldown period end: %w", err)
+	}
+	if !start.Before(end) {
+		return "", "", fmt.Errorf("cost explorer drilldown period start must be before end")
+	}
+	return start.Format(time.RFC3339), end.Format(time.RFC3339), nil
+}
+
+func parseCostExplorerLineItemBoundary(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if strings.Contains(value, "T") {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return parsed.UTC(), nil
+	}
+	parsed, err := time.Parse(time.DateOnly, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
 }
 
 func costExplorerBucketExpression(granularity string) (string, error) {

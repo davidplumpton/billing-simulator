@@ -46,7 +46,7 @@ The current codebase already includes these working foundations:
 - Cost Category split-charge rule persistence and allocation comparison UI for even, fixed-share, and proportional allocation methods, with deterministic rounding, source-line audit rows, raw/category/split/total cost views, unallocated residuals, open-period refreshes, and finalized-period protection.
 - Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Cost Explorer derived summary tables for daily cost, monthly account/service spend, tag coverage, and Cost Category value rollups after billing changes.
-- Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, and dense result tables.
+- Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 
 Some implemented pieces are persistence or policy foundations that do not yet have a full browser workflow. The backlog tracks those UI and reporting steps.
@@ -55,7 +55,6 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 
 The broader MVP and later phases include:
 
-- Cost Explorer saved report execution metadata, drilldowns, and CSV downloads.
 - Budgets and forecast/actual alert simulation.
 - Payment methods, payment profiles, payment state workflows, past-due handling, and remediation labs.
 - CUR-like and FOCUS-style exports plus a query lab.

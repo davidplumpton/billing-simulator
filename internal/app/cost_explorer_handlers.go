@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -73,6 +75,7 @@ type costExplorerResultView struct {
 	Metric         string
 	MetricLabel    string
 	ChartType      string
+	CSVPath        string
 	Chart          costExplorerChartView
 	Rows           []costExplorerResultRowView
 	StateCards     []costExplorerStateCardView
@@ -146,15 +149,57 @@ type costExplorerStateCardView struct {
 }
 
 type costExplorerResultRowView struct {
-	PeriodStart  string
-	PeriodEnd    string
-	Group1       string
-	Group2       string
-	MetricValue  string
-	Usage        string
-	Cost         string
-	LineItems    int
-	CurrencyCode string
+	PeriodStart   string
+	PeriodEnd     string
+	Group1        string
+	Group2        string
+	DrilldownPath string
+	MetricValue   string
+	Usage         string
+	Cost          string
+	LineItems     int
+	CurrencyCode  string
+}
+
+type costExplorerLineItemsPageData struct {
+	WorkspaceReady      bool
+	Error               string
+	Notices             []uiNoticeView
+	WorkspaceEmptyState uiEmptyStateView
+	BackPath            string
+	CSVPath             string
+	Period              string
+	Groups              []string
+	StateCards          []costExplorerStateCardView
+	LineItems           []costExplorerLineItemView
+	Tables              costExplorerLineItemsTablesView
+}
+
+type costExplorerLineItemView struct {
+	ID             string
+	Resource       string
+	ResourceID     string
+	Period         string
+	Status         string
+	PayerAccountID string
+	UsageAccountID string
+	Service        string
+	ServiceCode    string
+	LineItemType   string
+	RegionCode     string
+	UsageType      string
+	Operation      string
+	Window         string
+	Quantity       string
+	Rate           string
+	Cost           string
+	CurrencyCode   string
+	Description    string
+	Tags           []keyValueView
+}
+
+type costExplorerLineItemsTablesView struct {
+	LineItems uiTableView
 }
 
 type costExplorerSavedReportView struct {
@@ -194,6 +239,46 @@ func (h costExplorerHandler) handleCostExplorer(w http.ResponseWriter, r *http.R
 		return
 	}
 	h.renderCostExplorer(w, r, http.StatusOK, "", flashFromQuery(r))
+}
+
+// handleCostExplorerResultsCSV exports the current aggregate report rows as CSV.
+func (h costExplorerHandler) handleCostExplorerResultsCSV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+	builder, err := h.builderFromRequest(r.Context(), r)
+	if err != nil {
+		http.Error(w, "export Cost Explorer CSV: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := h.queryFromBuilder(r.Context(), builder)
+	if err != nil {
+		http.Error(w, "export Cost Explorer CSV: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	body, err := costExplorerResultsCSVBytes(result, builder)
+	if err != nil {
+		http.Error(w, "export Cost Explorer CSV: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+costExplorerResultsCSVFilename(builder)+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// handleCostExplorerLineItems renders the source bill line items for one aggregate row.
+func (h costExplorerHandler) handleCostExplorerLineItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	h.renderCostExplorerLineItems(w, r, http.StatusOK, "")
 }
 
 // handleSaveCostExplorerReport creates or updates a saved report from the builder fields.
@@ -269,6 +354,30 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 	http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Saved report "+report.Name), http.StatusSeeOther)
 }
 
+// renderCostExplorerLineItems builds the drilldown page for one Cost Explorer result row.
+func (h costExplorerHandler) renderCostExplorerLineItems(w http.ResponseWriter, r *http.Request, status int, errorMessage string) {
+	data := costExplorerLineItemsPageData{
+		WorkspaceReady:      h.db != nil,
+		Error:               errorMessage,
+		WorkspaceEmptyState: uiWorkspaceRequiredState(),
+		BackPath:            "/cost-explorer",
+		Tables:              costExplorerLineItemsTables(),
+		StateCards:          costExplorerErrorStateCards(),
+	}
+	if h.db != nil && errorMessage == "" {
+		if err := h.loadCostExplorerLineItemsPageData(r.Context(), r, &data); err != nil {
+			status = http.StatusBadRequest
+			data.Error = err.Error()
+		}
+	}
+	data.Notices = uiNotices("", data.Error)
+
+	renderPage(w, status, pageLayoutOptions{
+		Title:     "Cost Explorer Bill Line Items - AWS Billing Simulator",
+		ActiveNav: "cost-explorer",
+	}, costExplorerLineItemsPageTemplate, data, "render Cost Explorer bill line items page")
+}
+
 // renderCostExplorer builds the Cost Explorer report-builder page from the open workspace.
 func (h costExplorerHandler) renderCostExplorer(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	data := costExplorerPageData{
@@ -305,6 +414,57 @@ func (h costExplorerHandler) renderCostExplorer(w http.ResponseWriter, r *http.R
 		Title:     "Cost Explorer - AWS Billing Simulator",
 		ActiveNav: "cost-explorer",
 	}, costExplorerPageTemplate, data, "render Cost Explorer page")
+}
+
+// loadCostExplorerLineItemsPageData reads source bill line items for a linked report row.
+func (h costExplorerHandler) loadCostExplorerLineItemsPageData(ctx context.Context, r *http.Request, data *costExplorerLineItemsPageData) error {
+	builder, err := h.builderFromRequest(ctx, r)
+	if err != nil {
+		return err
+	}
+	queryRequest, err := costExplorerQueryRequestFromBuilder(builder)
+	if err != nil {
+		return err
+	}
+	periodStart := firstValue(r.URL.Query(), "period_start")
+	periodEnd := firstValue(r.URL.Query(), "period_end")
+	if periodStart == "" || periodEnd == "" {
+		return fmt.Errorf("Cost Explorer drilldown period is required")
+	}
+	groupValues, err := costExplorerDrilldownGroupValuesFromValues(r.URL.Query(), queryRequest.Groupings)
+	if err != nil {
+		return err
+	}
+	items, err := h.explorer.ListLineItems(ctx, persistence.CostExplorerLineItemRequest{
+		Query:           queryRequest,
+		TimePeriodStart: periodStart,
+		TimePeriodEnd:   periodEnd,
+		GroupValues:     groupValues,
+		Limit:           100,
+	})
+	if err != nil {
+		return err
+	}
+
+	data.BackPath = costExplorerPath(builder)
+	data.CSVPath = costExplorerResultsCSVPath(builder)
+	data.Period = periodStart + " to " + periodEnd
+	for _, group := range groupValues {
+		data.Groups = append(data.Groups, costExplorerGroupLabel(group))
+	}
+	var usageMicros, costMicros int64
+	for _, item := range items {
+		usageMicros += item.UsageQuantityMicros
+		costMicros += item.UnblendedCostMicros
+		data.LineItems = append(data.LineItems, costExplorerLineItemViewFromItem(item))
+	}
+	data.StateCards = []costExplorerStateCardView{
+		{Label: "Line Items", Value: fmt.Sprintf("%d", len(items))},
+		{Label: "Unblended Cost", Value: formatUSDMicros(costMicros)},
+		{Label: "Usage Quantity", Value: formatQuantityMicros(usageMicros)},
+		{Label: "Period", Value: periodStart},
+	}
+	return nil
 }
 
 // loadCostExplorerPageData reads saved reports, category choices, and the current query result.
@@ -368,7 +528,7 @@ func (h costExplorerHandler) loadCostExplorerPageData(ctx context.Context, r *ht
 		}
 		return nil
 	}
-	data.Result = costExplorerResultViewFromResult(result, data.Builder.Metric, data.Builder.ChartType)
+	data.Result = costExplorerResultViewFromResult(result, data.Builder)
 	data.HasResult = true
 	return nil
 }
@@ -403,6 +563,23 @@ func (h costExplorerHandler) selectedSavedReport(ctx context.Context, r *http.Re
 	return report, true, nil
 }
 
+// builderFromRequest resolves explicit builder fields or an unloaded saved report ID.
+func (h costExplorerHandler) builderFromRequest(ctx context.Context, r *http.Request) (costExplorerBuilderView, error) {
+	defaults, err := h.defaultBuilder(ctx)
+	if err != nil {
+		return costExplorerBuilderView{}, err
+	}
+	selectedID := strings.TrimSpace(r.URL.Query().Get("saved_report_id"))
+	if selectedID != "" && !costExplorerRequestHasBuilderFields(r) {
+		report, err := h.savedReports.Get(ctx, selectedID)
+		if err != nil {
+			return costExplorerBuilderView{}, err
+		}
+		return costExplorerBuilderFromSavedReport(report, defaults), nil
+	}
+	return costExplorerBuilderFromValues(r.URL.Query(), defaults)
+}
+
 // costCategoryGroupKeys returns Cost Category names that can be typed into grouping/filter keys.
 func (h costExplorerHandler) costCategoryGroupKeys(ctx context.Context) ([]string, error) {
 	categories, err := h.categories.ListCategories(ctx)
@@ -418,21 +595,29 @@ func (h costExplorerHandler) costCategoryGroupKeys(ctx context.Context) ([]strin
 
 // queryFromBuilder converts the form model to the repository query request.
 func (h costExplorerHandler) queryFromBuilder(ctx context.Context, builder costExplorerBuilderView) (persistence.CostExplorerQueryResult, error) {
-	filters, err := costExplorerFiltersFromBuilder(builder)
+	request, err := costExplorerQueryRequestFromBuilder(builder)
 	if err != nil {
 		return persistence.CostExplorerQueryResult{}, err
+	}
+	return h.explorer.Query(ctx, request)
+}
+
+func costExplorerQueryRequestFromBuilder(builder costExplorerBuilderView) (persistence.CostExplorerQueryRequest, error) {
+	filters, err := costExplorerFiltersFromBuilder(builder)
+	if err != nil {
+		return persistence.CostExplorerQueryRequest{}, err
 	}
 	groupings, err := costExplorerGroupingsFromBuilder(builder)
 	if err != nil {
-		return persistence.CostExplorerQueryResult{}, err
+		return persistence.CostExplorerQueryRequest{}, err
 	}
-	return h.explorer.Query(ctx, persistence.CostExplorerQueryRequest{
+	return persistence.CostExplorerQueryRequest{
 		DateRangeStart: builder.DateRangeStart,
 		DateRangeEnd:   builder.DateRangeEnd,
 		Granularity:    builder.Granularity,
 		Filters:        filters,
 		Groupings:      groupings,
-	})
+	}, nil
 }
 
 func costExplorerDefaultBuilder() costExplorerBuilderView {
@@ -616,6 +801,22 @@ func costExplorerGroupingsFromBuilder(builder costExplorerBuilderView) ([]persis
 	return groupings, nil
 }
 
+func costExplorerDrilldownGroupValuesFromValues(values url.Values, groupings []persistence.CostExplorerGrouping) ([]persistence.CostExplorerGroupValue, error) {
+	groupValues := make([]persistence.CostExplorerGroupValue, 0, len(groupings))
+	for i, grouping := range groupings {
+		value := firstValue(values, fmt.Sprintf("group_%d_value", i+1))
+		if value == "" {
+			return nil, fmt.Errorf("Cost Explorer drilldown group %d value is required", i+1)
+		}
+		groupValues = append(groupValues, persistence.CostExplorerGroupValue{
+			Type:  grouping.Type,
+			Key:   grouping.Key,
+			Value: value,
+		})
+	}
+	return groupValues, nil
+}
+
 func addFilterValues(filters map[string][]string, key, raw string) {
 	values := splitRuleValues(raw)
 	if len(values) > 0 {
@@ -623,14 +824,68 @@ func addFilterValues(filters map[string][]string, key, raw string) {
 	}
 }
 
-func costExplorerResultViewFromResult(result persistence.CostExplorerQueryResult, metric, chartType string) costExplorerResultView {
+func costExplorerBuilderQueryValues(builder costExplorerBuilderView) url.Values {
+	values := url.Values{}
+	setQueryValue := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	setQueryValue("saved_report_id", builder.SavedReportID)
+	setQueryValue("report_name", builder.ReportName)
+	setQueryValue("description", builder.Description)
+	setQueryValue("owner_account_id", builder.OwnerAccountID)
+	setQueryValue("owner_role", builder.OwnerRole)
+	setQueryValue("date_range_start", builder.DateRangeStart)
+	setQueryValue("date_range_end", builder.DateRangeEnd)
+	setQueryValue("granularity", builder.Granularity)
+	setQueryValue("metric", builder.Metric)
+	setQueryValue("chart_type", builder.ChartType)
+	setQueryValue("service_values", builder.ServiceValues)
+	setQueryValue("linked_account_values", builder.LinkedAccountValues)
+	setQueryValue("region_values", builder.RegionValues)
+	setQueryValue("usage_type_values", builder.UsageTypeValues)
+	setQueryValue("line_item_type_values", builder.LineItemTypeValues)
+	setQueryValue("tag_key", builder.TagKey)
+	setQueryValue("tag_values", builder.TagValues)
+	setQueryValue("cost_category_key", builder.CostCategoryKey)
+	setQueryValue("cost_category_values", builder.CostCategoryValues)
+	setQueryValue("group_1_type", builder.Group1Type)
+	setQueryValue("group_1_key", builder.Group1Key)
+	setQueryValue("group_2_type", builder.Group2Type)
+	setQueryValue("group_2_key", builder.Group2Key)
+	values.Set("run", "1")
+	return values
+}
+
+func costExplorerPath(builder costExplorerBuilderView) string {
+	return "/cost-explorer?" + costExplorerBuilderQueryValues(builder).Encode()
+}
+
+func costExplorerResultsCSVPath(builder costExplorerBuilderView) string {
+	return "/cost-explorer/results.csv?" + costExplorerBuilderQueryValues(builder).Encode()
+}
+
+func costExplorerDrilldownPath(builder costExplorerBuilderView, row persistence.CostExplorerQueryRow) string {
+	values := costExplorerBuilderQueryValues(builder)
+	values.Set("period_start", row.TimePeriodStart)
+	values.Set("period_end", row.TimePeriodEnd)
+	for i, group := range row.GroupValues {
+		values.Set(fmt.Sprintf("group_%d_value", i+1), group.Value)
+	}
+	return "/cost-explorer/line-items?" + values.Encode()
+}
+
+func costExplorerResultViewFromResult(result persistence.CostExplorerQueryResult, builder costExplorerBuilderView) costExplorerResultView {
 	view := costExplorerResultView{
 		DateRangeStart: result.DateRangeStart,
 		DateRangeEnd:   result.DateRangeEnd,
 		Granularity:    result.Granularity,
-		Metric:         metric,
-		MetricLabel:    costExplorerMetricLabel(metric),
-		ChartType:      chartType,
+		Metric:         builder.Metric,
+		MetricLabel:    costExplorerMetricLabel(builder.Metric),
+		ChartType:      builder.ChartType,
+		CSVPath:        costExplorerResultsCSVPath(builder),
 		StateCards: []costExplorerStateCardView{
 			{Label: "Rows", Value: fmt.Sprintf("%d", len(result.Rows))},
 			{Label: "Line Items", Value: fmt.Sprintf("%d", result.TotalLineItemCount)},
@@ -639,13 +894,13 @@ func costExplorerResultViewFromResult(result persistence.CostExplorerQueryResult
 		},
 	}
 	for _, row := range result.Rows {
-		view.Rows = append(view.Rows, costExplorerResultRowViewFromRow(row, metric))
+		view.Rows = append(view.Rows, costExplorerResultRowViewFromRow(row, builder))
 	}
-	view.Chart = costExplorerChartViewFromResult(result, metric, chartType)
+	view.Chart = costExplorerChartViewFromResult(result, builder.Metric, builder.ChartType)
 	return view
 }
 
-func costExplorerResultRowViewFromRow(row persistence.CostExplorerQueryRow, metric string) costExplorerResultRowView {
+func costExplorerResultRowViewFromRow(row persistence.CostExplorerQueryRow, builder costExplorerBuilderView) costExplorerResultRowView {
 	groups := make([]string, 0, len(row.GroupValues))
 	for _, group := range row.GroupValues {
 		groups = append(groups, costExplorerGroupLabel(group))
@@ -659,15 +914,145 @@ func costExplorerResultRowViewFromRow(row persistence.CostExplorerQueryRow, metr
 		group2 = groups[1]
 	}
 	return costExplorerResultRowView{
-		PeriodStart:  row.TimePeriodStart,
-		PeriodEnd:    row.TimePeriodEnd,
-		Group1:       group1,
-		Group2:       group2,
-		MetricValue:  costExplorerMetricValue(metric, row),
-		Usage:        formatQuantityMicros(row.UsageQuantityMicros),
-		Cost:         formatUSDMicros(row.UnblendedCostMicros),
-		LineItems:    row.LineItemCount,
-		CurrencyCode: row.CurrencyCode,
+		PeriodStart:   row.TimePeriodStart,
+		PeriodEnd:     row.TimePeriodEnd,
+		Group1:        group1,
+		Group2:        group2,
+		DrilldownPath: costExplorerDrilldownPath(builder, row),
+		MetricValue:   costExplorerMetricValue(builder.Metric, row),
+		Usage:         formatQuantityMicros(row.UsageQuantityMicros),
+		Cost:          formatUSDMicros(row.UnblendedCostMicros),
+		LineItems:     row.LineItemCount,
+		CurrencyCode:  row.CurrencyCode,
+	}
+}
+
+func costExplorerResultsCSVBytes(result persistence.CostExplorerQueryResult, builder costExplorerBuilderView) ([]byte, error) {
+	var body bytes.Buffer
+	writer := csv.NewWriter(&body)
+	if err := writer.Write(costExplorerResultsCSVHeader()); err != nil {
+		return nil, err
+	}
+	for _, row := range result.Rows {
+		if err := writer.Write(costExplorerResultsCSVRecord(result, builder, row)); err != nil {
+			return nil, err
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return nil, err
+	}
+	return body.Bytes(), nil
+}
+
+func costExplorerResultsCSVHeader() []string {
+	return []string{
+		"date_range_start",
+		"date_range_end",
+		"granularity",
+		"metric",
+		"period_start",
+		"period_end",
+		"group_1_type",
+		"group_1_key",
+		"group_1_value",
+		"group_2_type",
+		"group_2_key",
+		"group_2_value",
+		"metric_value",
+		"usage_quantity",
+		"unblended_cost",
+		"line_item_count",
+		"currency_code",
+	}
+}
+
+func costExplorerResultsCSVRecord(result persistence.CostExplorerQueryResult, builder costExplorerBuilderView, row persistence.CostExplorerQueryRow) []string {
+	group1 := costExplorerCSVGroup(row, 0)
+	group2 := costExplorerCSVGroup(row, 1)
+	return []string{
+		result.DateRangeStart,
+		result.DateRangeEnd,
+		result.Granularity,
+		builder.Metric,
+		row.TimePeriodStart,
+		row.TimePeriodEnd,
+		group1.Type,
+		group1.Key,
+		group1.Value,
+		group2.Type,
+		group2.Key,
+		group2.Value,
+		costExplorerMetricCSVValue(builder.Metric, row),
+		formatMicrosDecimal(row.UsageQuantityMicros),
+		formatMicrosDecimal(row.UnblendedCostMicros),
+		fmt.Sprintf("%d", row.LineItemCount),
+		row.CurrencyCode,
+	}
+}
+
+func costExplorerCSVGroup(row persistence.CostExplorerQueryRow, index int) persistence.CostExplorerGroupValue {
+	if index >= 0 && index < len(row.GroupValues) {
+		return row.GroupValues[index]
+	}
+	return persistence.CostExplorerGroupValue{}
+}
+
+func costExplorerMetricCSVValue(metric string, row persistence.CostExplorerQueryRow) string {
+	switch metric {
+	case "usage_quantity":
+		return formatMicrosDecimal(row.UsageQuantityMicros)
+	default:
+		return formatMicrosDecimal(row.UnblendedCostMicros)
+	}
+}
+
+func costExplorerResultsCSVFilename(builder costExplorerBuilderView) string {
+	name := strings.TrimSpace(builder.ReportName)
+	if name == "" {
+		name = "cost-explorer-report"
+	}
+	var safe strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			safe.WriteRune(r)
+		} else {
+			safe.WriteByte('-')
+		}
+	}
+	filename := strings.Trim(safe.String(), "-")
+	if filename == "" {
+		filename = "cost-explorer-report"
+	}
+	return filename + ".csv"
+}
+
+func costExplorerLineItemViewFromItem(item persistence.BillLineItem) costExplorerLineItemView {
+	resource := strings.TrimSpace(item.ResourceID)
+	if resource == "" {
+		resource = "Period level"
+	}
+	return costExplorerLineItemView{
+		ID:             item.ID,
+		Resource:       resource,
+		ResourceID:     item.ResourceID,
+		Period:         item.BillingPeriodStart + " to " + item.BillingPeriodEnd,
+		Status:         item.LineItemStatus,
+		PayerAccountID: item.PayerAccountID,
+		UsageAccountID: item.UsageAccountID,
+		Service:        item.ServiceName,
+		ServiceCode:    item.ServiceCode,
+		LineItemType:   item.LineItemType,
+		RegionCode:     item.RegionCode,
+		UsageType:      item.UsageType,
+		Operation:      item.Operation,
+		Window:         item.UsageStartTime + " to " + item.UsageEndTime,
+		Quantity:       formatQuantityMicros(item.PricingQuantityMicros) + " " + item.PricingUnit,
+		Rate:           formatUSDMicros(item.UnblendedRateMicros) + "/" + item.PricingUnit,
+		Cost:           formatUSDMicros(item.UnblendedCostMicros),
+		CurrencyCode:   item.CurrencyCode,
+		Description:    item.Description,
+		Tags:           keyValueViews(item.TagSnapshot),
 	}
 }
 
@@ -1193,8 +1578,14 @@ func costExplorerBaseGroupKeyOptions() []string {
 
 func costExplorerTables() costExplorerTablesView {
 	return costExplorerTablesView{
-		Results:      uiTable(uiTableHeaders("Period Start", "Period End", "Group 1", "Group 2", "Metric", "Usage", "Cost", "Items", "Currency"), "No report rows"),
+		Results:      uiTable(uiTableHeaders("Period Start", "Period End", "Group 1", "Group 2", "Metric", "Usage", "Cost", "Items", "Currency", "Drilldown"), "No report rows"),
 		SavedReports: uiTable(uiTableHeaders("Report", "Owner", "Range", "Granularity", "Metric", "Chart", "Last Run", "Action"), "No saved reports"),
+	}
+}
+
+func costExplorerLineItemsTables() costExplorerLineItemsTablesView {
+	return costExplorerLineItemsTablesView{
+		LineItems: uiTable(uiTableHeaders("Line Item", "Resource", "Period", "Accounts", "Service", "Usage", "Window", "Quantity", "Rate", "Cost", "Tags"), "No source bill line items"),
 	}
 }
 
@@ -1373,6 +1764,7 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 				<div class="section-heading">
 					<h2>Report Results</h2>
 					<span>{{.Result.MetricLabel}} / {{.Result.Granularity}} / {{.Result.ChartType}}</span>
+					{{if .Result.CSVPath}}<a class="button-link secondary" href="{{.Result.CSVPath}}">CSV</a>{{end}}
 				</div>
 				{{if .Result.Chart.HasChart}}
 					<div class="report-chart-panel" aria-label="Report chart">
@@ -1430,6 +1822,7 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 									<td>{{.Cost}}</td>
 									<td>{{.LineItems}}</td>
 									<td>{{.CurrencyCode}}</td>
+									<td><a class="button-link secondary" href="{{.DrilldownPath}}">Line Items</a></td>
 								</tr>
 							{{else}}
 								{{template "ui.dense-table-empty-row" $.Tables.Results}}
@@ -1467,5 +1860,79 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 				</div>
 			</section>
 		{{end}}
+{{end}}
+`)
+
+var costExplorerLineItemsPageTemplate = newPageTemplate("cost-explorer-line-items-page", `<div class="page-heading">
+			<div>
+				<h1>Cost Explorer Bill Line Items</h1>
+			</div>
+			<div class="page-actions">
+				<a class="button-link secondary" href="{{.BackPath}}">Report</a>
+				{{if .CSVPath}}<a class="button-link secondary" href="{{.CSVPath}}">CSV</a>{{end}}
+			</div>
+		</div>
+
+		{{template "ui.notices" .Notices}}
+
+		{{if not .WorkspaceReady}}
+			{{template "ui.empty-state" .WorkspaceEmptyState}}
+		{{else}}
+			<section class="report-toolbar">
+				<div>
+					<strong>{{.Period}}</strong>
+					{{range .Groups}}<small>{{.}}</small>{{end}}
+				</div>
+			</section>
+
+			<section class="state-grid" aria-label="Cost Explorer bill line item totals">
+				{{range .StateCards}}
+					<div class="state-card">
+						<span>{{.Label}}</span>
+						<strong>{{.Value}}</strong>
+					</div>
+				{{end}}
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Source Line Items</h2>
+					<span>{{len .LineItems}} items</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.LineItems}}
+						<tbody>
+							{{range .LineItems}}
+								<tr>
+									<td><strong>{{.ID}}</strong><small>{{.LineItemType}} {{.Status}}</small></td>
+									<td><strong>{{.Resource}}</strong>{{if .ResourceID}}<small>{{.ResourceID}}</small>{{end}}</td>
+									<td>{{.Period}}</td>
+									<td><strong>{{.PayerAccountID}}</strong><small>{{.UsageAccountID}}</small></td>
+									<td><strong>{{.Service}}</strong><small>{{.ServiceCode}} {{.RegionCode}}</small></td>
+									<td><code>{{.UsageType}}</code><small>{{.Operation}}</small><small>{{.Description}}</small></td>
+									<td>{{.Window}}</td>
+									<td>{{.Quantity}}</td>
+									<td>{{.Rate}}</td>
+									<td><strong>{{.Cost}}</strong><small>{{.CurrencyCode}}</small></td>
+									<td>{{template "cost-explorer.tags" .Tags}}</td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.LineItems}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+		{{end}}
+
+{{define "cost-explorer.tags"}}
+	{{if .}}
+		<div class="tags">
+			{{range .}}<span>{{.Key}}={{.Value}}</span>{{end}}
+		</div>
+	{{else}}
+		<span class="muted">untagged</span>
+	{{end}}
 {{end}}
 `)

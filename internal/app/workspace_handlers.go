@@ -172,6 +172,12 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/cost-explorer", func(w http.ResponseWriter, r *http.Request) {
 		newCostExplorerHandler(workspace.DB()).handleCostExplorer(w, r)
 	})
+	mux.HandleFunc("/cost-explorer/results.csv", func(w http.ResponseWriter, r *http.Request) {
+		newCostExplorerHandler(workspace.DB()).handleCostExplorerResultsCSV(w, r)
+	})
+	mux.HandleFunc("/cost-explorer/line-items", func(w http.ResponseWriter, r *http.Request) {
+		newCostExplorerHandler(workspace.DB()).handleCostExplorerLineItems(w, r)
+	})
 	mux.HandleFunc("/cost-explorer/reports/save", func(w http.ResponseWriter, r *http.Request) {
 		newCostExplorerHandler(workspace.DB()).handleSaveCostExplorerReport(w, r)
 	})

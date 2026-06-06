@@ -128,6 +128,111 @@ func TestCostExplorerRepositoryFiltersAndGroupsBillLineItems(t *testing.T) {
 	}
 }
 
+func TestCostExplorerRepositoryListsAggregateSourceLineItems(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cost-explorer-drilldown-storefront",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Cost Explorer drilldown storefront",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app": "storefront",
+			},
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cost-explorer-drilldown-storefront",
+			ResourceID:          "resource-cost-explorer-drilldown-storefront",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cost-explorer-drilldown-untagged",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Cost Explorer drilldown untagged",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"owner": "platform",
+			},
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cost-explorer-drilldown-untagged",
+			ResourceID:          "resource-cost-explorer-drilldown-untagged",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T03:00:00Z",
+			UsageEndTime:        "2026-02-01T04:00:00Z",
+			UsageQuantityMicros: 1_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+
+	request := CostExplorerQueryRequest{
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "monthly",
+		Groupings: []CostExplorerGrouping{
+			{Type: "tag", Key: "app"},
+		},
+	}
+	repo := NewCostExplorerRepository(db)
+	result, err := repo.Query(ctx, request)
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	var untaggedRow CostExplorerQueryRow
+	for _, row := range result.Rows {
+		if len(row.GroupValues) == 1 && row.GroupValues[0].Value == costExplorerMissingGroupValue {
+			untaggedRow = row
+			break
+		}
+	}
+	if untaggedRow.TimePeriodStart == "" {
+		t.Fatalf("query rows = %+v, want missing-tag aggregate row", result.Rows)
+	}
+	items, err := repo.ListLineItems(ctx, CostExplorerLineItemRequest{
+		Query:           request,
+		TimePeriodStart: untaggedRow.TimePeriodStart,
+		TimePeriodEnd:   untaggedRow.TimePeriodEnd,
+		GroupValues:     untaggedRow.GroupValues,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItems(missing tag row) error = %v", err)
+	}
+	if len(items) != 1 ||
+		items[0].UsageEventID != "usage-cost-explorer-drilldown-untagged" ||
+		items[0].ResourceID != "resource-cost-explorer-drilldown-untagged" ||
+		items[0].UnblendedCostMicros != 41_600 {
+		t.Fatalf("missing-tag drilldown items = %+v, want the untagged EC2 line item", items)
+	}
+
+	_, err = repo.ListLineItems(ctx, CostExplorerLineItemRequest{
+		Query:           request,
+		TimePeriodStart: untaggedRow.TimePeriodStart,
+		TimePeriodEnd:   untaggedRow.TimePeriodEnd,
+	})
+	if err == nil || !strings.Contains(err.Error(), "group count") {
+		t.Fatalf("ListLineItems(missing group values) error = %v, want group count validation", err)
+	}
+}
+
 func TestCostExplorerRepositoryFiltersAndGroupsCostCategoryAssignments(t *testing.T) {
 	t.Parallel()
 

@@ -1434,9 +1434,64 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 		"tag:app=storefront",
 		"$0.0832",
 		"Unblended Cost",
+		"/cost-explorer/results.csv?",
+		"/cost-explorer/line-items?",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /cost-explorer filtered report missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + "/cost-explorer/results.csv?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer/results.csv error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer/results.csv status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+		t.Fatalf("GET /cost-explorer/results.csv content type = %q, want text/csv", contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, "cost-explorer-report.csv") {
+		t.Fatalf("GET /cost-explorer/results.csv content disposition = %q, want report filename", disposition)
+	}
+	for _, want := range []string{
+		"date_range_start,date_range_end,granularity,metric,period_start",
+		"2026-02-01,2026-03-01,daily,unblended_cost,2026-02-01,2026-02-02,dimension,service,AmazonEC2,tag,app,storefront,0.083200,2.000000,0.083200,1,USD",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer/results.csv body missing %q: %s", want, body)
+		}
+	}
+
+	drilldownQuery := url.Values{}
+	for key, values := range query {
+		drilldownQuery[key] = values
+	}
+	drilldownQuery.Set("period_start", "2026-02-01")
+	drilldownQuery.Set("period_end", "2026-02-02")
+	drilldownQuery.Set("group_1_value", "AmazonEC2")
+	drilldownQuery.Set("group_2_value", "storefront")
+	resp, err = client.Get(server.URL + "/cost-explorer/line-items?" + drilldownQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer/line-items error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer/line-items status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Cost Explorer Bill Line Items",
+		"Source Line Items",
+		"resource-cost-category-web",
+		"Amazon EC2",
+		"instance-hours:t3.medium",
+		"$0.0832",
+		"tag:app=storefront",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer/line-items body missing %q: %s", want, body)
 		}
 	}
 

@@ -2465,6 +2465,310 @@ func TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace(t *testing.T) 
 	}
 }
 
+// TestCostExplorerQueryEngineFeatureWorksInFreshWorkspace keeps bd-1of.1 guarded through the browser-facing billing setup and repository query surfaces.
+func TestCostExplorerQueryEngineFeatureWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "cost-explorer-query-feature-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: time.Second}
+
+	createResource := func(name, accountID, appValue string) string {
+		t.Helper()
+
+		resp, err := client.PostForm(server.URL()+"/resources/create", url.Values{
+			"account_id":     {accountID},
+			"region_code":    {"us-east-1"},
+			"service_preset": {"ec2_t3_medium"},
+			"size":           {"t3.medium"},
+			"resource_name":  {name},
+			"status":         {"active"},
+			"started_at":     {"2026-02-01T00:00"},
+			"tags":           {"app=" + appValue + "\nowner=retail-finops"},
+		})
+		if err != nil {
+			t.Fatalf("POST /resources/create %s error = %v", name, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /resources/create %s final status = %d, want %d; body=%s", name, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, name) || !strings.Contains(body, "app="+appValue) {
+			t.Fatalf("resource create response for %s missing resource/tag: %s", name, body)
+		}
+		return readOnlyResourceIDByName(t, db, name)
+	}
+
+	generateUsage := func(resourceID, days string) {
+		t.Helper()
+
+		resp, err := client.PostForm(server.URL()+"/resources/generate", url.Values{
+			"resource_id":           {resourceID},
+			"generation_pattern":    {string(persistence.UsageGenerationDailyInstanceHours)},
+			"generation_start_date": {"2026-02-01"},
+			"generation_days":       {days},
+		})
+		if err != nil {
+			t.Fatalf("POST /resources/generate %s error = %v", resourceID, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /resources/generate %s final status = %d, want %d; body=%s", resourceID, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "Generated "+days+" usage events") ||
+			!strings.Contains(body, "instance-hours:t3.medium") ||
+			!strings.Contains(body, "app=") {
+			t.Fatalf("generator response for %s missing usage/tag snapshot: %s", resourceID, body)
+		}
+	}
+
+	storefrontResourceID := createResource("Feature explorer storefront web", "111122223333", "storefront")
+	paymentsResourceID := createResource("Feature explorer payments web", "444455556666", "payments")
+	generateUsage(storefrontResourceID, "2")
+	generateUsage(paymentsResourceID, "1")
+
+	body := postClockAdvance(t, &client, server.URL(), "2", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-03T00:00:00Z") ||
+		!strings.Contains(body, "daily metering created 3 metering records and 4 bill line items") ||
+		!strings.Contains(body, "AWSSupport") {
+		t.Fatalf("clock advance response missing Cost Explorer feature line items: %s", body)
+	}
+
+	resp, err := client.PostForm(server.URL()+"/cost-categories/categories/create", url.Values{
+		"name":          {"Product"},
+		"default_value": {"Unmapped"},
+		"description":   {"Cost Explorer query feature product grouping"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product category error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product category final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	productID := readCostCategoryID(t, db, "Product")
+
+	for _, form := range []url.Values{
+		{
+			"category_id": {productID},
+			"rule_order":  {"10"},
+			"value":       {"Storefront"},
+			"dimension":   {persistence.CostCategoryRuleMatchTag},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"storefront"},
+			"tag_key":     {"app"},
+			"description": {"Storefront application tag"},
+		},
+		{
+			"category_id": {productID},
+			"rule_order":  {"20"},
+			"value":       {"Payments"},
+			"dimension":   {persistence.CostCategoryRuleMatchTag},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"payments"},
+			"tag_key":     {"app"},
+			"description": {"Payments application tag"},
+		},
+		{
+			"category_id": {productID},
+			"rule_order":  {"30"},
+			"value":       {"Shared Platform"},
+			"dimension":   {persistence.CostCategoryRuleMatchService},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"AWSSupport"},
+			"description": {"Support is a shared platform category"},
+		},
+	} {
+		resp, err = client.PostForm(server.URL()+"/cost-categories/rules/create", form)
+		if err != nil {
+			t.Fatalf("POST create Product rule %s error = %v", form.Get("value"), err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST create Product rule %s final status = %d, want %d; body=%s", form.Get("value"), resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "Created rule") || !strings.Contains(body, form.Get("value")) {
+			t.Fatalf("POST create Product rule %s body missing confirmation: %s", form.Get("value"), body)
+		}
+	}
+
+	costExplorerRepo := persistence.NewCostExplorerRepository(db)
+	reportRequest := persistence.CostExplorerQueryRequest{
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "daily",
+		Filters: map[string][]string{
+			"service": {"Amazon EC2"},
+			"tag:app": {"storefront"},
+		},
+		Groupings: []persistence.CostExplorerGrouping{
+			{Type: "dimension", Key: "service"},
+			{Type: "tag", Key: "app"},
+		},
+	}
+	result, err := costExplorerRepo.Query(ctx, reportRequest)
+	if err != nil {
+		t.Fatalf("Query(storefront saved report request) error = %v", err)
+	}
+	if result.TotalLineItemCount != 2 ||
+		result.TotalUsageQuantityMicros != 48_000_000 ||
+		result.TotalUnblendedCostMicros != 1_996_800 ||
+		len(result.Rows) != 2 {
+		t.Fatalf("storefront query result = %+v, want two daily EC2 storefront rows totaling 1996800 micros", result)
+	}
+	for i, row := range result.Rows {
+		wantDate := "2026-02-01"
+		if i == 1 {
+			wantDate = "2026-02-02"
+		}
+		if row.TimePeriodStart != wantDate ||
+			row.UsageQuantityMicros != 24_000_000 ||
+			row.UnblendedCostMicros != 998_400 ||
+			row.LineItemCount != 1 ||
+			len(row.GroupValues) != 2 ||
+			row.GroupValues[0] != (persistence.CostExplorerGroupValue{Type: "dimension", Key: "service", Value: "AmazonEC2"}) ||
+			row.GroupValues[1] != (persistence.CostExplorerGroupValue{Type: "tag", Key: "app", Value: "storefront"}) {
+			t.Fatalf("storefront query row %d = %+v, want one daily EC2 storefront row", i, row)
+		}
+	}
+
+	categoryResult, err := costExplorerRepo.Query(ctx, persistence.CostExplorerQueryRequest{
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "monthly",
+		Filters: map[string][]string{
+			"cost_category:Product": {"Storefront"},
+		},
+		Groupings: []persistence.CostExplorerGrouping{
+			{Type: "cost_category", Key: "Product"},
+			{Type: "dimension", Key: "linked_account"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Query(Product cost category) error = %v", err)
+	}
+	if categoryResult.TotalLineItemCount != 2 ||
+		categoryResult.TotalUnblendedCostMicros != 1_996_800 ||
+		len(categoryResult.Rows) != 1 {
+		t.Fatalf("Product category query result = %+v, want Storefront EC2 rollup", categoryResult)
+	}
+	categoryRow := categoryResult.Rows[0]
+	if categoryRow.TimePeriodStart != "2026-02-01" ||
+		len(categoryRow.GroupValues) != 2 ||
+		categoryRow.GroupValues[0] != (persistence.CostExplorerGroupValue{Type: "cost_category", Key: "Product", Value: "Storefront"}) ||
+		categoryRow.GroupValues[1] != (persistence.CostExplorerGroupValue{Type: "dimension", Key: "linked_account", Value: "111122223333"}) {
+		t.Fatalf("Product category query row = %+v, want Storefront linked-account grouping", categoryRow)
+	}
+
+	var monthlyLineItems int
+	var monthlyUsageMicros, monthlyCostMicros int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT line_item_count, usage_quantity_micros, unblended_cost_micros
+		FROM monthly_account_service_summary
+		WHERE billing_period_start = '2026-02-01'
+		  AND billing_period_end = '2026-03-01'
+		  AND usage_account_id = '111122223333'
+		  AND service_code = 'AmazonEC2'
+		  AND line_item_status = 'estimated'
+	`).Scan(&monthlyLineItems, &monthlyUsageMicros, &monthlyCostMicros); err != nil {
+		t.Fatalf("read Cost Explorer monthly account service summary: %v", err)
+	}
+	if monthlyLineItems != 2 || monthlyUsageMicros != 48_000_000 || monthlyCostMicros != 1_996_800 {
+		t.Fatalf("monthly summary = lines %d usage %d cost %d, want storefront EC2 totals", monthlyLineItems, monthlyUsageMicros, monthlyCostMicros)
+	}
+
+	var categoryLineItems int
+	var categoryCostMicros int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT line_item_count, unblended_cost_micros
+		FROM cost_category_summary
+		WHERE billing_period_start = '2026-02-01'
+		  AND billing_period_end = '2026-03-01'
+		  AND cost_category_id = ?
+		  AND assigned_value = 'Storefront'
+	`, productID).Scan(&categoryLineItems, &categoryCostMicros); err != nil {
+		t.Fatalf("read Cost Explorer cost category summary: %v", err)
+	}
+	if categoryLineItems != 2 || categoryCostMicros != 1_996_800 {
+		t.Fatalf("cost category summary = lines %d cost %d, want Storefront summary totals", categoryLineItems, categoryCostMicros)
+	}
+
+	savedReportRepo := persistence.NewSavedReportRepository(db)
+	savedReport, err := savedReportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-cost-explorer-feature",
+		Name:           "Daily storefront EC2 cost",
+		Description:    "bd-1of.1 feature smoke report",
+		OwnerAccountID: "999988887777",
+		OwnerRole:      "management-account",
+		DateRangeStart: reportRequest.DateRangeStart,
+		DateRangeEnd:   reportRequest.DateRangeEnd,
+		Granularity:    reportRequest.Granularity,
+		Filters:        reportRequest.Filters,
+		Groupings:      reportRequest.Groupings,
+		Metrics:        []string{"unblended_cost", "usage_quantity"},
+		ChartType:      "line",
+	})
+	if err != nil {
+		t.Fatalf("Create(saved report) error = %v", err)
+	}
+	savedResult, err := costExplorerRepo.Query(ctx, persistence.CostExplorerQueryRequest{
+		DateRangeStart: savedReport.DateRangeStart,
+		DateRangeEnd:   savedReport.DateRangeEnd,
+		Granularity:    savedReport.Granularity,
+		Filters:        savedReport.Filters,
+		Groupings:      savedReport.Groupings,
+	})
+	if err != nil {
+		t.Fatalf("Query(saved report definition) error = %v", err)
+	}
+	if savedResult.TotalUnblendedCostMicros != result.TotalUnblendedCostMicros ||
+		savedResult.TotalLineItemCount != result.TotalLineItemCount {
+		t.Fatalf("saved report query = %+v, want same totals as direct query %+v", savedResult, result)
+	}
+
+	ranReport, err := savedReportRepo.RecordLastRun(ctx, persistence.SavedReportRunUpdate{
+		ID:                       savedReport.ID,
+		RunAt:                    "2026-02-03T00:00:00Z",
+		Status:                   "succeeded",
+		RowCount:                 len(savedResult.Rows),
+		TotalUnblendedCostMicros: savedResult.TotalUnblendedCostMicros,
+	})
+	if err != nil {
+		t.Fatalf("RecordLastRun(saved report) error = %v", err)
+	}
+	if ranReport.LastRunStatus != "succeeded" ||
+		ranReport.LastRunRowCount != 2 ||
+		ranReport.LastRunTotalUnblendedCostMicros != 1_996_800 ||
+		ranReport.LastRunAt != "2026-02-03T00:00:00Z" {
+		t.Fatalf("saved report last-run metadata = %+v, want successful query metadata", ranReport)
+	}
+}
+
 func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	t.Parallel()
 

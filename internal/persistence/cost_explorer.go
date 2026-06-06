@@ -21,6 +21,7 @@ type CostExplorerQueryRequest struct {
 	Granularity    string
 	Filters        map[string][]string
 	Groupings      []CostExplorerGrouping
+	Visibility     BillingVisibilityFilter
 }
 
 // CostExplorerGrouping describes one dimension, tag, or Cost Category grouping.
@@ -169,6 +170,7 @@ func normalizeCostExplorerQueryRequest(request CostExplorerQueryRequest) CostExp
 	}
 	request.Filters = normalizeSavedReportFilters(request.Filters)
 	request.Groupings = normalizeSavedReportGroupings(request.Groupings)
+	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	return request
 }
 
@@ -371,6 +373,9 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 		"bli.usage_start_time < ?",
 	}
 	whereArgs := []any{query.startUTC, query.endUTC}
+	visibilityClauses, visibilityArgs := billLineItemVisibilityClauses("bli", query.request.Visibility)
+	whereClauses = append(whereClauses, visibilityClauses...)
+	whereArgs = append(whereArgs, visibilityArgs...)
 	for _, filter := range query.filters {
 		condition, args, err := costExplorerFilterCondition(filter)
 		if err != nil {
@@ -450,6 +455,9 @@ func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExp
 		"bli.usage_start_time < ?",
 	}
 	whereArgs := []any{query.startUTC, query.endUTC, startUTC, endUTC}
+	visibilityClauses, visibilityArgs := billLineItemVisibilityClauses("bli", query.request.Visibility)
+	whereClauses = append(whereClauses, visibilityClauses...)
+	whereArgs = append(whereArgs, visibilityArgs...)
 	for _, filter := range query.filters {
 		condition, args, err := costExplorerFilterCondition(filter)
 		if err != nil {

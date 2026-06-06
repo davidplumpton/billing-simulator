@@ -2019,6 +2019,137 @@ func TestCostExplorerSavedReportsAreScopedByOwnerContext(t *testing.T) {
 	}
 }
 
+func TestCostExplorerQueriesAreScopedByOwnerPolicy(t *testing.T) {
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedFilterableUsage(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	memberQuery := url.Values{
+		"owner_account_id": {"111122223333"},
+		"owner_role":       {"member-account"},
+		"date_range_start": {"2026-02-01"},
+		"date_range_end":   {"2026-03-01"},
+		"granularity":      {"monthly"},
+		"metric":           {"unblended_cost"},
+		"chart_type":       {"table"},
+		"group_1_type":     {"dimension"},
+		"group_1_key":      {"linked_account"},
+		"run":              {"1"},
+	}
+	resp, err := client.Get(server.URL + "/cost-explorer?" + memberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer member owner error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer member owner status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`name="owner_account_id" value="111122223333"`,
+		`<option value="member-account" selected>Member</option>`,
+		"Linked Account=111122223333",
+		"$0.0416",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer member owner body missing %q: %s", want, body)
+		}
+	}
+	for _, leaked := range []string{
+		"Linked Account=222233334444",
+		"$0.0491",
+	} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("GET /cost-explorer member owner leaked %q: %s", leaked, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + "/cost-explorer/results.csv?" + memberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer/results.csv member owner error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer/results.csv member owner status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"date_range_start,date_range_end,granularity,metric,period_start",
+		"2026-02-01,2026-03-01,monthly,unblended_cost,2026-02-01,2026-03-01,dimension,linked_account,111122223333",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer/results.csv member owner body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "222233334444") {
+		t.Fatalf("GET /cost-explorer/results.csv member owner leaked other account: %s", body)
+	}
+
+	drilldownQuery := url.Values{}
+	for key, values := range memberQuery {
+		drilldownQuery[key] = values
+	}
+	drilldownQuery.Set("period_start", "2026-02-01")
+	drilldownQuery.Set("period_end", "2026-03-01")
+	drilldownQuery.Set("group_1_value", "222233334444")
+	resp, err = client.Get(server.URL + "/cost-explorer/line-items?" + drilldownQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer/line-items member owner cross-account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer/line-items member owner cross-account status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if strings.Contains(body, "Filter bucket") || strings.Contains(body, "resource-filter-s3") || strings.Contains(body, "Amazon S3") {
+		t.Fatalf("GET /cost-explorer/line-items member owner leaked cross-account line item: %s", body)
+	}
+
+	reportRepo := persistence.NewSavedReportRepository(db)
+	report, err := reportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-member-policy-scope",
+		Name:           "Member policy scope",
+		OwnerAccountID: "111122223333",
+		OwnerRole:      "member-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Groupings:      []persistence.SavedReportGrouping{{Type: "dimension", Key: "linked_account"}},
+	})
+	if err != nil {
+		t.Fatalf("Create(member policy scoped report) error = %v", err)
+	}
+	resp, err = client.PostForm(server.URL+"/cost-explorer/reports/run", url.Values{
+		"saved_report_id":  {report.ID},
+		"owner_account_id": {"111122223333"},
+		"owner_role":       {"member-account"},
+	})
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/run member owner error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /cost-explorer/reports/run member owner status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	reloadedReport, err := reportRepo.Get(ctx, report.ID)
+	if err != nil {
+		t.Fatalf("Get(member policy scoped report after run) error = %v", err)
+	}
+	if reloadedReport.LastRunStatus != "succeeded" ||
+		reloadedReport.LastRunRowCount != 1 ||
+		reloadedReport.LastRunTotalUnblendedCostMicros != 41_600 {
+		t.Fatalf("member report run metadata = %+v, want one scoped row totaling EC2 spend", reloadedReport)
+	}
+}
+
 func TestBudgetsUIRequiresWorkspace(t *testing.T) {
 	t.Parallel()
 

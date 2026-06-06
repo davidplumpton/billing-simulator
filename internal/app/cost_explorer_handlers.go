@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"aws-billing-simulator/internal/billingvisibility"
 	"aws-billing-simulator/internal/persistence"
 )
 
@@ -511,7 +512,7 @@ func (h costExplorerHandler) loadCostExplorerLineItemsPageData(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	queryRequest, err := costExplorerQueryRequestFromBuilder(builder)
+	queryRequest, err := h.scopedCostExplorerQueryRequest(ctx, builder)
 	if err != nil {
 		return err
 	}
@@ -635,6 +636,13 @@ func (h costExplorerHandler) defaultBuilder(ctx context.Context) (costExplorerBu
 	}
 	builder.DateRangeStart = clock.BillingPeriodStart
 	builder.DateRangeEnd = clock.BillingPeriodEnd
+	defaultPayerAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return costExplorerBuilderView{}, err
+	}
+	if defaultPayerAccountID != "" {
+		builder.OwnerAccountID = defaultPayerAccountID
+	}
 	return builder, nil
 }
 
@@ -692,11 +700,59 @@ func (h costExplorerHandler) costCategoryGroupKeys(ctx context.Context) ([]strin
 
 // queryFromBuilder converts the form model to the repository query request.
 func (h costExplorerHandler) queryFromBuilder(ctx context.Context, builder costExplorerBuilderView) (persistence.CostExplorerQueryResult, error) {
-	request, err := costExplorerQueryRequestFromBuilder(builder)
+	request, err := h.scopedCostExplorerQueryRequest(ctx, builder)
 	if err != nil {
 		return persistence.CostExplorerQueryResult{}, err
 	}
 	return h.explorer.Query(ctx, request)
+}
+
+// scopedCostExplorerQueryRequest applies simulated billing visibility to every Cost Explorer read path.
+func (h costExplorerHandler) scopedCostExplorerQueryRequest(ctx context.Context, builder costExplorerBuilderView) (persistence.CostExplorerQueryRequest, error) {
+	request, err := costExplorerQueryRequestFromBuilder(builder)
+	if err != nil {
+		return persistence.CostExplorerQueryRequest{}, err
+	}
+	visibility, err := h.costExplorerVisibilityFilter(ctx, builder)
+	if err != nil {
+		return persistence.CostExplorerQueryRequest{}, err
+	}
+	request.Visibility = visibility
+	return request, nil
+}
+
+// costExplorerVisibilityFilter resolves the report owner controls into row-level billing constraints.
+func (h costExplorerHandler) costExplorerVisibilityFilter(ctx context.Context, builder costExplorerBuilderView) (persistence.BillingVisibilityFilter, error) {
+	role, err := billingvisibility.ParseRole(builder.OwnerRole)
+	if err != nil {
+		return persistence.BillingVisibilityFilter{}, err
+	}
+	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return persistence.BillingVisibilityFilter{}, err
+	}
+	accountID := strings.TrimSpace(builder.OwnerAccountID)
+	if (role == billingvisibility.RoleManagementAccount || role == billingvisibility.RoleFinance) && accountID == "" {
+		accountID = managementAccountID
+	}
+	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:                role,
+		AccountID:           accountID,
+		ManagementAccountID: managementAccountID,
+	})
+	if err != nil {
+		return persistence.BillingVisibilityFilter{}, err
+	}
+	if !policy.AllowsView(billingvisibility.ViewCostExplorer) {
+		return persistence.BillingVisibilityFilter{}, fmt.Errorf("billing role %q cannot view Cost Explorer", policy.Role)
+	}
+	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
+		return persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}, nil
+	}
+	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
+		return persistence.BillingVisibilityFilter{UsageAccountID: usageAccountID}, nil
+	}
+	return persistence.BillingVisibilityFilter{}, nil
 }
 
 func costExplorerQueryRequestFromBuilder(builder costExplorerBuilderView) (persistence.CostExplorerQueryRequest, error) {

@@ -137,6 +137,30 @@ func (h costAllocationTagsHandler) handleTags(w http.ResponseWriter, r *http.Req
 	h.renderTags(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
+// handleRefreshDiscovery rebuilds tag discovery after an explicit learner action.
+func (h costAllocationTagsHandler) handleRefreshDiscovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderTags(w, r, http.StatusServiceUnavailable, "Open a workspace before refreshing cost allocation tag discovery.", "")
+		return
+	}
+	clock, err := h.clock.Get(r.Context())
+	if err != nil {
+		h.renderTags(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	result, err := h.tags.RefreshDiscoveredTags(r.Context(), clock.CurrentTime)
+	if err != nil {
+		h.renderTags(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	flash := fmt.Sprintf("Refreshed tag discovery: %d keys and %d values discovered", result.DiscoveredKeyCount, result.InventoryValueCount)
+	http.Redirect(w, r, "/tags?flash="+urlQueryEscape(flash), http.StatusSeeOther)
+}
+
 // handleActivateTag marks a discovered resource tag key active for billing reports.
 func (h costAllocationTagsHandler) handleActivateTag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -212,7 +236,7 @@ func (h costAllocationTagsHandler) renderTags(w http.ResponseWriter, r *http.Req
 	}, tagManagerPageTemplate, data, "render tags page")
 }
 
-// loadTagsPageData refreshes derived tag discovery and prepares the manager view model.
+// loadTagsPageData reads persisted tag discovery and prepares the manager view model.
 func (h costAllocationTagsHandler) loadTagsPageData(ctx context.Context, data *tagsPageData) error {
 	clock, err := h.clock.Get(ctx)
 	if err != nil {
@@ -221,9 +245,6 @@ func (h costAllocationTagsHandler) loadTagsPageData(ctx context.Context, data *t
 	data.ClockCurrentTime = clock.CurrentTime
 	data.ClockBillingPeriod = fmt.Sprintf("%s to %s (%d days)", clock.BillingPeriodStart, clock.BillingPeriodEnd, clock.BillingPeriodDays)
 
-	if _, err := h.tags.RefreshDiscoveredTags(ctx, clock.CurrentTime); err != nil {
-		return err
-	}
 	keys, err := h.tags.ListDiscoveredKeys(ctx)
 	if err != nil {
 		return err
@@ -507,7 +528,9 @@ var tagManagerPageTemplate = newPageTemplate("tag-manager-page", `<div class="pa
 				</div>
 				<div class="page-actions">
 					<a class="button-link secondary" href="/resources">Resources</a>
-					<a class="button-link" href="/tags">Refresh Discovery</a>
+					<form class="page-action-form" method="post" action="/tags/refresh">
+						<button type="submit">Refresh Discovery</button>
+					</form>
 				</div>
 			</section>
 

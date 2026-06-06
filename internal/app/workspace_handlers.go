@@ -151,6 +151,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/tags", func(w http.ResponseWriter, r *http.Request) {
 		newCostAllocationTagsHandler(workspace.DB()).handleTags(w, r)
 	})
+	mux.HandleFunc("/tags/refresh", func(w http.ResponseWriter, r *http.Request) {
+		newCostAllocationTagsHandler(workspace.DB()).handleRefreshDiscovery(w, r)
+	})
 	mux.HandleFunc("/tags/activate", func(w http.ResponseWriter, r *http.Request) {
 		newCostAllocationTagsHandler(workspace.DB()).handleActivateTag(w, r)
 	})

@@ -149,6 +149,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/resources/month-close", resourceLab.handleRunMonthEndClose)
 	mux.HandleFunc("/clock/advance", resourceLab.handleAdvanceClock)
 	mux.HandleFunc("/tags", tags.handleTags)
+	mux.HandleFunc("/tags/refresh", tags.handleRefreshDiscovery)
 	mux.HandleFunc("/tags/activate", tags.handleActivateTag)
 	mux.HandleFunc("/tags/deactivate", tags.handleDeactivateTag)
 	mux.HandleFunc("/cost-categories", costCategories.handleCostCategories)

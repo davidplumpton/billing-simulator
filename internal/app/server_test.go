@@ -1528,6 +1528,18 @@ func TestCostAllocationTagsUIRequiresWorkspace(t *testing.T) {
 	if !strings.Contains(body, "Open a workspace before activating cost allocation tags.") {
 		t.Fatalf("POST /tags/activate without workspace missing workspace message: %s", body)
 	}
+
+	resp, err = client.PostForm(server.URL+"/tags/refresh", url.Values{})
+	if err != nil {
+		t.Fatalf("POST /tags/refresh without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /tags/refresh without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before refreshing cost allocation tag discovery.") {
+		t.Fatalf("POST /tags/refresh without workspace missing workspace message: %s", body)
+	}
 }
 
 func TestCostCategoriesUIRequiresWorkspace(t *testing.T) {
@@ -3527,6 +3539,146 @@ func TestSharedCostSplitChargesFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 }
 
+func TestCostAllocationTagsGetDoesNotRefreshDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-tags-persisted-app",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Persisted app tag",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		Tags: map[string]string{
+			"app": "storefront",
+		},
+	}); err != nil {
+		t.Fatalf("CreateResource(persisted app tag) error = %v", err)
+	}
+	if _, err := persistence.NewCostAllocationTagRepository(db).RefreshDiscoveredTags(ctx, "2026-02-01T00:00:00Z"); err != nil {
+		t.Fatalf("RefreshDiscoveredTags(initial) error = %v", err)
+	}
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-tags-undiscovered-review",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Undiscovered review tag",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		Tags: map[string]string{
+			"billingreview": "new-value",
+		},
+	}); err != nil {
+		t.Fatalf("CreateResource(undiscovered review tag) error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	for i := 0; i < 2; i++ {
+		resp, err := client.Get(server.URL + "/tags")
+		if err != nil {
+			t.Fatalf("GET /tags repeat %d error = %v", i+1, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /tags repeat %d status = %d, want %d; body=%s", i+1, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "app") || !strings.Contains(body, "storefront") {
+			t.Fatalf("GET /tags repeat %d missing persisted discovery: %s", i+1, body)
+		}
+		if strings.Contains(body, "billingreview") || strings.Contains(body, "new-value") {
+			t.Fatalf("GET /tags repeat %d discovered new resource tag without explicit refresh: %s", i+1, body)
+		}
+	}
+
+	keyCount, valueCount := readCostAllocationTagDiscoveryCounts(t, ctx, db)
+	if keyCount != 1 || valueCount != 1 {
+		t.Fatalf("cost allocation tag discovery counts = %d/%d, want persisted 1 key and 1 value after repeated GET", keyCount, valueCount)
+	}
+}
+
+func TestCostAllocationTagsRefreshActionDiscoversResourceTags(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if _, err := persistence.NewResourceUsageRepository(db).CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-tags-explicit-refresh",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Explicit refresh tag",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		Tags: map[string]string{
+			"refreshable": "explicit-action",
+		},
+	}); err != nil {
+		t.Fatalf("CreateResource(explicit refresh tag) error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags before explicit refresh error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags before explicit refresh status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if strings.Contains(body, "refreshable") || strings.Contains(body, "explicit-action") {
+		t.Fatalf("GET /tags before explicit refresh discovered resource tag: %s", body)
+	}
+
+	body = postTagDiscoveryRefresh(t, client, server.URL)
+	for _, want := range []string{
+		"Refreshed tag discovery: 1 keys and 1 values discovered",
+		"refreshable",
+		"explicit-action",
+		`action="/tags/refresh"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /tags/refresh body missing %q: %s", want, body)
+		}
+	}
+
+	keyCount, valueCount := readCostAllocationTagDiscoveryCounts(t, ctx, db)
+	if keyCount != 1 || valueCount != 1 {
+		t.Fatalf("cost allocation tag discovery counts = %d/%d, want 1 key and 1 value after explicit refresh", keyCount, valueCount)
+	}
+}
+
 // TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace keeps bd-2rx guarded across the combined attribution workflow.
 func TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace(t *testing.T) {
 	t.Parallel()
@@ -3619,15 +3771,9 @@ func TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace(t *testing.T) 
 		t.Fatalf("clock advance response missing epic line items: %s", body)
 	}
 
-	resp, err := client.Get(server.URL() + "/tags")
-	if err != nil {
-		t.Fatalf("GET /tags with epic spend error = %v", err)
-	}
-	body = readResponseBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /tags with epic spend status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
-	}
+	body = postTagDiscoveryRefresh(t, &client, server.URL())
 	for _, want := range []string{
+		"Refreshed tag discovery: 2 keys and 3 values discovered",
 		"Cost Allocation Tag Manager",
 		"Spend Coverage",
 		"Account Coverage",
@@ -3638,11 +3784,11 @@ func TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace(t *testing.T) 
 		"Not activated",
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("GET /tags with epic spend missing %q: %s", want, body)
+			t.Fatalf("POST /tags/refresh with epic spend missing %q: %s", want, body)
 		}
 	}
 
-	resp, err = client.PostForm(server.URL()+"/tags/activate", url.Values{"tag_key": {"product"}})
+	resp, err := client.PostForm(server.URL()+"/tags/activate", url.Values{"tag_key": {"product"}})
 	if err != nil {
 		t.Fatalf("POST /tags/activate product error = %v", err)
 	}
@@ -4251,15 +4397,9 @@ func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := server.Client()
 
-	resp, err := client.Get(server.URL + "/tags")
-	if err != nil {
-		t.Fatalf("GET /tags error = %v", err)
-	}
-	body := readResponseBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /tags status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
-	}
+	body := postTagDiscoveryRefresh(t, client, server.URL)
 	for _, want := range []string{
+		"Refreshed tag discovery: 3 keys and 3 values discovered",
 		"Cost Allocation Tag Manager",
 		"Spend Coverage",
 		"Account Coverage",
@@ -4275,14 +4415,15 @@ func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 		"$0.0907",
 		"$0.0075",
 		"Not activated",
+		`action="/tags/refresh"`,
 		`action="/tags/activate"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("GET /tags body missing %q: %s", want, body)
+			t.Fatalf("POST /tags/refresh body missing %q: %s", want, body)
 		}
 	}
 
-	resp, err = client.PostForm(server.URL+"/tags/activate", url.Values{"tag_key": {"app"}})
+	resp, err := client.PostForm(server.URL+"/tags/activate", url.Values{"tag_key": {"app"}})
 	if err != nil {
 		t.Fatalf("POST /tags/activate error = %v", err)
 	}
@@ -4403,6 +4544,7 @@ func TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace(t *testing.T) {
 		"Cost Allocation Tag Manager",
 		"Discovered Keys",
 		"No resource tag keys discovered",
+		`action="/tags/refresh"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /tags fresh workspace body missing %q: %s", want, body)
@@ -4457,15 +4599,9 @@ func TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("clock advance response missing priced tag workflow data: %s", body)
 	}
 
-	resp, err = client.Get(server.URL() + "/tags")
-	if err != nil {
-		t.Fatalf("GET /tags with billed spend error = %v", err)
-	}
-	body = readResponseBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /tags with billed spend status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
-	}
+	body = postTagDiscoveryRefresh(t, &client, server.URL())
 	for _, want := range []string{
+		"Refreshed tag discovery: 2 keys and 2 values discovered",
 		"Spend Coverage",
 		"Account Coverage",
 		"Service Coverage",
@@ -4478,7 +4614,7 @@ func TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace(t *testing.T) {
 		"Untagged Spend",
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("GET /tags with billed spend body missing %q: %s", want, body)
+			t.Fatalf("POST /tags/refresh with billed spend body missing %q: %s", want, body)
 		}
 	}
 
@@ -6023,6 +6159,36 @@ func postClockAdvance(t *testing.T, client *http.Client, serverURL, amount, unit
 		t.Fatalf("POST /clock/advance final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	return body
+}
+
+// postTagDiscoveryRefresh runs the explicit tag discovery action and returns the rendered manager page.
+func postTagDiscoveryRefresh(t *testing.T, client *http.Client, serverURL string) string {
+	t.Helper()
+
+	resp, err := client.PostForm(serverURL+"/tags/refresh", url.Values{})
+	if err != nil {
+		t.Fatalf("POST /tags/refresh error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /tags/refresh final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	return body
+}
+
+// readCostAllocationTagDiscoveryCounts reports persisted discovery rows without triggering refresh logic.
+func readCostAllocationTagDiscoveryCounts(t *testing.T, ctx context.Context, db *sql.DB) (int, int) {
+	t.Helper()
+
+	var keyCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cost_allocation_tag_keys`).Scan(&keyCount); err != nil {
+		t.Fatalf("count cost_allocation_tag_keys: %v", err)
+	}
+	var valueCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cost_allocation_tag_inventory`).Scan(&valueCount); err != nil {
+		t.Fatalf("count cost_allocation_tag_inventory: %v", err)
+	}
+	return keyCount, valueCount
 }
 
 func readResponseBody(t *testing.T, resp *http.Response) string {

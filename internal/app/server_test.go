@@ -2131,6 +2131,340 @@ func TestSharedCostSplitChargesFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 }
 
+// TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace keeps bd-2rx guarded across the combined attribution workflow.
+func TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "tags-allocation-epic-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: time.Second}
+
+	createResource := func(name, accountID, product string) string {
+		t.Helper()
+
+		resp, err := client.PostForm(server.URL()+"/resources/create", url.Values{
+			"account_id":     {accountID},
+			"region_code":    {"us-east-1"},
+			"service_preset": {"ec2_t3_medium"},
+			"size":           {"t3.medium"},
+			"resource_name":  {name},
+			"status":         {"active"},
+			"started_at":     {"2026-02-01T00:00"},
+			"tags":           {"product=" + product + "\nowner=retail-finops"},
+		})
+		if err != nil {
+			t.Fatalf("POST /resources/create %s error = %v", name, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /resources/create %s final status = %d, want %d; body=%s", name, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, name) || !strings.Contains(body, "product="+product) {
+			t.Fatalf("resource create response for %s missing resource/tag: %s", name, body)
+		}
+		return readOnlyResourceIDByName(t, db, name)
+	}
+
+	generateUsage := func(resourceID, days string) {
+		t.Helper()
+
+		resp, err := client.PostForm(server.URL()+"/resources/generate", url.Values{
+			"resource_id":           {resourceID},
+			"generation_pattern":    {string(persistence.UsageGenerationDailyInstanceHours)},
+			"generation_start_date": {"2026-02-01"},
+			"generation_days":       {days},
+		})
+		if err != nil {
+			t.Fatalf("POST /resources/generate %s error = %v", resourceID, err)
+		}
+		body := readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /resources/generate %s final status = %d, want %d; body=%s", resourceID, resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "Generated "+days+" usage events") || !strings.Contains(body, "product=") {
+			t.Fatalf("generator response for %s missing usage/tag snapshot: %s", resourceID, body)
+		}
+	}
+
+	storefrontResourceID := createResource("Epic allocation storefront web", "111122223333", "storefront")
+	paymentsResourceID := createResource("Epic allocation payments web", "444455556666", "payments")
+	generateUsage(storefrontResourceID, "2")
+	generateUsage(paymentsResourceID, "1")
+
+	body := postClockAdvance(t, &client, server.URL(), "2", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-03T00:00:00Z") ||
+		!strings.Contains(body, "daily metering created 3 metering records and 4 bill line items") ||
+		!strings.Contains(body, "AWSSupport") {
+		t.Fatalf("clock advance response missing epic line items: %s", body)
+	}
+
+	resp, err := client.Get(server.URL() + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags with epic spend error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags with epic spend status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Cost Allocation Tag Manager",
+		"Spend Coverage",
+		"Account Coverage",
+		"Service Coverage",
+		"product",
+		"storefront",
+		"payments",
+		"Not activated",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /tags with epic spend missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/tags/activate", url.Values{"tag_key": {"product"}})
+	if err != nil {
+		t.Fatalf("POST /tags/activate product error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /tags/activate product final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Activated product for cost allocation") ||
+		!strings.Contains(body, "Pending until 2026-02-04T00:00:00Z") {
+		t.Fatalf("POST /tags/activate product missing pending visibility: %s", body)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceDays))
+	if !strings.Contains(body, "Advanced clock to 2026-02-04T00:00:00Z") {
+		t.Fatalf("tag visibility clock advance response missing Feb 4 state: %s", body)
+	}
+	resp, err = client.Get(server.URL() + "/tags")
+	if err != nil {
+		t.Fatalf("GET /tags visible product error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tags visible product status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Visible since 2026-02-04T00:00:00Z") ||
+		strings.Contains(body, "Pending until 2026-02-04T00:00:00Z") {
+		t.Fatalf("GET /tags visible product did not show billing-visible state: %s", body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/categories/create", url.Values{
+		"name":          {"Product"},
+		"default_value": {"Unmapped"},
+		"description":   {"Epic product showback"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product category error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product category final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	productID := readCostCategoryID(t, db, "Product")
+
+	for _, form := range []url.Values{
+		{
+			"category_id": {productID},
+			"rule_order":  {"10"},
+			"value":       {"Storefront"},
+			"dimension":   {persistence.CostCategoryRuleMatchTag},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"storefront"},
+			"tag_key":     {"product"},
+			"description": {"Storefront product tag"},
+		},
+		{
+			"category_id": {productID},
+			"rule_order":  {"20"},
+			"value":       {"Payments"},
+			"dimension":   {persistence.CostCategoryRuleMatchTag},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"payments"},
+			"tag_key":     {"product"},
+			"description": {"Payments product tag"},
+		},
+		{
+			"category_id": {productID},
+			"rule_order":  {"30"},
+			"value":       {"Shared Platform"},
+			"dimension":   {persistence.CostCategoryRuleMatchService},
+			"operator":    {persistence.CostCategoryRuleOperatorIn},
+			"values":      {"AWSSupport"},
+			"description": {"Support is allocated to tagged products"},
+		},
+	} {
+		resp, err = client.PostForm(server.URL()+"/cost-categories/rules/create", form)
+		if err != nil {
+			t.Fatalf("POST create Product rule %s error = %v", form.Get("value"), err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST create Product rule %s final status = %d, want %d; body=%s", form.Get("value"), resp.StatusCode, http.StatusOK, body)
+		}
+		if !strings.Contains(body, "Created rule") || !strings.Contains(body, form.Get("value")) {
+			t.Fatalf("POST create Product rule %s body missing confirmation: %s", form.Get("value"), body)
+		}
+	}
+
+	repo := persistence.NewCostCategoryRepository(db)
+	assignments, err := repo.ListLineItemAssignments(ctx, persistence.CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     productID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(Product open period) error = %v", err)
+	}
+	valueCounts := map[string]int{}
+	for _, assignment := range assignments {
+		valueCounts[assignment.AssignedValue]++
+		if assignment.LineItemStatus != "estimated" {
+			t.Fatalf("open-period assignment = %+v, want estimated line item status", assignment)
+		}
+	}
+	if len(assignments) != 4 ||
+		valueCounts["Storefront"] != 2 ||
+		valueCounts["Payments"] != 1 ||
+		valueCounts["Shared Platform"] != 1 {
+		t.Fatalf("Product assignments = %+v, want 2 Storefront, 1 Payments, 1 Shared Platform", assignments)
+	}
+
+	var supportCostMicros int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT unblended_cost_micros
+		FROM bill_line_items
+		WHERE service_code = 'AWSSupport'
+		  AND billing_period_start = '2026-02-01'
+		  AND billing_period_end = '2026-03-01'
+	`).Scan(&supportCostMicros); err != nil {
+		t.Fatalf("read epic Support source cost: %v", err)
+	}
+	if supportCostMicros <= 0 {
+		t.Fatalf("Support source cost = %d, want positive cost", supportCostMicros)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/splits/create", url.Values{
+		"category_id":   {productID},
+		"source_value":  {"Shared Platform"},
+		"method":        {persistence.CostCategorySplitMethodEven},
+		"target_values": {"Storefront\nPayments"},
+		"description":   {"Allocate shared Support to product tags"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product split rule error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product split rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Created split rule for Shared Platform",
+		"Split Charge Rules",
+		"Allocation Comparison",
+		"Storefront",
+		"Payments",
+		"Shared Platform",
+		"1 split allocation",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create Product split rule body missing %q: %s", want, body)
+		}
+	}
+
+	splitRepo := persistence.NewCostCategorySplitChargeRepository(db)
+	comparisonBeforeClose, err := splitRepo.CompareAllocations(ctx, persistence.CostCategorySplitChargeComparisonRequest{
+		CostCategoryID:     productID,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("CompareAllocations(Product open period) error = %v", err)
+	}
+	if comparisonBeforeClose.SplitInCostMicros != supportCostMicros ||
+		comparisonBeforeClose.SplitOutCostMicros != supportCostMicros ||
+		comparisonBeforeClose.UnallocatedResidualCostMicros != 0 {
+		t.Fatalf("open Product comparison = %+v, want Support fully reallocated", comparisonBeforeClose)
+	}
+
+	body = postClockAdvance(t, &client, server.URL(), "1", string(persistence.SimulatorClockAdvanceBillingPeriods))
+	if !strings.Contains(body, "Advanced clock to 2026-03-01T00:00:00Z") {
+		t.Fatalf("billing-period advance response missing March state: %s", body)
+	}
+	resp, err = client.PostForm(server.URL()+"/resources/month-close", url.Values{
+		"payer_account_id": {"999988887777"},
+		"invoice_due_days": {"14"},
+	})
+	if err != nil {
+		t.Fatalf("POST /resources/month-close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /resources/month-close final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Month-end close finalized 4 line items into bill") ||
+		!strings.Contains(body, "SIM-INV-202602-") {
+		t.Fatalf("month-end close response missing epic finalized bill details: %s", body)
+	}
+
+	comparisonAfterClose, err := splitRepo.CompareAllocations(ctx, persistence.CostCategorySplitChargeComparisonRequest{
+		CostCategoryID:     productID,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("CompareAllocations(Product closed period) error = %v", err)
+	}
+	if comparisonAfterClose.TotalAllocatedCostMicros != comparisonBeforeClose.TotalAllocatedCostMicros ||
+		comparisonAfterClose.SplitInCostMicros != comparisonBeforeClose.SplitInCostMicros ||
+		comparisonAfterClose.SplitOutCostMicros != comparisonBeforeClose.SplitOutCostMicros {
+		t.Fatalf("closed Product comparison = %+v, want preserved totals from %+v", comparisonAfterClose, comparisonBeforeClose)
+	}
+
+	assignments, err = repo.ListLineItemAssignments(ctx, persistence.CostCategoryAssignmentListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CostCategoryID:     productID,
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItemAssignments(Product closed period) error = %v", err)
+	}
+	for _, assignment := range assignments {
+		if assignment.LineItemStatus != "final" {
+			t.Fatalf("closed-period assignment = %+v, want final line item status", assignment)
+		}
+	}
+}
+
 func TestCostAllocationTagManagerWorkflow(t *testing.T) {
 	t.Parallel()
 

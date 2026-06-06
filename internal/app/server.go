@@ -159,6 +159,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/cost-explorer/results.csv", costExplorer.handleCostExplorerResultsCSV)
 	mux.HandleFunc("/cost-explorer/line-items", costExplorer.handleCostExplorerLineItems)
 	mux.HandleFunc("/cost-explorer/reports/save", costExplorer.handleSaveCostExplorerReport)
+	mux.HandleFunc("/cost-explorer/reports/run", costExplorer.handleRunCostExplorerReport)
 	mux.HandleFunc("/budgets", budgets.handleBudgets)
 	mux.HandleFunc("/budgets/create", budgets.handleCreateBudget)
 	mux.HandleFunc("/bills", bills.handleBills)

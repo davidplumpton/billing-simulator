@@ -2293,6 +2293,134 @@ func TestCostExplorerReportUIFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 }
 
+func TestCostExplorerSavedReportRunRecordsLastRunMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close(workspace) error = %v", err)
+		}
+	})
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-02-03T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	resource, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-saved-report-run",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "Saved report run web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		Tags:         map[string]string{"app": "storefront"},
+	})
+	if err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-saved-report-run",
+		ResourceID:          resource.ID,
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		RegionCode:          "us-east-1",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	saveForm := url.Values{
+		"report_name":      {"Saved report run metadata"},
+		"description":      {"Focused saved-report run test"},
+		"owner_account_id": {persistence.AnyCompanyRetailManagementAccountID},
+		"owner_role":       {"management-account"},
+		"date_range_start": {"2026-02-01"},
+		"date_range_end":   {"2026-03-01"},
+		"granularity":      {"daily"},
+		"metric":           {"unblended_cost"},
+		"chart_type":       {"table"},
+		"service_values":   {"Amazon EC2"},
+		"tag_key":          {"app"},
+		"tag_values":       {"storefront"},
+		"group_1_type":     {"tag"},
+		"group_1_key":      {"app"},
+	}
+	resp, err := client.PostForm(server.URL+"/cost-explorer/reports/save", saveForm)
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/save error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /cost-explorer/reports/save status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Saved report run metadata") || !strings.Contains(body, "never_run") {
+		t.Fatalf("saved report create response missing loaded never-run report: %s", body)
+	}
+
+	savedReportRepo := persistence.NewSavedReportRepository(db)
+	report, err := savedReportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "Saved report run metadata")
+	if err != nil {
+		t.Fatalf("GetByName(saved report) error = %v", err)
+	}
+	if report.LastRunStatus != "never_run" || report.LastRunAt != "" || report.LastRunRowCount != 0 || report.LastRunTotalUnblendedCostMicros != 0 {
+		t.Fatalf("saved report after create = %+v, want no run metadata before explicit POST run", report)
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-explorer/reports/run", url.Values{
+		"saved_report_id": {report.ID},
+	})
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/run error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /cost-explorer/reports/run status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Ran saved report Saved report run metadata",
+		"Saved report run metadata",
+		"succeeded 2026-02-03T00:00:00Z",
+		"tag:app=storefront",
+		"$0.0832",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /cost-explorer/reports/run body missing %q: %s", want, body)
+		}
+	}
+
+	ranReport, err := savedReportRepo.Get(ctx, report.ID)
+	if err != nil {
+		t.Fatalf("Get(ran saved report) error = %v", err)
+	}
+	if ranReport.LastRunStatus != "succeeded" ||
+		ranReport.LastRunAt != "2026-02-03T00:00:00Z" ||
+		ranReport.LastRunRowCount != 1 ||
+		ranReport.LastRunTotalUnblendedCostMicros != 83_200 ||
+		ranReport.LastRunError != "" {
+		t.Fatalf("saved report last-run metadata = %+v, want successful UI run summary", ranReport)
+	}
+}
+
 func TestCostCategoryPreviewWorkflow(t *testing.T) {
 	t.Parallel()
 

@@ -350,6 +350,17 @@ button:hover {
 	padding: 6px 10px;
 }
 
+.compact-actions {
+	gap: 6px;
+	align-items: center;
+}
+
+.compact-actions button,
+.compact-actions .button-link {
+	min-height: 30px;
+	padding: 5px 9px;
+}
+
 .report-toolbar {
 	display: flex;
 	align-items: end;

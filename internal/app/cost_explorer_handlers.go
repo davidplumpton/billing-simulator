@@ -354,6 +354,65 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 	http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Saved report "+report.Name), http.StatusSeeOther)
 }
 
+// handleRunCostExplorerReport executes a persisted saved report and records its latest run metadata.
+func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderCostExplorer(w, r, http.StatusServiceUnavailable, "Open a workspace before running saved Cost Explorer reports.", "")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.renderCostExplorer(w, r, http.StatusBadRequest, "parse Cost Explorer saved report run form: "+err.Error(), "")
+		return
+	}
+	savedReportID := strings.TrimSpace(r.PostForm.Get("saved_report_id"))
+	if savedReportID == "" {
+		h.renderCostExplorer(w, r, http.StatusBadRequest, "saved report ID is required", "")
+		return
+	}
+
+	ctx := r.Context()
+	clock, err := h.clock.Get(ctx)
+	if err != nil {
+		h.renderCostExplorer(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	report, err := h.savedReports.Get(ctx, savedReportID)
+	if err != nil {
+		h.renderCostExplorer(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	builder := costExplorerBuilderFromSavedReport(report, costExplorerDefaultBuilder())
+	result, err := h.queryFromBuilder(ctx, builder)
+	if err != nil {
+		if _, recordErr := h.savedReports.RecordLastRun(ctx, persistence.SavedReportRunUpdate{
+			ID:           report.ID,
+			RunAt:        clock.CurrentTime,
+			Status:       "failed",
+			ErrorMessage: err.Error(),
+		}); recordErr != nil {
+			h.renderCostExplorer(w, r, http.StatusInternalServerError, recordErr.Error(), "")
+			return
+		}
+		http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Saved report "+report.Name+" failed"), http.StatusSeeOther)
+		return
+	}
+	if _, err := h.savedReports.RecordLastRun(ctx, persistence.SavedReportRunUpdate{
+		ID:                       report.ID,
+		RunAt:                    clock.CurrentTime,
+		Status:                   "succeeded",
+		RowCount:                 len(result.Rows),
+		TotalUnblendedCostMicros: result.TotalUnblendedCostMicros,
+	}); err != nil {
+		h.renderCostExplorer(w, r, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Ran saved report "+report.Name), http.StatusSeeOther)
+}
+
 // renderCostExplorerLineItems builds the drilldown page for one Cost Explorer result row.
 func (h costExplorerHandler) renderCostExplorerLineItems(w http.ResponseWriter, r *http.Request, status int, errorMessage string) {
 	data := costExplorerLineItemsPageData{
@@ -1850,7 +1909,15 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 									<td>{{.Metric}}</td>
 									<td>{{.ChartType}}</td>
 									<td>{{.LastRun}}</td>
-									<td>{{if .Selected}}<span class="status">Loaded</span>{{else}}<a class="button-link secondary" href="{{.LoadPath}}">Load</a>{{end}}</td>
+									<td>
+										<div class="inline-actions compact-actions">
+											{{if .Selected}}<span class="status">Loaded</span>{{else}}<a class="button-link secondary" href="{{.LoadPath}}">Load</a>{{end}}
+											<form method="post" action="/cost-explorer/reports/run">
+												<input type="hidden" name="saved_report_id" value="{{.ID}}">
+												<button type="submit">Run</button>
+											</form>
+										</div>
+									</td>
 								</tr>
 							{{else}}
 								{{template "ui.dense-table-empty-row" $.Tables.SavedReports}}

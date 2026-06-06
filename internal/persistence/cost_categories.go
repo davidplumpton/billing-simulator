@@ -782,17 +782,26 @@ func refreshCostCategoryAssignmentsInTx(ctx context.Context, tx costCategoryAssi
 	if err != nil {
 		return CostCategoryAssignmentRefreshResult{}, err
 	}
+	summaryPeriods := map[costExplorerSummaryPeriodRef]bool{}
+	if periodStart != "" && periodEnd != "" {
+		summaryPeriods[costExplorerSummaryPeriodRef{Start: periodStart, End: periodEnd}] = true
+	}
 	if len(items) == 0 {
+		if _, err := refreshCostExplorerCostCategorySummariesForPeriodsInTx(ctx, tx, summaryPeriods); err != nil {
+			return CostCategoryAssignmentRefreshResult{}, err
+		}
 		return result, nil
 	}
 	result.LineItemsEvaluated = len(items)
 
-	periods := map[string]bool{}
+	periods := map[costExplorerSummaryPeriodRef]bool{}
 	for _, item := range items {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM cost_category_line_item_assignments WHERE line_item_id = ?`, item.ID); err != nil {
 			return CostCategoryAssignmentRefreshResult{}, fmt.Errorf("clear cost category assignments for line item %q: %w", item.ID, err)
 		}
-		periods[item.BillingPeriodStart+"|"+item.BillingPeriodEnd] = true
+		period := costExplorerSummaryPeriodRef{Start: item.BillingPeriodStart, End: item.BillingPeriodEnd}
+		periods[period] = true
+		summaryPeriods[period] = true
 		for _, category := range evaluator.orderedCategories() {
 			assignment, err := evaluator.evaluateCategory(item, category.ID, map[string]bool{})
 			if err != nil {
@@ -806,6 +815,9 @@ func refreshCostCategoryAssignmentsInTx(ctx context.Context, tx costCategoryAssi
 	}
 	result.BillingPeriodsRefreshed = len(periods)
 	if _, err := refreshCostCategorySplitAllocationsInTx(ctx, tx, periodStart, periodEnd); err != nil {
+		return CostCategoryAssignmentRefreshResult{}, err
+	}
+	if _, err := refreshCostExplorerCostCategorySummariesForPeriodsInTx(ctx, tx, summaryPeriods); err != nil {
 		return CostCategoryAssignmentRefreshResult{}, err
 	}
 	return result, nil

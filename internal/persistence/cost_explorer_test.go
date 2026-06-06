@@ -245,6 +245,277 @@ func TestCostExplorerRepositoryFiltersAndGroupsCostCategoryAssignments(t *testin
 	}
 }
 
+func TestCostExplorerRepositoryRefreshesSummaryTablesAfterBillingChanges(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	tagRepo := NewCostAllocationTagRepository(db)
+
+	resources := []ResourceCreateRequest{
+		{
+			ID:           "resource-cost-summary-web",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Summary web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app":   "storefront",
+				"owner": "platform",
+			},
+		},
+		{
+			ID:           "resource-cost-summary-batch",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Summary batch",
+			Status:       "active",
+			StartedAt:    "2026-02-02T00:00:00Z",
+			Tags: map[string]string{
+				"app": "payments",
+			},
+		},
+		{
+			ID:           "resource-cost-summary-assets",
+			AccountID:    "444455556666",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonS3,
+			ResourceType: "s3_bucket",
+			ResourceName: "Summary assets",
+			Status:       "active",
+			StartedAt:    "2026-02-02T00:00:00Z",
+			Tags: map[string]string{
+				"app":   "storefront",
+				"Owner": "platform",
+			},
+		},
+	}
+	for _, request := range resources {
+		if _, err := usageRepo.CreateResource(ctx, request); err != nil {
+			t.Fatalf("CreateResource(%s) error = %v", request.ID, err)
+		}
+	}
+	if _, err := tagRepo.RefreshDiscoveredTags(ctx, "2026-02-02T00:00:00Z"); err != nil {
+		t.Fatalf("RefreshDiscoveredTags() error = %v", err)
+	}
+
+	usageEvents := []UsageEventCreateRequest{
+		{
+			ID:                  "usage-cost-summary-web",
+			ResourceID:          "resource-cost-summary-web",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+		{
+			ID:                  "usage-cost-summary-batch",
+			ResourceID:          "resource-cost-summary-batch",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-02T01:00:00Z",
+			UsageQuantityMicros: 1_000_000,
+			UsageUnit:           "Hours",
+		},
+		{
+			ID:                  "usage-cost-summary-assets",
+			ResourceID:          "resource-cost-summary-assets",
+			UsageType:           "requests:put-1k",
+			Operation:           "PutObject",
+			UsageStartTime:      "2026-02-02T00:00:00Z",
+			UsageEndTime:        "2026-02-03T00:00:00Z",
+			UsageQuantityMicros: 1_500_000_000,
+			UsageUnit:           "Request",
+		},
+	}
+	for _, request := range usageEvents {
+		if _, err := usageRepo.RecordUsageEvent(ctx, request); err != nil {
+			t.Fatalf("RecordUsageEvent(%s) error = %v", request.ID, err)
+		}
+	}
+	if result, err := NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	} else if result.RecordsCreated != 3 {
+		t.Fatalf("GenerateMeteringRecords() = %+v, want three records", result)
+	}
+	if result, err := NewBillLineItemRepository(db).GenerateBillLineItems(ctx, BillLineItemGenerationRequest{
+		PayerAccountID: AnyCompanyRetailManagementAccountID,
+	}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	} else if result.ItemsCreated != 3 {
+		t.Fatalf("GenerateBillLineItems() = %+v, want three line items", result)
+	}
+
+	var dailyRows int
+	var dailyLineItems, dailyUsageMicros, dailyCostMicros int64
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT
+			COUNT(*),
+			COALESCE(SUM(line_item_count), 0),
+			COALESCE(SUM(usage_quantity_micros), 0),
+			COALESCE(SUM(unblended_cost_micros), 0)
+		 FROM daily_cost_summary
+		 WHERE billing_period_start = ? AND billing_period_end = ?`,
+		"2026-02-01",
+		"2026-03-01",
+	).Scan(&dailyRows, &dailyLineItems, &dailyUsageMicros, &dailyCostMicros); err != nil {
+		t.Fatalf("read daily cost summary: %v", err)
+	}
+	if dailyRows != 3 || dailyLineItems != 3 || dailyUsageMicros != 1_503_000_000 || dailyCostMicros != 132_300 {
+		t.Fatalf("daily summary rows/count/usage/cost = %d/%d/%d/%d, want 3 rows, 3 lines, 1503000000 usage, 132300 cost", dailyRows, dailyLineItems, dailyUsageMicros, dailyCostMicros)
+	}
+
+	var ec2MonthlyLineItems int
+	var ec2MonthlyUsageMicros, ec2MonthlyCostMicros int64
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT line_item_count, usage_quantity_micros, unblended_cost_micros
+		 FROM monthly_account_service_summary
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		   AND payer_account_id = ?
+		   AND usage_account_id = ?
+		   AND service_code = ?
+		   AND line_item_status = ?`,
+		"2026-02-01",
+		"2026-03-01",
+		AnyCompanyRetailManagementAccountID,
+		"111122223333",
+		serviceAmazonEC2,
+		billLineItemStatusEstimated,
+	).Scan(&ec2MonthlyLineItems, &ec2MonthlyUsageMicros, &ec2MonthlyCostMicros); err != nil {
+		t.Fatalf("read monthly account service summary: %v", err)
+	}
+	if ec2MonthlyLineItems != 2 || ec2MonthlyUsageMicros != 3_000_000 || ec2MonthlyCostMicros != 124_800 {
+		t.Fatalf("EC2 monthly summary = lines %d usage %d cost %d, want two EC2 items totaling 124800", ec2MonthlyLineItems, ec2MonthlyUsageMicros, ec2MonthlyCostMicros)
+	}
+
+	var ownerLineItems, ownerResources, ownerTaggedResources, ownerUntaggedResources, ownerCaseResources int
+	var ownerTaggedCostMicros, ownerUntaggedCostMicros, ownerCaseMismatchCostMicros, ownerTotalCostMicros int64
+	var ownerCaseMismatchKeysJSON string
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT
+			line_item_count,
+			resource_count,
+			tagged_resource_count,
+			untagged_resource_count,
+			case_mismatch_resource_count,
+			tagged_cost_micros,
+			untagged_cost_micros,
+			case_mismatch_cost_micros,
+			total_cost_micros,
+			case_mismatch_keys_json
+		 FROM tag_coverage_summary
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		   AND tag_key = ?
+		   AND dimension = ?`,
+		"2026-02-01",
+		"2026-03-01",
+		"owner",
+		CostAllocationCoverageDimensionKey,
+	).Scan(
+		&ownerLineItems,
+		&ownerResources,
+		&ownerTaggedResources,
+		&ownerUntaggedResources,
+		&ownerCaseResources,
+		&ownerTaggedCostMicros,
+		&ownerUntaggedCostMicros,
+		&ownerCaseMismatchCostMicros,
+		&ownerTotalCostMicros,
+		&ownerCaseMismatchKeysJSON,
+	); err != nil {
+		t.Fatalf("read owner tag coverage summary: %v", err)
+	}
+	if ownerLineItems != 3 ||
+		ownerResources != 3 ||
+		ownerTaggedResources != 1 ||
+		ownerUntaggedResources != 1 ||
+		ownerCaseResources != 1 ||
+		ownerTaggedCostMicros != 83_200 ||
+		ownerUntaggedCostMicros != 41_600 ||
+		ownerCaseMismatchCostMicros != 7_500 ||
+		ownerTotalCostMicros != 132_300 ||
+		ownerCaseMismatchKeysJSON != `["Owner"]` {
+		t.Fatalf("owner tag coverage summary = lines %d resources %d/%d/%d/%d costs %d/%d/%d/%d keys %s, want exact/missing/case-mismatch coverage",
+			ownerLineItems,
+			ownerResources,
+			ownerTaggedResources,
+			ownerUntaggedResources,
+			ownerCaseResources,
+			ownerTaggedCostMicros,
+			ownerUntaggedCostMicros,
+			ownerCaseMismatchCostMicros,
+			ownerTotalCostMicros,
+			ownerCaseMismatchKeysJSON,
+		)
+	}
+
+	categoryRepo := NewCostCategoryRepository(db)
+	product, err := categoryRepo.CreateCategory(ctx, CostCategoryCreateRequest{
+		Name:         "Product",
+		DefaultValue: "Unmapped",
+	})
+	if err != nil {
+		t.Fatalf("CreateCategory(Product) error = %v", err)
+	}
+	if _, err := categoryRepo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      10,
+		Value:          "Storefront",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchTag, TagKey: "app", Values: []string{"storefront"}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Storefront) error = %v", err)
+	}
+	if _, err := categoryRepo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		CostCategoryID: product.ID,
+		RuleOrder:      20,
+		Value:          "Payments",
+		Conditions: []CostCategoryRuleCondition{
+			{Dimension: CostCategoryRuleMatchTag, TagKey: "app", Values: []string{"payments"}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(Payments) error = %v", err)
+	}
+
+	var storefrontLineItems, paymentsLineItems int
+	var storefrontCostMicros, paymentsCostMicros int64
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT
+			COALESCE(SUM(CASE WHEN assigned_value = 'Storefront' THEN line_item_count ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN assigned_value = 'Storefront' THEN unblended_cost_micros ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN assigned_value = 'Payments' THEN line_item_count ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN assigned_value = 'Payments' THEN unblended_cost_micros ELSE 0 END), 0)
+		 FROM cost_category_summary
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		   AND cost_category_id = ?`,
+		"2026-02-01",
+		"2026-03-01",
+		product.ID,
+	).Scan(&storefrontLineItems, &storefrontCostMicros, &paymentsLineItems, &paymentsCostMicros); err != nil {
+		t.Fatalf("read cost category summary: %v", err)
+	}
+	if storefrontLineItems != 2 || storefrontCostMicros != 90_700 || paymentsLineItems != 1 || paymentsCostMicros != 41_600 {
+		t.Fatalf("cost category summary = Storefront %d/%d Payments %d/%d, want category assignment rollups", storefrontLineItems, storefrontCostMicros, paymentsLineItems, paymentsCostMicros)
+	}
+}
+
 func TestCostExplorerRepositoryValidatesQueries(t *testing.T) {
 	t.Parallel()
 

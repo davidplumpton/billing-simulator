@@ -101,6 +101,29 @@ func TestMonthEndCloseFinalizesPeriodAndCreatesBill(t *testing.T) {
 		requireBillingPeriodSummary(t, result.Summaries, serviceAWSSupport).UnblendedCostMicros != supportBusinessMinimumCostMicros {
 		t.Fatalf("summaries = %+v, want final February service and Support summaries", result.Summaries)
 	}
+	var finalCostExplorerSummaryRows, finalCostExplorerSummaryLineItems int
+	var finalCostExplorerSummaryCostMicros int64
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT
+			COUNT(*),
+			COALESCE(SUM(line_item_count), 0),
+			COALESCE(SUM(unblended_cost_micros), 0)
+		 FROM monthly_account_service_summary
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		   AND payer_account_id = ?
+		   AND line_item_status = ?`,
+		"2026-02-01",
+		"2026-03-01",
+		"999988887777",
+		billLineItemStatusFinal,
+	).Scan(&finalCostExplorerSummaryRows, &finalCostExplorerSummaryLineItems, &finalCostExplorerSummaryCostMicros); err != nil {
+		t.Fatalf("read final Cost Explorer monthly summary: %v", err)
+	}
+	if finalCostExplorerSummaryRows != 2 || finalCostExplorerSummaryLineItems != 2 || finalCostExplorerSummaryCostMicros != 1_083_200 {
+		t.Fatalf("final Cost Explorer monthly summary = rows %d line items %d cost %d, want final EC2 and Support rows", finalCostExplorerSummaryRows, finalCostExplorerSummaryLineItems, finalCostExplorerSummaryCostMicros)
+	}
 
 	items, err := NewBillLineItemRepository(db).ListBillLineItems(ctx, 10)
 	if err != nil {

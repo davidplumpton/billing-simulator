@@ -212,6 +212,9 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 		if err != nil {
 			return err
 		}
+		if _, err := refreshCostExplorerSummariesInTx(ctx, tx, request.PeriodStart, request.PeriodEnd); err != nil {
+			return err
+		}
 
 		close = billingPeriodCloseFromAggregate(request, meteringResult.RecordsCreated, lineItemResult.ItemsCreated+supportResult.ItemsCreated, summariesRefreshed, aggregate)
 		if err := insertBillingPeriodClose(ctx, tx, close); err != nil {

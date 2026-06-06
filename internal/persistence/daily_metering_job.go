@@ -214,6 +214,9 @@ func (r DailyMeteringJobRepository) RefreshBillingPeriodServiceSummaries(ctx con
 		); err != nil {
 			return fmt.Errorf("refresh billing period service summaries: %w", err)
 		}
+		if _, err := refreshCostExplorerSummariesInTx(ctx, tx, periodStart, periodEnd); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return nil, err

@@ -148,6 +148,11 @@ func (r BillLineItemRepository) generateBillLineItems(ctx context.Context, reque
 			if _, err := refreshCostCategoryAssignmentsInTx(ctx, tx, "", ""); err != nil {
 				return err
 			}
+			for _, period := range costExplorerSummaryPeriodRefsForLineItems(result.Items) {
+				if _, err := refreshCostExplorerSummariesInTx(ctx, tx, period.Start, period.End); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})

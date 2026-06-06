@@ -187,6 +187,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/cost-explorer/reports/run", func(w http.ResponseWriter, r *http.Request) {
 		newCostExplorerHandler(workspace.DB()).handleRunCostExplorerReport(w, r)
 	})
+	mux.HandleFunc("/exports/cur.csv", func(w http.ResponseWriter, r *http.Request) {
+		newExportsHandler(workspace.DB()).handleCURCSV(w, r)
+	})
 	mux.HandleFunc("/budgets", func(w http.ResponseWriter, r *http.Request) {
 		newBudgetHandler(workspace.DB()).handleBudgets(w, r)
 	})

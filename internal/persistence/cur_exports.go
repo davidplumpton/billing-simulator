@@ -3,7 +3,10 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -12,6 +15,11 @@ const (
 	defaultCURLineItemLimit = 100
 	maxCURLineItemLimit     = 10_000
 )
+
+var curCSVExportColumns = append([]string{
+	"export_generated_at",
+	"source_bill_id",
+}, curLineItemColumns...)
 
 var curLineItemColumns = []string{
 	"line_item_id",
@@ -84,6 +92,24 @@ type CURLineItemListRequest struct {
 	Limit              int
 }
 
+// CURCSVExportRequest selects the payer-period line items written to a CUR-like CSV export.
+type CURCSVExportRequest struct {
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	PayerAccountID     string
+	UsageAccountID     string
+	LineItemStatus     string
+	GeneratedAt        string
+	Limit              int
+}
+
+// CURCSVExportResult reports deterministic metadata attached to one CSV export.
+type CURCSVExportResult struct {
+	GeneratedAt  string
+	SourceBillID string
+	RowsWritten  int
+}
+
 // CURLineItemRepository maps persisted bill line items to CUR-like export rows.
 type CURLineItemRepository struct {
 	db *sql.DB
@@ -98,6 +124,13 @@ func NewCURLineItemRepository(db *sql.DB) CURLineItemRepository {
 func CURLineItemColumns() []string {
 	columns := make([]string, len(curLineItemColumns))
 	copy(columns, curLineItemColumns)
+	return columns
+}
+
+// CURCSVExportColumns returns the stable column order for downloadable CUR-like CSV exports.
+func CURCSVExportColumns() []string {
+	columns := make([]string, len(curCSVExportColumns))
+	copy(columns, curCSVExportColumns)
 	return columns
 }
 
@@ -213,6 +246,64 @@ func (r CURLineItemRepository) ListLineItems(ctx context.Context, request CURLin
 	return items, nil
 }
 
+// WriteCSVExport streams a deterministic payer-period CUR-like CSV export to writer.
+func (r CURLineItemRepository) WriteCSVExport(ctx context.Context, writer io.Writer, request CURCSVExportRequest) (CURCSVExportResult, error) {
+	if r.db == nil {
+		return CURCSVExportResult{}, fmt.Errorf("database handle is required")
+	}
+	if writer == nil {
+		return CURCSVExportResult{}, fmt.Errorf("CUR-like CSV export writer is required")
+	}
+	request = normalizeCURCSVExportRequest(request)
+	if err := validateCURCSVExportRequest(request); err != nil {
+		return CURCSVExportResult{}, err
+	}
+
+	generatedAt, err := r.resolveCURCSVExportGeneratedAt(ctx, request.GeneratedAt)
+	if err != nil {
+		return CURCSVExportResult{}, err
+	}
+	sourceBillID, err := r.sourceBillIDForCURCSVExport(ctx, request)
+	if err != nil {
+		return CURCSVExportResult{}, err
+	}
+	items, err := r.ListLineItems(ctx, CURLineItemListRequest{
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		PayerAccountID:     request.PayerAccountID,
+		UsageAccountID:     request.UsageAccountID,
+		LineItemStatus:     request.LineItemStatus,
+		Limit:              request.Limit,
+	})
+	if err != nil {
+		return CURCSVExportResult{}, err
+	}
+
+	csvWriter := csv.NewWriter(writer)
+	if err := csvWriter.Write(CURCSVExportColumns()); err != nil {
+		return CURCSVExportResult{}, err
+	}
+	for _, item := range items {
+		record, err := curCSVExportRecord(generatedAt, sourceBillID, item)
+		if err != nil {
+			return CURCSVExportResult{}, err
+		}
+		if err := csvWriter.Write(record); err != nil {
+			return CURCSVExportResult{}, err
+		}
+	}
+	csvWriter.Flush()
+	if err := csvWriter.Error(); err != nil {
+		return CURCSVExportResult{}, err
+	}
+
+	return CURCSVExportResult{
+		GeneratedAt:  generatedAt,
+		SourceBillID: sourceBillID,
+		RowsWritten:  len(items),
+	}, nil
+}
+
 func normalizeCURLineItemListRequest(request CURLineItemListRequest) CURLineItemListRequest {
 	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
 	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
@@ -247,6 +338,86 @@ func validateCURLineItemListRequest(request CURLineItemListRequest) error {
 		return fmt.Errorf("unsupported CUR-like export line item status %q", request.LineItemStatus)
 	}
 	return nil
+}
+
+func normalizeCURCSVExportRequest(request CURCSVExportRequest) CURCSVExportRequest {
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
+	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
+	request.LineItemStatus = strings.TrimSpace(request.LineItemStatus)
+	request.GeneratedAt = strings.TrimSpace(request.GeneratedAt)
+	if request.Limit <= 0 || request.Limit > maxCURLineItemLimit {
+		request.Limit = maxCURLineItemLimit
+	}
+	return request
+}
+
+func validateCURCSVExportRequest(request CURCSVExportRequest) error {
+	if request.BillingPeriodStart == "" || request.BillingPeriodEnd == "" {
+		return fmt.Errorf("CUR-like CSV export billing period start and end are required")
+	}
+	if request.PayerAccountID == "" {
+		return fmt.Errorf("CUR-like CSV export payer account ID is required")
+	}
+	if err := validateCURLineItemListRequest(CURLineItemListRequest{
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		LineItemStatus:     request.LineItemStatus,
+		Limit:              request.Limit,
+	}); err != nil {
+		return err
+	}
+	if request.GeneratedAt != "" {
+		if _, err := time.Parse(time.RFC3339, request.GeneratedAt); err != nil {
+			return fmt.Errorf("CUR-like CSV export generation time must use RFC3339: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r CURLineItemRepository) resolveCURCSVExportGeneratedAt(ctx context.Context, value string) (string, error) {
+	if value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return "", fmt.Errorf("CUR-like CSV export generation time must use RFC3339: %w", err)
+		}
+		return parsed.UTC().Format(time.RFC3339), nil
+	}
+
+	clock, err := NewSimulatorClockRepository(r.db).Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read simulator clock for CUR-like CSV export: %w", err)
+	}
+	parsed, err := time.Parse(time.RFC3339, clock.CurrentTime)
+	if err != nil {
+		return "", fmt.Errorf("parse simulator clock for CUR-like CSV export: %w", err)
+	}
+	return parsed.UTC().Format(time.RFC3339), nil
+}
+
+func (r CURLineItemRepository) sourceBillIDForCURCSVExport(ctx context.Context, request CURCSVExportRequest) (string, error) {
+	var sourceBillID string
+	err := r.db.QueryRowContext(
+		ctx,
+		`SELECT id
+		 FROM bills
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		   AND payer_account_id = ?
+		 ORDER BY currency_code, id
+		 LIMIT 1`,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+		request.PayerAccountID,
+	).Scan(&sourceBillID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read source bill for CUR-like CSV export: %w", err)
+	}
+	return sourceBillID, nil
 }
 
 func scanCURLineItem(row interface{ Scan(dest ...any) error }) (CURLineItem, error) {
@@ -329,4 +500,55 @@ func (r CURLineItemRepository) costCategoriesForLineItems(ctx context.Context, l
 		return nil, fmt.Errorf("iterate CUR-like cost categories: %w", err)
 	}
 	return categories, nil
+}
+
+func curCSVExportRecord(generatedAt, sourceBillID string, item CURLineItem) ([]string, error) {
+	tagsJSON, err := marshalStringMap(item.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("encode CUR-like tags for line item %q: %w", item.LineItemID, err)
+	}
+	costCategoriesJSON, err := marshalStringMap(item.CostCategories)
+	if err != nil {
+		return nil, fmt.Errorf("encode CUR-like cost categories for line item %q: %w", item.LineItemID, err)
+	}
+	return []string{
+		generatedAt,
+		sourceBillID,
+		item.LineItemID,
+		item.BillingPeriodStart,
+		item.BillingPeriodEnd,
+		item.PayerAccountID,
+		item.UsageAccountID,
+		item.AccountName,
+		item.ServiceCode,
+		item.ServiceName,
+		item.ProductCode,
+		item.Region,
+		item.AvailabilityZone,
+		item.UsageType,
+		item.Operation,
+		item.LineItemType,
+		item.ResourceID,
+		item.UsageStartTime,
+		item.UsageEndTime,
+		formatCURMicrosDecimal(item.UsageAmountMicros),
+		item.UsageUnit,
+		formatCURMicrosDecimal(item.UnblendedRateMicros),
+		formatCURMicrosDecimal(item.UnblendedCostMicros),
+		item.Currency,
+		item.LegalEntity,
+		item.InvoiceEntity,
+		tagsJSON,
+		costCategoriesJSON,
+		item.Description,
+	}, nil
+}
+
+func formatCURMicrosDecimal(value int64) string {
+	sign := ""
+	if value < 0 {
+		sign = "-"
+		value = -value
+	}
+	return fmt.Sprintf("%s%d.%06d", sign, value/1_000_000, value%1_000_000)
 }

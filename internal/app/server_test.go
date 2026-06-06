@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -1846,6 +1847,121 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 		report.Filters["service"][0] != "Amazon EC2" ||
 		report.Filters["tag:app"][0] != "storefront" {
 		t.Fatalf("saved report definition = %+v, want browser report filters and groupings", report)
+	}
+}
+
+func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-cur-export-ui",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "CUR export UI web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		Tags: map[string]string{
+			"app": "storefront",
+		},
+	}); err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-cur-export-ui",
+		ResourceID:          "resource-cur-export-ui",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock close time) error = %v", err)
+	}
+	closeResult, err := persistence.NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, persistence.MonthEndCloseRequest{
+		PayerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		InvoiceDueDays: 14,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-02T09:30:00Z"); err != nil {
+		t.Fatalf("Set(clock export time) error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	query := url.Values{
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"payer_account_id":     {persistence.AnyCompanyRetailManagementAccountID},
+	}
+	resp, err := client.Get(server.URL + "/exports/cur.csv?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/cur.csv error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/cur.csv status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+		t.Fatalf("GET /exports/cur.csv content type = %q, want text/csv", contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, "cur-2026-02-01-2026-03-01-999988887777.csv") {
+		t.Fatalf("GET /exports/cur.csv content disposition = %q, want CUR filename", disposition)
+	}
+
+	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	if err != nil {
+		t.Fatalf("read CUR CSV response: %v\n%s", err, body)
+	}
+	if len(records) != 3 {
+		t.Fatalf("CUR CSV response records = %d (%+v), want header plus usage and support rows", len(records), records)
+	}
+	if got := strings.Join(records[0][:3], ","); got != "export_generated_at,source_bill_id,line_item_id" {
+		t.Fatalf("CUR CSV header prefix = %q, want metadata then line_item_id", got)
+	}
+
+	usage := requireCSVResponseRecord(t, records, "resource_id", "resource-cur-export-ui")
+	for column, want := range map[string]string{
+		"export_generated_at": "2026-03-02T09:30:00Z",
+		"source_bill_id":      closeResult.Bill.ID,
+		"payer_account_id":    persistence.AnyCompanyRetailManagementAccountID,
+		"usage_account_id":    "111122223333",
+		"usage_amount":        "2.000000",
+		"unblended_cost":      "0.083200",
+		"tags_json":           `{"app":"storefront"}`,
+	} {
+		if got := usage[csvResponseColumnIndex(t, records[0], column)]; got != want {
+			t.Fatalf("CUR CSV usage column %s = %q, want %q in %v", column, got, want, usage)
+		}
+	}
+
+	support := requireCSVResponseRecord(t, records, "service_code", "AWSSupport")
+	if got := support[csvResponseColumnIndex(t, records[0], "source_bill_id")]; got != closeResult.Bill.ID {
+		t.Fatalf("CUR CSV support source_bill_id = %q, want %q", got, closeResult.Bill.ID)
+	}
+	if got := support[csvResponseColumnIndex(t, records[0], "line_item_type")]; got != "Fee" {
+		t.Fatalf("CUR CSV support line_item_type = %q, want Fee", got)
 	}
 }
 
@@ -6331,6 +6447,31 @@ func readResponseBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read response body: %v", err)
 	}
 	return string(body)
+}
+
+func requireCSVResponseRecord(t *testing.T, records [][]string, column, value string) []string {
+	t.Helper()
+
+	index := csvResponseColumnIndex(t, records[0], column)
+	for _, record := range records[1:] {
+		if record[index] == value {
+			return record
+		}
+	}
+	t.Fatalf("CSV response records = %+v, want %s=%q", records, column, value)
+	return nil
+}
+
+func csvResponseColumnIndex(t *testing.T, header []string, column string) int {
+	t.Helper()
+
+	for idx, name := range header {
+		if name == column {
+			return idx
+		}
+	}
+	t.Fatalf("CSV response header = %+v, missing %q", header, column)
+	return -1
 }
 
 func readOnlyResourceID(t *testing.T, db *sql.DB) string {

@@ -1184,6 +1184,59 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 
 	body = postPaymentAction(url.Values{
 		"invoice_obligation_id": {obligationID},
+		"action":                {"mark_past_due"},
+		"occurred_at":           {"2026-03-23"},
+	})
+	if !strings.Contains(body, "Marked "+closeResult.InvoiceObligation.InvoiceID+" past due") ||
+		!strings.Contains(body, "past-due") {
+		t.Fatalf("mark past-due response missing past-due state: %s", body)
+	}
+	partialMicros := int64(500_000)
+	remainingMicros := closeResult.InvoiceObligation.AmountDueMicros - partialMicros
+	body = postPaymentAction(url.Values{
+		"invoice_obligation_id": {obligationID},
+		"action":                {"collect"},
+		"amount":                {formatMicrosDecimal(partialMicros)},
+	})
+	if !strings.Contains(body, "Collected payment for "+closeResult.InvoiceObligation.InvoiceID) ||
+		!strings.Contains(body, "Partially Paid") ||
+		!strings.Contains(body, "partially-paid") ||
+		!strings.Contains(body, "past-due") ||
+		!strings.Contains(body, formatUSDMicros(remainingMicros)) {
+		t.Fatalf("partial past-due collect response missing partial and past-due state: %s", body)
+	}
+
+	var partialBillState, partialPaymentStatus string
+	var partialAmountDue int64
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT b.bill_state, ps.status, ps.amount_due_micros
+		   FROM bills b
+		   JOIN invoice_payment_states ps ON ps.invoice_obligation_id = ?
+		  WHERE b.id = ?`,
+		obligationID,
+		closeResult.Bill.ID,
+	).Scan(&partialBillState, &partialPaymentStatus, &partialAmountDue); err != nil {
+		t.Fatalf("read partial payment state: %v", err)
+	}
+	if partialBillState != "past_due" || partialPaymentStatus != "partially_paid" || partialAmountDue != remainingMicros {
+		t.Fatalf("partial payment state = bill %q payment %q due %d, want past_due/partially_paid/%d", partialBillState, partialPaymentStatus, partialAmountDue, remainingMicros)
+	}
+
+	resp, err = client.Get(server.URL() + "/bills")
+	if err != nil {
+		t.Fatalf("GET /bills after partial past-due payment error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills after partial past-due payment status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "past-due") || !strings.Contains(body, "partially-paid") {
+		t.Fatalf("GET /bills after partial past-due payment missing past-due partial invoice state: %s", body)
+	}
+
+	body = postPaymentAction(url.Values{
+		"invoice_obligation_id": {obligationID},
 		"action":                {"process"},
 	})
 	if !strings.Contains(body, "processing") {
@@ -1192,7 +1245,7 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 	body = postPaymentAction(url.Values{
 		"invoice_obligation_id": {obligationID},
 		"action":                {"collect"},
-		"amount":                {formatMicrosDecimal(closeResult.InvoiceObligation.AmountDueMicros)},
+		"amount":                {formatMicrosDecimal(remainingMicros)},
 	})
 	if !strings.Contains(body, "Collected payment for "+closeResult.InvoiceObligation.InvoiceID) ||
 		!strings.Contains(body, "succeeded") ||

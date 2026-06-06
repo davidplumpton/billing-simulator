@@ -491,7 +491,7 @@ func persistPaymentLifecycleUpdate(ctx context.Context, tx *sql.Tx, current Invo
 	); err != nil {
 		return fmt.Errorf("upsert invoice payment state: %w", err)
 	}
-	if err := updateBillStateForPaymentStatus(ctx, tx, current.BillID, update.Status); err != nil {
+	if err := updateBillStateForPaymentStatus(ctx, tx, current.BillID, update.Status, update.AmountDueMicros); err != nil {
 		return err
 	}
 	return nil
@@ -504,20 +504,31 @@ func failureReasonForPaymentState(update paymentLifecycleUpdate) string {
 	return ""
 }
 
-func updateBillStateForPaymentStatus(ctx context.Context, tx *sql.Tx, billID, paymentStatus string) error {
+func updateBillStateForPaymentStatus(ctx context.Context, tx *sql.Tx, billID, paymentStatus string, amountDueMicros int64) error {
 	billState := billStateIssued
+	preservePastDue := false
 	switch paymentStatus {
 	case invoiceObligationStatusSucceeded:
 		billState = billStatePaid
 	case invoiceObligationStatusPastDue:
 		billState = billStatePastDue
+	case invoiceObligationStatusScheduled,
+		invoiceObligationStatusProcessing,
+		invoiceObligationStatusFailed,
+		invoiceObligationStatusPartiallyPaid,
+		invoiceObligationStatusRefunded:
+		preservePastDue = amountDueMicros > 0
 	}
 	if _, err := tx.ExecContext(
 		ctx,
 		`UPDATE bills
-		    SET bill_state = ?
+		    SET bill_state = CASE
+		        WHEN ? AND bill_state = 'past_due' THEN 'past_due'
+		        ELSE ?
+		        END
 		  WHERE id = ?
 		    AND bill_state IN ('issued', 'paid', 'past_due')`,
+		preservePastDue,
 		billState,
 		billID,
 	); err != nil {

@@ -482,6 +482,7 @@ func paymentStateCards(issuedBills []persistence.BillWithInvoiceObligation) []bi
 		{Key: "processing", Label: "Processing"},
 		{Key: "failed", Label: "Failed"},
 		{Key: "past_due", Label: "Past Due"},
+		{Key: "partially_paid", Label: "Partially Paid"},
 		{Key: "succeeded", Label: "Succeeded"},
 	}
 	cards := make([]billStateCardView, 0, len(definitions))

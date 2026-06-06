@@ -170,6 +170,44 @@ func TestPaymentLifecycleRepositoryHandlesFailurePastDueAndRefund(t *testing.T) 
 	}
 }
 
+func TestPaymentLifecycleRepositoryPreservesPastDueBillAfterPartialPayment(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	bill, obligation := insertIssuedBillForInvoiceTest(t, ctx, db)
+	repo := NewPaymentLifecycleRepository(db)
+
+	if _, err := repo.MarkPastDue(ctx, PaymentLifecycleTransitionRequest{
+		InvoiceObligationID: obligation.ID,
+		OccurredAt:          "2026-03-23",
+	}); err != nil {
+		t.Fatalf("MarkPastDue() error = %v", err)
+	}
+	partial, err := repo.ApplyPayment(ctx, PaymentLifecycleTransitionRequest{
+		InvoiceObligationID: obligation.ID,
+		AmountMicros:        500_000,
+		Reason:              "Partial past-due remittance",
+		OccurredAt:          "2026-03-24",
+	})
+	if err != nil {
+		t.Fatalf("ApplyPayment(partial past-due) error = %v", err)
+	}
+	if partial.Obligation.Status != invoiceObligationStatusPartiallyPaid ||
+		partial.Obligation.AmountDueMicros != bill.TotalMicros-500_000 ||
+		partial.Obligation.AmountPaidMicros != 500_000 {
+		t.Fatalf("ApplyPayment(partial past-due) = %+v, want partially paid remaining balance", partial)
+	}
+
+	summary := requireBillStateSummaryFromDB(t, ctx, db, bill.ID)
+	if summary.BillState != billStatePastDue ||
+		summary.InvoiceStatus != invoiceObligationStatusPartiallyPaid ||
+		summary.InvoiceAmountDueMicros != bill.TotalMicros-500_000 ||
+		summary.InvoiceAmountPaidMicros != 500_000 {
+		t.Fatalf("bill summary after partial past-due payment = %+v, want past-due bill with partial invoice balance", summary)
+	}
+}
+
 func TestPaymentLifecycleRepositoryRejectsInvalidTransitions(t *testing.T) {
 	t.Parallel()
 

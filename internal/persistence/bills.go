@@ -585,14 +585,15 @@ func (r BillsRepository) listIssuedBillStateSummaries(ctx context.Context, reque
 			b.tax_micros,
 			b.total_micros,
 			o.invoice_id,
-			o.status,
-			o.amount_due_micros,
-			o.amount_paid_micros,
+			COALESCE(ps.status, CASE o.status WHEN 'paid' THEN 'succeeded' ELSE o.status END) AS status,
+			COALESCE(ps.amount_due_micros, o.amount_due_micros) AS amount_due_micros,
+			COALESCE(ps.amount_paid_micros, o.amount_paid_micros) AS amount_paid_micros,
 			o.invoice_date,
 			o.due_date,
-			o.updated_at
+			COALESCE(ps.updated_at, o.updated_at) AS updated_at
 		 FROM bills b
 		 JOIN invoice_obligations o ON o.bill_id = b.id
+		 LEFT JOIN invoice_payment_states ps ON ps.invoice_obligation_id = o.id
 		`+whereSQL+`
 		 ORDER BY b.billing_period_start DESC, b.issued_at DESC, b.id DESC
 		 LIMIT ?`,

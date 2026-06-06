@@ -342,16 +342,17 @@ func (r MonthEndCloseRepository) ListIssuedBills(ctx context.Context, limit int)
 			o.id,
 			o.bill_id,
 			o.invoice_id,
-			o.status,
-			o.amount_due_micros,
-			o.amount_paid_micros,
+			COALESCE(ps.status, CASE o.status WHEN 'paid' THEN 'succeeded' ELSE o.status END) AS status,
+			COALESCE(ps.amount_due_micros, o.amount_due_micros) AS amount_due_micros,
+			COALESCE(ps.amount_paid_micros, o.amount_paid_micros) AS amount_paid_micros,
 			o.currency_code,
 			o.invoice_date,
 			o.due_date,
 			o.created_at,
-			o.updated_at
+			COALESCE(ps.updated_at, o.updated_at) AS updated_at
 		 FROM bills b
 		 JOIN invoice_obligations o ON o.bill_id = b.id
+		 LEFT JOIN invoice_payment_states ps ON ps.invoice_obligation_id = o.id
 		 ORDER BY b.issued_at DESC, b.id DESC
 		 LIMIT ?`,
 		limit,
@@ -439,25 +440,7 @@ func (r MonthEndCloseRepository) getBillByCloseID(ctx context.Context, closeID s
 }
 
 func (r MonthEndCloseRepository) getInvoiceObligationByBillID(ctx context.Context, billID string) (InvoiceObligation, error) {
-	row := r.db.QueryRowContext(
-		ctx,
-		`SELECT
-			id,
-			bill_id,
-			invoice_id,
-			status,
-			amount_due_micros,
-			amount_paid_micros,
-			currency_code,
-			invoice_date,
-			due_date,
-			created_at,
-			updated_at
-		 FROM invoice_obligations
-		 WHERE bill_id = ?`,
-		billID,
-	)
-	obligation, err := scanInvoiceObligation(row)
+	obligation, err := getInvoiceObligationWithPaymentState(ctx, r.db, `o.bill_id = ?`, billID)
 	if err != nil {
 		return InvoiceObligation{}, fmt.Errorf("get invoice obligation for bill %q: %w", billID, err)
 	}

@@ -355,25 +355,7 @@ func (r InvoiceDocumentRepository) getByInvoiceID(ctx context.Context, invoiceID
 }
 
 func (r InvoiceDocumentRepository) getObligation(ctx context.Context, obligationID string) (InvoiceObligation, error) {
-	row := r.db.QueryRowContext(
-		ctx,
-		`SELECT
-			id,
-			bill_id,
-			invoice_id,
-			status,
-			amount_due_micros,
-			amount_paid_micros,
-			currency_code,
-			invoice_date,
-			due_date,
-			created_at,
-			updated_at
-		 FROM invoice_obligations
-		 WHERE id = ?`,
-		obligationID,
-	)
-	obligation, err := scanInvoiceObligation(row)
+	obligation, err := getInvoiceObligationWithPaymentState(ctx, r.db, `o.id = ?`, obligationID)
 	if err != nil {
 		return InvoiceObligation{}, fmt.Errorf("get invoice obligation %q: %w", obligationID, err)
 	}

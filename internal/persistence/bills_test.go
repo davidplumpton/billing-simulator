@@ -86,8 +86,8 @@ func TestBillsRepositoryListsOpenPendingAndStoredBillStates(t *testing.T) {
 		t.Fatalf("adjusted summary = %+v, want charges, credits, tax, and adjusted total", adjusted)
 	}
 	paid := requireBillStateSummary(t, summaries, "paid", "2025-12-01")
-	if paid.InvoiceStatus != "paid" || paid.InvoiceAmountPaidMicros != 4_000_000 || paid.InvoiceAmountDueMicros != 0 {
-		t.Fatalf("paid summary = %+v, want paid invoice obligation", paid)
+	if paid.InvoiceStatus != invoiceObligationStatusSucceeded || paid.InvoiceAmountPaidMicros != 4_000_000 || paid.InvoiceAmountDueMicros != 0 {
+		t.Fatalf("paid summary = %+v, want succeeded invoice obligation", paid)
 	}
 	pastDue := requireBillStateSummary(t, summaries, "past_due", "2026-01-01")
 	if pastDue.InvoiceStatus != "past_due" || pastDue.TotalMicros != 5_000_000 {

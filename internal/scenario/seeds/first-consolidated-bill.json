@@ -1,0 +1,100 @@
+{
+  "name": "First consolidated bill",
+  "clock": {
+    "start": "2026-03-01"
+  },
+  "organization_template": "anycompany-retail",
+  "random_seed": 11,
+  "events": [
+    {
+      "id": "create-returns-account",
+      "day": 1,
+      "action": "create_account",
+      "account_id": "777788889902",
+      "account": "Returns Expansion",
+      "account_email": "returns-expansion@anycompany.example",
+      "parent_unit_id": "ou_anycompany_workloads"
+    },
+    {
+      "id": "create-returns-api",
+      "day": 2,
+      "action": "create_resource",
+      "account": "Returns Expansion",
+      "service": "Amazon EC2",
+      "resource": "returns-api-prod",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "app": "returns",
+        "env": "prod",
+        "owner": "returns-platform"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "returns-api-hours",
+      "day": 3,
+      "action": "add_usage",
+      "account": "Returns Expansion",
+      "service": "Amazon EC2",
+      "resource": "returns-api-prod",
+      "amount_hours": 120
+    },
+    {
+      "id": "create-storefront-orders",
+      "day": 4,
+      "action": "create_resource",
+      "account": "Storefront Prod",
+      "service": "Amazon S3",
+      "resource": "s3://storefront-orders",
+      "resource_type": "bucket",
+      "region": "us-east-1",
+      "tags": {
+        "app": "storefront",
+        "env": "prod",
+        "owner": "storefront-team"
+      },
+      "attributes": {
+        "storage_class": "standard"
+      }
+    },
+    {
+      "id": "generate-storefront-storage",
+      "day": 5,
+      "action": "generate_usage",
+      "resource": "s3://storefront-orders",
+      "pattern": "storage_growth",
+      "days": 3
+    },
+    {
+      "id": "shared-nat-egress",
+      "day": 10,
+      "action": "add_usage",
+      "account": "Shared Networking",
+      "service": "NAT Gateway",
+      "resource": "shared-egress-nat",
+      "amount_gb": 350,
+      "tags": {
+        "app": "shared-networking",
+        "env": "prod",
+        "owner": "network-platform"
+      }
+    },
+    {
+      "id": "meter-march",
+      "day": 32,
+      "action": "run_daily_metering",
+      "payer_account": "Management"
+    },
+    {
+      "id": "close-march",
+      "day": 33,
+      "action": "close_billing_period",
+      "payer_account": "Management",
+      "billing_period_start": "2026-03-01",
+      "billing_period_end": "2026-04-01"
+    }
+  ]
+}

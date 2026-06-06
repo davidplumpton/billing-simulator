@@ -10,6 +10,9 @@ import (
 )
 
 const (
+	// FirstConsolidatedBillSeedKey identifies the packaged consolidated-billing starter lab.
+	FirstConsolidatedBillSeedKey = "first-consolidated-bill"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

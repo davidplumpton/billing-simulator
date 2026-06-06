@@ -84,6 +84,7 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 		runID:                run.ID,
 		definition:           definition,
 		startTime:            startTime,
+		accountAliasesByKey:  map[string]string{},
 		resourceAliasesByKey: map[string]string{},
 	}
 
@@ -179,6 +180,7 @@ type scenarioExecutionState struct {
 	runID                string
 	definition           Definition
 	startTime            time.Time
+	accountAliasesByKey  map[string]string
 	resourceAliasesByKey map[string]string
 }
 
@@ -216,6 +218,10 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 	}
 
 	switch event.Action {
+	case EventActionCreateAccount:
+		if _, err := r.createAccount(ctx, state, event, scheduledAt); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
 	case EventActionCreateResource:
 		resource, err := r.createResource(ctx, state, event, scheduledAt)
 		if err != nil {
@@ -253,7 +259,7 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 	case EventActionRunDailyMetering:
 		metering, err := r.daily.Run(ctx, persistence.DailyMeteringJobRequest{
 			Trigger:        persistence.DailyMeteringJobTriggerOnDemand,
-			PayerAccountID: resolveScenarioAccountID(state.definition.OrganizationTemplate, event.PayerAccountID, event.PayerAccount),
+			PayerAccountID: state.resolveAccountID(event.PayerAccountID, event.PayerAccount),
 		})
 		if err != nil {
 			return failScenarioRunEvent(audit, err)
@@ -262,7 +268,7 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		audit.BillLineItemsCreated = metering.BillLineItemsCreated
 	case EventActionCloseBillingPeriod, EventActionIssueBill:
 		closed, err := r.monthEnd.ClosePreviousPeriod(ctx, persistence.MonthEndCloseRequest{
-			PayerAccountID: resolveScenarioAccountID(state.definition.OrganizationTemplate, event.PayerAccountID, event.PayerAccount),
+			PayerAccountID: state.resolveAccountID(event.PayerAccountID, event.PayerAccount),
 			PeriodStart:    event.BillingPeriodStart,
 			PeriodEnd:      event.BillingPeriodEnd,
 		})
@@ -278,6 +284,35 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		return failScenarioRunEvent(audit, err)
 	}
 	return audit, nil
+}
+
+// createAccount adds a scenario-owned member account and records lifecycle lineage.
+func (r Runner) createAccount(ctx context.Context, state *scenarioExecutionState, event Event, scheduledAt time.Time) (persistence.AccountLifecycleResult, error) {
+	organizationID := event.OrganizationID
+	if organizationID == "" {
+		organization, err := r.organization.GetOrganizationByTemplate(ctx, state.definition.OrganizationTemplate)
+		if err != nil {
+			return persistence.AccountLifecycleResult{}, err
+		}
+		organizationID = organization.ID
+	}
+	result, err := r.organization.CreateAccount(ctx, persistence.AccountCreateRequest{
+		ID:                    event.AccountID,
+		OrganizationID:        organizationID,
+		ParentUnitID:          event.ParentUnitID,
+		Name:                  event.Account,
+		Email:                 event.AccountEmail,
+		EffectiveAt:           scheduledAt.UTC().Format(time.RFC3339),
+		EventSource:           scenarioEventSource,
+		ScenarioRunID:         state.runID,
+		ScenarioEventID:       event.ID,
+		ScenarioEventSequence: event.Sequence,
+	})
+	if err != nil {
+		return persistence.AccountLifecycleResult{}, err
+	}
+	state.rememberAccount(event, result.Account.ID)
+	return result, nil
 }
 
 func (r Runner) createResource(ctx context.Context, state *scenarioExecutionState, event Event, scheduledAt time.Time) (persistence.Resource, error) {
@@ -301,7 +336,7 @@ func (r Runner) createResource(ctx context.Context, state *scenarioExecutionStat
 
 	resource, err := r.usage.CreateResource(ctx, persistence.ResourceCreateRequest{
 		ID:                    resourceID,
-		AccountID:             resolveScenarioAccountID(state.definition.OrganizationTemplate, event.AccountID, event.Account),
+		AccountID:             state.resolveAccountID(event.AccountID, event.Account),
 		RegionCode:            chooseFirst(event.Region, service.RegionCode, "us-east-1"),
 		ServiceCode:           service.ServiceCode,
 		ResourceType:          chooseFirst(event.ResourceType, service.ResourceType, "scenario_resource"),
@@ -666,6 +701,30 @@ func positiveJSONNumber(number *json.Number) (float64, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+// rememberAccount stores aliases that later scenario events can use in account fields.
+func (s *scenarioExecutionState) rememberAccount(event Event, accountID string) {
+	for _, alias := range []string{accountID, event.AccountID, event.Account, event.ID} {
+		key := scenarioAliasKey(alias)
+		if key != "" {
+			s.accountAliasesByKey[key] = accountID
+		}
+	}
+}
+
+// resolveAccountID maps explicit account IDs, scenario-created aliases, and seeded AnyCompany names to an account ID.
+func (s scenarioExecutionState) resolveAccountID(explicitID, name string) string {
+	if strings.TrimSpace(explicitID) != "" {
+		return strings.TrimSpace(explicitID)
+	}
+	key := scenarioAliasKey(name)
+	if key != "" {
+		if accountID := s.accountAliasesByKey[key]; accountID != "" {
+			return accountID
+		}
+	}
+	return resolveScenarioAccountID(s.definition.OrganizationTemplate, explicitID, name)
 }
 
 func (s *scenarioExecutionState) rememberResource(event Event, resourceID string) {

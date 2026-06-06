@@ -36,12 +36,22 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, UntaggedDataTransferSpikeSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, UntaggedDataTransferSpikeSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, FirstConsolidatedBillSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, FirstConsolidatedBillSeedKey)
+	}
 	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition() error = %v", err)
 	}
 	if definition.Name != "Find the untagged data-transfer spike" || len(definition.Events) != 5 {
 		t.Fatalf("packaged scenario definition = %+v, want MVP data-transfer spike fixture", definition)
+	}
+	definition, err = LoadSeedDefinition(FirstConsolidatedBillSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", FirstConsolidatedBillSeedKey, err)
+	}
+	if definition.Name != "First consolidated bill" || len(definition.Events) != 8 || definition.Events[0].Action != EventActionCreateAccount {
+		t.Fatalf("first consolidated bill definition = %+v, want account-creation lab fixture", definition)
 	}
 }
 
@@ -150,6 +160,120 @@ func TestRunnerDistinguishesSameHeaderDefinitionsWithDifferentBodies(t *testing.
 	}
 	if runCount != 2 {
 		t.Fatalf("same-header scenario runs = %d, want 2 durable audit rows", runCount)
+	}
+}
+
+func TestRunnerAppliesFirstConsolidatedBillSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(FirstConsolidatedBillSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", FirstConsolidatedBillSeedKey, err)
+	}
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(first consolidated bill) error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded ||
+		result.Run.EventsSucceeded != 8 ||
+		result.ResourcesCreated != 3 ||
+		result.UsageEventsCreated != 5 ||
+		result.BillsIssued != 1 {
+		t.Fatalf("Run() result = %+v, want successful consolidated bill lab counts", result)
+	}
+
+	createdAccount, err := persistence.NewOrganizationRepository(db).GetAccount(ctx, "777788889902")
+	if err != nil {
+		t.Fatalf("GetAccount(Returns Expansion) error = %v", err)
+	}
+	if createdAccount.Name != "Returns Expansion" ||
+		createdAccount.ParentUnitID != "ou_anycompany_workloads" ||
+		createdAccount.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		createdAccount.BillingVisibilityRole != "member-account" ||
+		createdAccount.Status != persistence.AccountStatusActive {
+		t.Fatalf("created account = %+v, want active workload member account paid by management", createdAccount)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM account_lifecycle_events
+		WHERE account_id = ?
+		  AND event_type = 'created'
+		  AND event_source = 'scenario'
+		  AND scenario_run_id = ?
+		  AND scenario_event_id = ?`, "777788889902", result.Run.ID, "create-returns-account"); got != 1 {
+		t.Fatalf("scenario account lifecycle rows = %d, want 1 created row with run lineage", got)
+	}
+
+	var billID, billState, invoiceID string
+	var billLineItemCount int
+	var billTotalMicros int64
+	if err := db.QueryRowContext(ctx, `SELECT
+			b.id,
+			b.bill_state,
+			b.line_item_count,
+			b.total_micros,
+			o.invoice_id
+		FROM bills b
+		JOIN invoice_obligations o ON o.bill_id = b.id
+		WHERE b.billing_period_start = ?
+		  AND b.billing_period_end = ?
+		  AND b.payer_account_id = ?`,
+		"2026-03-01",
+		"2026-04-01",
+		persistence.AnyCompanyRetailManagementAccountID,
+	).Scan(&billID, &billState, &billLineItemCount, &billTotalMicros, &invoiceID); err != nil {
+		t.Fatalf("read issued consolidated bill: %v", err)
+	}
+	if billID == "" || invoiceID == "" || billState != "issued" || billLineItemCount == 0 || billTotalMicros == 0 {
+		t.Fatalf("bill/invoice = %q/%q/%q/%d/%d, want issued nonzero consolidated bill", billID, invoiceID, billState, billLineItemCount, billTotalMicros)
+	}
+
+	document, err := persistence.NewInvoiceDocumentRepository(db).GetByBillID(ctx, billID)
+	if err != nil {
+		t.Fatalf("GetByBillID(%q) error = %v", billID, err)
+	}
+	if document.InvoiceID != invoiceID ||
+		document.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		document.LineItemCount != billLineItemCount ||
+		document.TotalMicros != billTotalMicros {
+		t.Fatalf("invoice document = %+v, want durable invoice matching bill %q", document, billID)
+	}
+
+	for _, accountID := range []string{"777788889902", "111122223333", "222233334444"} {
+		var lineItemCount int
+		var totalMicros int64
+		if err := db.QueryRowContext(ctx, `SELECT
+				COUNT(*),
+				COALESCE(SUM(unblended_cost_micros), 0)
+			FROM bill_line_items
+			WHERE billing_period_start = ?
+			  AND billing_period_end = ?
+			  AND payer_account_id = ?
+			  AND usage_account_id = ?
+			  AND line_item_status = 'final'`,
+			"2026-03-01",
+			"2026-04-01",
+			persistence.AnyCompanyRetailManagementAccountID,
+			accountID,
+		).Scan(&lineItemCount, &totalMicros); err != nil {
+			t.Fatalf("read final line items for usage account %s: %v", accountID, err)
+		}
+		if lineItemCount == 0 || totalMicros == 0 {
+			t.Fatalf("usage account %s final bill lines = %d/%d, want nonzero consolidated charges", accountID, lineItemCount, totalMicros)
+		}
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM bill_line_items
+		WHERE billing_period_start = ?
+		  AND billing_period_end = ?
+		  AND line_item_status = 'final'
+		  AND payer_account_id <> ?`,
+		"2026-03-01",
+		"2026-04-01",
+		persistence.AnyCompanyRetailManagementAccountID); got != 0 {
+		t.Fatalf("final line items with non-management payer = %d, want all charges consolidated under management", got)
 	}
 }
 

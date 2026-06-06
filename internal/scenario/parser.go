@@ -35,6 +35,9 @@ type Clock struct {
 type EventAction string
 
 const (
+	// EventActionCreateAccount creates a simulated member account in the organization.
+	EventActionCreateAccount EventAction = "create_account"
+
 	// EventActionCreateResource creates a synthetic resource in an account.
 	EventActionCreateResource EventAction = "create_resource"
 
@@ -66,6 +69,9 @@ type Event struct {
 	Action             EventAction       `json:"action"`
 	Account            string            `json:"account,omitempty"`
 	AccountID          string            `json:"account_id,omitempty"`
+	AccountEmail       string            `json:"account_email,omitempty"`
+	OrganizationID     string            `json:"organization_id,omitempty"`
+	ParentUnitID       string            `json:"parent_unit_id,omitempty"`
 	PayerAccount       string            `json:"payer_account,omitempty"`
 	PayerAccountID     string            `json:"payer_account_id,omitempty"`
 	Service            string            `json:"service,omitempty"`
@@ -233,6 +239,9 @@ func normalizeEvent(event Event, index int) Event {
 	event.Action = EventAction(strings.ToLower(strings.TrimSpace(string(event.Action))))
 	event.Account = strings.TrimSpace(event.Account)
 	event.AccountID = strings.TrimSpace(event.AccountID)
+	event.AccountEmail = strings.TrimSpace(event.AccountEmail)
+	event.OrganizationID = strings.TrimSpace(event.OrganizationID)
+	event.ParentUnitID = strings.TrimSpace(event.ParentUnitID)
 	event.PayerAccount = strings.TrimSpace(event.PayerAccount)
 	event.PayerAccountID = strings.TrimSpace(event.PayerAccountID)
 	event.Service = strings.TrimSpace(event.Service)
@@ -287,6 +296,8 @@ func validateEvent(event Event, index int, problems *validationProblems) {
 	switch event.Action {
 	case "":
 		problems.add("%s.action is required", path)
+	case EventActionCreateAccount:
+		validateCreateAccountEvent(path, event, problems)
 	case EventActionCreateResource:
 		validateCreateResourceEvent(path, event, problems)
 	case EventActionAddUsage:
@@ -316,6 +327,22 @@ func validateEventSchedule(path string, event Event, problems *validationProblem
 	}
 	if hasAt {
 		validateScenarioTimestamp(path+".at", event.At, problems)
+	}
+}
+
+// validateCreateAccountEvent checks the author-provided fields needed to add a member account.
+func validateCreateAccountEvent(path string, event Event, problems *validationProblems) {
+	if event.AccountID == "" {
+		problems.add("%s.account_id is required for create_account", path)
+	}
+	if event.Account == "" {
+		problems.add("%s.account is required for create_account", path)
+	}
+	if event.AccountEmail == "" {
+		problems.add("%s.account_email is required for create_account", path)
+	}
+	if event.ParentUnitID == "" {
+		problems.add("%s.parent_unit_id is required for create_account", path)
 	}
 }
 
@@ -415,36 +442,41 @@ func validateCheck(check Check, index int, problems *validationProblems) {
 
 func validateScenarioSemantics(definition Definition, problems *validationProblems) {
 	startTime, hasStart := scenarioDefinitionStart(definition.Clock.Start)
+	createdAccounts := map[string]string{}
 	for i, event := range definition.Events {
 		path := fmt.Sprintf("events[%d]", i)
-		validateScenarioEventAccountReferences(path, definition.OrganizationTemplate, event, problems)
+		validateScenarioEventAccountReferences(path, definition.OrganizationTemplate, event, createdAccounts, problems)
 		validateScenarioEventService(path, event, problems)
 		validateScenarioEventTimeWindow(path, startTime, hasStart, event, problems)
 		validateScenarioBillingPeriodWindow(path, event, problems)
+		rememberScenarioCreatedAccount(createdAccounts, event)
 	}
 
 	for i, check := range definition.Checks {
 		path := fmt.Sprintf("checks[%d]", i)
-		validateScenarioAccountReference(path+".account", definition.OrganizationTemplate, "", check.Account, problems)
+		validateScenarioAccountReference(path+".account", definition.OrganizationTemplate, "", check.Account, createdAccounts, problems)
 		validateScenarioCheckService(path+".expected_service", check.ExpectedService, problems)
 		validateScenarioCheckService(path+".service", check.Service, problems)
 	}
 }
 
-func validateScenarioEventAccountReferences(path, organizationTemplate string, event Event, problems *validationProblems) {
+func validateScenarioEventAccountReferences(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
 	switch event.Action {
 	case EventActionCreateResource, EventActionAddUsage:
-		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, problems)
+		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, createdAccounts, problems)
 	case EventActionRunDailyMetering, EventActionCloseBillingPeriod, EventActionIssueBill:
-		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, problems)
+		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
 	default:
-		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, problems)
-		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, problems)
+		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, createdAccounts, problems)
+		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
 	}
 }
 
-func validateScenarioAccountReference(path, organizationTemplate, explicitID, name string, problems *validationProblems) {
+func validateScenarioAccountReference(path, organizationTemplate, explicitID, name string, createdAccounts map[string]string, problems *validationProblems) {
 	if strings.TrimSpace(explicitID) != "" || strings.TrimSpace(name) == "" {
+		return
+	}
+	if accountID := createdAccounts[scenarioLookupKey(name)]; accountID != "" {
 		return
 	}
 	if !persistence.IsAnyCompanyRetailTemplate(organizationTemplate) {
@@ -454,6 +486,19 @@ func validateScenarioAccountReference(path, organizationTemplate, explicitID, na
 		return
 	}
 	problems.add("%s %q is not in organization_template %q; use account_id or one of: %s", path, name, organizationTemplate, strings.Join(persistence.AnyCompanyRetailAccountNames(), ", "))
+}
+
+// rememberScenarioCreatedAccount makes earlier create_account events available to later references.
+func rememberScenarioCreatedAccount(createdAccounts map[string]string, event Event) {
+	if event.Action != EventActionCreateAccount || strings.TrimSpace(event.AccountID) == "" {
+		return
+	}
+	for _, alias := range []string{event.Account, event.AccountID, event.ID} {
+		key := scenarioLookupKey(alias)
+		if key != "" {
+			createdAccounts[key] = event.AccountID
+		}
+	}
 }
 
 func validateScenarioEventService(path string, event Event, problems *validationProblems) {

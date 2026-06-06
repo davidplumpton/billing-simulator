@@ -308,6 +308,105 @@ func TestCURLineItemRepositoryWritesCSVExportWithBillMetadata(t *testing.T) {
 	}
 }
 
+func TestCURLineItemRepositoryBuildsReconciliationReport(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-cur-reconcile-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "CUR reconcile web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-cur-reconcile-hours",
+			ResourceID:          "resource-cur-reconcile-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	if _, err := NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: AnyCompanyRetailManagementAccountID,
+		InvoiceDueDays: 14,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+
+	repo := NewCURLineItemRepository(db)
+	report, err := repo.GetReconciliationReport(ctx, CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		LineItemStatus:     billLineItemStatusFinal,
+	})
+	if err != nil {
+		t.Fatalf("GetReconciliationReport() error = %v", err)
+	}
+	if report.Status != curExportReconciliationStatusBalanced ||
+		!slices.Equal(report.Flags, []string{curExportReconciliationFlagBalanced}) {
+		t.Fatalf("balanced report status/flags = %q/%+v, want balanced", report.Status, report.Flags)
+	}
+	if report.BillID != closeResult.Bill.ID ||
+		report.InvoiceID != closeResult.InvoiceObligation.InvoiceID ||
+		report.CurrencyCode != defaultBillCurrencyCode {
+		t.Fatalf("balanced report documents = %+v, want bill %s invoice %s USD", report, closeResult.Bill.ID, closeResult.InvoiceObligation.InvoiceID)
+	}
+	if report.ExportLineItemCount != 2 ||
+		report.BillLineItemCount != 2 ||
+		report.InvoiceLineItemCount != 2 {
+		t.Fatalf("balanced report line counts = export %d bill %d invoice %d, want 2/2/2", report.ExportLineItemCount, report.BillLineItemCount, report.InvoiceLineItemCount)
+	}
+	if report.ExportChargeMicros != item.UnblendedCostMicros+supportBusinessMinimumCostMicros ||
+		report.ExportTotalMicros != 1_083_200 ||
+		report.BillTotalMicros != report.ExportTotalMicros ||
+		report.InvoiceTotalMicros != report.ExportTotalMicros {
+		t.Fatalf("balanced report totals = %+v, want export/bill/invoice all 1083200 micros", report)
+	}
+	if report.BillTotalResidualMicros != 0 ||
+		report.InvoiceTotalResidualMicros != 0 ||
+		report.BillLineItemResidual != 0 ||
+		report.InvoiceLineItemResidual != 0 {
+		t.Fatalf("balanced report residuals = %+v, want zero", report)
+	}
+
+	filtered, err := repo.GetReconciliationReport(ctx, CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     billLineItemStatusFinal,
+	})
+	if err != nil {
+		t.Fatalf("GetReconciliationReport(filtered) error = %v", err)
+	}
+	if filtered.Status != curExportReconciliationStatusExcludedLines ||
+		!slices.Contains(filtered.Flags, curExportReconciliationFlagExcludedLines) {
+		t.Fatalf("filtered report status/flags = %q/%+v, want excluded-lines", filtered.Status, filtered.Flags)
+	}
+	if filtered.ExportLineItemCount != 1 ||
+		filtered.ExportTotalMicros != item.UnblendedCostMicros ||
+		filtered.BillLineItemResidual != 1 ||
+		filtered.InvoiceLineItemResidual != 1 ||
+		filtered.BillTotalResidualMicros != supportBusinessMinimumCostMicros ||
+		filtered.InvoiceTotalResidualMicros != supportBusinessMinimumCostMicros {
+		t.Fatalf("filtered report = %+v, want exported EC2 row and Support residual", filtered)
+	}
+}
+
 func TestCURLineItemRepositoryWriteCSVExportValidatesRequest(t *testing.T) {
 	t.Parallel()
 
@@ -341,6 +440,38 @@ func TestCURLineItemRepositoryWriteCSVExportValidatesRequest(t *testing.T) {
 		GeneratedAt:        "March 2",
 	}); err == nil {
 		t.Fatal("WriteCSVExport(invalid generated_at) error = nil, want validation error")
+	}
+}
+
+func TestCURLineItemRepositoryReconciliationValidatesRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewCURLineItemRepository(db)
+
+	if _, err := NewCURLineItemRepository(nil).GetReconciliationReport(ctx, CURExportReconciliationRequest{}); err == nil {
+		t.Fatal("GetReconciliationReport(nil db) error = nil, want database validation error")
+	}
+	if _, err := repo.GetReconciliationReport(ctx, CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	}); err == nil {
+		t.Fatal("GetReconciliationReport(missing payer) error = nil, want validation error")
+	}
+	if _, err := repo.GetReconciliationReport(ctx, CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+	}); err == nil {
+		t.Fatal("GetReconciliationReport(period start only) error = nil, want validation error")
+	}
+	if _, err := repo.GetReconciliationReport(ctx, CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		LineItemStatus:     "draft",
+	}); err == nil {
+		t.Fatal("GetReconciliationReport(unsupported status) error = nil, want validation error")
 	}
 }
 

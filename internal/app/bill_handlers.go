@@ -60,6 +60,8 @@ type billSummaryView struct {
 	InvoicePath      string
 	InvoiceCSVPath   string
 	InvoicePDFPath   string
+	CURCSVPath       string
+	CURReconcilePath string
 	InvoiceStatus    string
 	InvoiceAmountDue string
 	InvoicePaid      string
@@ -675,10 +677,24 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummar
 	invoicePath := ""
 	invoiceCSVPath := ""
 	invoicePDFPath := ""
+	curCSVPath := ""
+	curReconcilePath := ""
 	if strings.TrimSpace(summary.InvoiceID) != "" {
 		invoicePath = invoicePathForID(summary.InvoiceID)
 		invoiceCSVPath = invoiceCSVPathForID(summary.InvoiceID)
 		invoicePDFPath = invoicePDFPathForID(summary.InvoiceID)
+		curCSVPath = curCSVExportPath(persistence.CURCSVExportRequest{
+			BillingPeriodStart: summary.BillingPeriodStart,
+			BillingPeriodEnd:   summary.BillingPeriodEnd,
+			PayerAccountID:     summary.PayerAccountID,
+			LineItemStatus:     "final",
+		})
+		curReconcilePath = curExportReconciliationPath(persistence.CURExportReconciliationRequest{
+			BillingPeriodStart: summary.BillingPeriodStart,
+			BillingPeriodEnd:   summary.BillingPeriodEnd,
+			PayerAccountID:     summary.PayerAccountID,
+			LineItemStatus:     "final",
+		})
 	}
 	return billSummaryView{
 		ID:               summary.ID,
@@ -695,6 +711,8 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummar
 		InvoicePath:      invoicePath,
 		InvoiceCSVPath:   invoiceCSVPath,
 		InvoicePDFPath:   invoicePDFPath,
+		CURCSVPath:       curCSVPath,
+		CURReconcilePath: curReconcilePath,
 		InvoiceStatus:    displayBillState(summary.InvoiceStatus),
 		InvoiceAmountDue: formatUSDMicros(summary.InvoiceAmountDueMicros),
 		InvoicePaid:      formatUSDMicros(summary.InvoiceAmountPaidMicros),
@@ -1274,7 +1292,8 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 											<strong><a href="{{.InvoicePath}}">{{.InvoiceID}}</a></strong>
 											<small>{{.InvoiceStatus}} due {{.InvoiceAmountDue}} paid {{.InvoicePaid}}</small>
 											<small>{{.InvoiceDate}} to {{.InvoiceDueDate}}</small>
-											<small><a href="{{.InvoiceCSVPath}}">CSV</a> <a href="{{.InvoicePDFPath}}">PDF</a></small>
+											<small><a href="{{.InvoiceCSVPath}}">Invoice CSV</a> <a href="{{.InvoicePDFPath}}">PDF</a></small>
+											{{if .CURCSVPath}}<small><a href="{{.CURCSVPath}}">CUR CSV</a> <a href="{{.CURReconcilePath}}">Reconcile</a></small>{{end}}
 										{{else}}
 											<span class="muted">not issued</span>
 										{{end}}

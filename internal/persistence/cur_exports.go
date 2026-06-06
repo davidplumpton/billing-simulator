@@ -12,8 +12,20 @@ import (
 )
 
 const (
-	defaultCURLineItemLimit = 100
-	maxCURLineItemLimit     = 10_000
+	defaultCURLineItemLimit                      = 100
+	maxCURLineItemLimit                          = 10_000
+	curExportReconciliationStatusBalanced        = "balanced"
+	curExportReconciliationStatusExcludedLines   = "excluded-lines"
+	curExportReconciliationStatusRounding        = "rounding-residual"
+	curExportReconciliationStatusMissingBill     = "missing-bill"
+	curExportReconciliationStatusMissingInvoice  = "missing-invoice"
+	curExportReconciliationStatusInvoiceDiff     = "invoice-difference"
+	curExportReconciliationFlagBalanced          = "balanced"
+	curExportReconciliationFlagExcludedLines     = "excluded-lines"
+	curExportReconciliationFlagRoundingResidual  = "rounding-residual"
+	curExportReconciliationFlagMissingBill       = "missing-bill"
+	curExportReconciliationFlagMissingInvoice    = "missing-invoice"
+	curExportReconciliationFlagInvoiceDifference = "invoice-difference"
 )
 
 var curCSVExportColumns = append([]string{
@@ -108,6 +120,67 @@ type CURCSVExportResult struct {
 	GeneratedAt  string
 	SourceBillID string
 	RowsWritten  int
+}
+
+// CURExportReconciliationRequest selects the payer-period export rows compared to bill and invoice totals.
+type CURExportReconciliationRequest struct {
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	PayerAccountID     string
+	UsageAccountID     string
+	LineItemStatus     string
+	Limit              int
+}
+
+// CURExportReconciliationReport compares one CUR-like export selection with durable billing documents.
+type CURExportReconciliationReport struct {
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	PayerAccountID     string
+	UsageAccountID     string
+	LineItemStatus     string
+	CurrencyCode       string
+	BillID             string
+	BillState          string
+	InvoiceID          string
+	InvoiceStatus      string
+	Status             string
+	Flags              []string
+
+	ExportLineItemCount int
+	ExportChargeMicros  int64
+	ExportCreditMicros  int64
+	ExportRefundMicros  int64
+	ExportTaxMicros     int64
+	ExportTotalMicros   int64
+
+	BillLineItemCount int
+	BillChargeMicros  int64
+	BillCreditMicros  int64
+	BillRefundMicros  int64
+	BillTaxMicros     int64
+	BillTotalMicros   int64
+
+	InvoiceLineItemCount int
+	InvoiceChargeMicros  int64
+	InvoiceCreditMicros  int64
+	InvoiceRefundMicros  int64
+	InvoiceTaxMicros     int64
+	InvoiceTotalMicros   int64
+
+	BillLineItemResidual     int
+	BillChargeResidualMicros int64
+	BillCreditResidualMicros int64
+	BillRefundResidualMicros int64
+	BillTaxResidualMicros    int64
+	BillTotalResidualMicros  int64
+
+	InvoiceLineItemResidual     int
+	InvoiceChargeResidualMicros int64
+	InvoiceCreditResidualMicros int64
+	InvoiceRefundResidualMicros int64
+	InvoiceTaxResidualMicros    int64
+	InvoiceTotalResidualMicros  int64
 }
 
 // CURLineItemRepository maps persisted bill line items to CUR-like export rows.
@@ -304,6 +377,44 @@ func (r CURLineItemRepository) WriteCSVExport(ctx context.Context, writer io.Wri
 	}, nil
 }
 
+// GetReconciliationReport compares the selected CUR-like export rows to bill and invoice totals.
+func (r CURLineItemRepository) GetReconciliationReport(ctx context.Context, request CURExportReconciliationRequest) (CURExportReconciliationReport, error) {
+	if r.db == nil {
+		return CURExportReconciliationReport{}, fmt.Errorf("database handle is required")
+	}
+	request = normalizeCURExportReconciliationRequest(request)
+	if err := validateCURExportReconciliationRequest(request); err != nil {
+		return CURExportReconciliationReport{}, err
+	}
+
+	items, err := r.ListLineItems(ctx, CURLineItemListRequest{
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		PayerAccountID:     request.PayerAccountID,
+		UsageAccountID:     request.UsageAccountID,
+		LineItemStatus:     request.LineItemStatus,
+		Limit:              request.Limit,
+	})
+	if err != nil {
+		return CURExportReconciliationReport{}, err
+	}
+
+	report := CURExportReconciliationReport{
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		PayerAccountID:     request.PayerAccountID,
+		UsageAccountID:     request.UsageAccountID,
+		LineItemStatus:     request.LineItemStatus,
+		CurrencyCode:       defaultBillCurrencyCode,
+	}
+	applyCURExportTotals(&report, items)
+	if err := r.loadBillAndInvoiceTotalsForCURExport(ctx, &report); err != nil {
+		return CURExportReconciliationReport{}, err
+	}
+	applyCURExportReconciliationResiduals(&report)
+	return report, nil
+}
+
 func normalizeCURLineItemListRequest(request CURLineItemListRequest) CURLineItemListRequest {
 	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
 	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
@@ -353,6 +464,18 @@ func normalizeCURCSVExportRequest(request CURCSVExportRequest) CURCSVExportReque
 	return request
 }
 
+func normalizeCURExportReconciliationRequest(request CURExportReconciliationRequest) CURExportReconciliationRequest {
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
+	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
+	request.LineItemStatus = strings.TrimSpace(request.LineItemStatus)
+	if request.Limit <= 0 || request.Limit > maxCURLineItemLimit {
+		request.Limit = maxCURLineItemLimit
+	}
+	return request
+}
+
 func validateCURCSVExportRequest(request CURCSVExportRequest) error {
 	if request.BillingPeriodStart == "" || request.BillingPeriodEnd == "" {
 		return fmt.Errorf("CUR-like CSV export billing period start and end are required")
@@ -372,6 +495,24 @@ func validateCURCSVExportRequest(request CURCSVExportRequest) error {
 		if _, err := time.Parse(time.RFC3339, request.GeneratedAt); err != nil {
 			return fmt.Errorf("CUR-like CSV export generation time must use RFC3339: %w", err)
 		}
+	}
+	return nil
+}
+
+func validateCURExportReconciliationRequest(request CURExportReconciliationRequest) error {
+	if request.BillingPeriodStart == "" || request.BillingPeriodEnd == "" {
+		return fmt.Errorf("CUR-like export reconciliation billing period start and end are required")
+	}
+	if request.PayerAccountID == "" {
+		return fmt.Errorf("CUR-like export reconciliation payer account ID is required")
+	}
+	if err := validateCURLineItemListRequest(CURLineItemListRequest{
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		LineItemStatus:     request.LineItemStatus,
+		Limit:              request.Limit,
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -418,6 +559,213 @@ func (r CURLineItemRepository) sourceBillIDForCURCSVExport(ctx context.Context, 
 		return "", fmt.Errorf("read source bill for CUR-like CSV export: %w", err)
 	}
 	return sourceBillID, nil
+}
+
+func applyCURExportTotals(report *CURExportReconciliationReport, items []CURLineItem) {
+	report.ExportLineItemCount = len(items)
+	for _, item := range items {
+		if report.CurrencyCode == "" && item.Currency != "" {
+			report.CurrencyCode = item.Currency
+		}
+		switch item.LineItemType {
+		case billLineItemTypeUsage, billLineItemTypeFee:
+			report.ExportChargeMicros += item.UnblendedCostMicros
+		case "Credit":
+			report.ExportCreditMicros += item.UnblendedCostMicros
+		case "Refund":
+			report.ExportRefundMicros += item.UnblendedCostMicros
+		case "Tax":
+			report.ExportTaxMicros += item.UnblendedCostMicros
+		default:
+			report.ExportChargeMicros += item.UnblendedCostMicros
+		}
+	}
+	report.ExportTotalMicros = billChargeTotalMicros(
+		report.ExportChargeMicros,
+		report.ExportCreditMicros,
+		report.ExportRefundMicros,
+		report.ExportTaxMicros,
+	)
+}
+
+func (r CURLineItemRepository) loadBillAndInvoiceTotalsForCURExport(ctx context.Context, report *CURExportReconciliationReport) error {
+	var invoiceID sql.NullString
+	var invoiceStatus sql.NullString
+	var invoiceLineItemCount sql.NullInt64
+	var invoiceChargeMicros sql.NullInt64
+	var invoiceCreditMicros sql.NullInt64
+	var invoiceRefundMicros sql.NullInt64
+	var invoiceTaxMicros sql.NullInt64
+	var invoiceTotalMicros sql.NullInt64
+	err := r.db.QueryRowContext(
+		ctx,
+		`SELECT
+			b.id,
+			b.bill_state,
+			b.currency_code,
+			b.line_item_count,
+			b.usage_charge_micros,
+			b.credit_micros,
+			b.refund_micros,
+			b.tax_micros,
+			b.total_micros,
+			d.invoice_id,
+			d.status,
+			d.line_item_count,
+			d.usage_charge_micros,
+			d.credit_micros,
+			d.refund_micros,
+			d.tax_micros,
+			d.total_micros
+		 FROM bills b
+		 LEFT JOIN invoice_documents d ON d.bill_id = b.id
+		 WHERE b.billing_period_start = ?
+		   AND b.billing_period_end = ?
+		   AND b.payer_account_id = ?
+		 ORDER BY b.currency_code, b.id
+		 LIMIT 1`,
+		report.BillingPeriodStart,
+		report.BillingPeriodEnd,
+		report.PayerAccountID,
+	).Scan(
+		&report.BillID,
+		&report.BillState,
+		&report.CurrencyCode,
+		&report.BillLineItemCount,
+		&report.BillChargeMicros,
+		&report.BillCreditMicros,
+		&report.BillRefundMicros,
+		&report.BillTaxMicros,
+		&report.BillTotalMicros,
+		&invoiceID,
+		&invoiceStatus,
+		&invoiceLineItemCount,
+		&invoiceChargeMicros,
+		&invoiceCreditMicros,
+		&invoiceRefundMicros,
+		&invoiceTaxMicros,
+		&invoiceTotalMicros,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read bill and invoice totals for CUR-like export reconciliation: %w", err)
+	}
+
+	report.InvoiceID = nullStringValue(invoiceID)
+	report.InvoiceStatus = nullStringValue(invoiceStatus)
+	report.InvoiceLineItemCount = int(nullInt64Value(invoiceLineItemCount))
+	report.InvoiceChargeMicros = nullInt64Value(invoiceChargeMicros)
+	report.InvoiceCreditMicros = nullInt64Value(invoiceCreditMicros)
+	report.InvoiceRefundMicros = nullInt64Value(invoiceRefundMicros)
+	report.InvoiceTaxMicros = nullInt64Value(invoiceTaxMicros)
+	report.InvoiceTotalMicros = nullInt64Value(invoiceTotalMicros)
+	return nil
+}
+
+func applyCURExportReconciliationResiduals(report *CURExportReconciliationReport) {
+	report.BillLineItemResidual = report.BillLineItemCount - report.ExportLineItemCount
+	report.BillChargeResidualMicros = report.BillChargeMicros - report.ExportChargeMicros
+	report.BillCreditResidualMicros = report.BillCreditMicros - report.ExportCreditMicros
+	report.BillRefundResidualMicros = report.BillRefundMicros - report.ExportRefundMicros
+	report.BillTaxResidualMicros = report.BillTaxMicros - report.ExportTaxMicros
+	report.BillTotalResidualMicros = report.BillTotalMicros - report.ExportTotalMicros
+
+	report.InvoiceLineItemResidual = report.InvoiceLineItemCount - report.ExportLineItemCount
+	report.InvoiceChargeResidualMicros = report.InvoiceChargeMicros - report.ExportChargeMicros
+	report.InvoiceCreditResidualMicros = report.InvoiceCreditMicros - report.ExportCreditMicros
+	report.InvoiceRefundResidualMicros = report.InvoiceRefundMicros - report.ExportRefundMicros
+	report.InvoiceTaxResidualMicros = report.InvoiceTaxMicros - report.ExportTaxMicros
+	report.InvoiceTotalResidualMicros = report.InvoiceTotalMicros - report.ExportTotalMicros
+
+	flags := []string{}
+	if report.BillID == "" {
+		flags = appendCURExportReconciliationFlag(flags, curExportReconciliationFlagMissingBill)
+	}
+	if report.InvoiceID == "" {
+		flags = appendCURExportReconciliationFlag(flags, curExportReconciliationFlagMissingInvoice)
+	}
+	if report.BillLineItemResidual != 0 || report.InvoiceLineItemResidual != 0 {
+		flags = appendCURExportReconciliationFlag(flags, curExportReconciliationFlagExcludedLines)
+	}
+	if report.BillID != "" &&
+		report.BillLineItemResidual == 0 &&
+		curExportBillAmountResidual(report) {
+		flags = appendCURExportReconciliationFlag(flags, curExportReconciliationFlagRoundingResidual)
+	}
+	if report.InvoiceID != "" &&
+		report.InvoiceLineItemResidual == 0 &&
+		curExportInvoiceAmountResidual(report) {
+		flags = appendCURExportReconciliationFlag(flags, curExportReconciliationFlagRoundingResidual)
+	}
+	if report.InvoiceID != "" && curExportBillInvoiceResidual(report) {
+		flags = appendCURExportReconciliationFlag(flags, curExportReconciliationFlagInvoiceDifference)
+	}
+	if len(flags) == 0 {
+		flags = append(flags, curExportReconciliationFlagBalanced)
+	}
+	report.Flags = flags
+	report.Status = curExportReconciliationStatus(flags)
+}
+
+func appendCURExportReconciliationFlag(flags []string, flag string) []string {
+	for _, existing := range flags {
+		if existing == flag {
+			return flags
+		}
+	}
+	return append(flags, flag)
+}
+
+func curExportReconciliationStatus(flags []string) string {
+	for _, flag := range flags {
+		switch flag {
+		case curExportReconciliationFlagMissingBill:
+			return curExportReconciliationStatusMissingBill
+		case curExportReconciliationFlagMissingInvoice:
+			return curExportReconciliationStatusMissingInvoice
+		case curExportReconciliationFlagExcludedLines:
+			return curExportReconciliationStatusExcludedLines
+		case curExportReconciliationFlagRoundingResidual:
+			return curExportReconciliationStatusRounding
+		case curExportReconciliationFlagInvoiceDifference:
+			return curExportReconciliationStatusInvoiceDiff
+		}
+	}
+	return curExportReconciliationStatusBalanced
+}
+
+func curExportBillAmountResidual(report *CURExportReconciliationReport) bool {
+	return report.BillChargeResidualMicros != 0 ||
+		report.BillCreditResidualMicros != 0 ||
+		report.BillRefundResidualMicros != 0 ||
+		report.BillTaxResidualMicros != 0 ||
+		report.BillTotalResidualMicros != 0
+}
+
+func curExportInvoiceAmountResidual(report *CURExportReconciliationReport) bool {
+	return report.InvoiceChargeResidualMicros != 0 ||
+		report.InvoiceCreditResidualMicros != 0 ||
+		report.InvoiceRefundResidualMicros != 0 ||
+		report.InvoiceTaxResidualMicros != 0 ||
+		report.InvoiceTotalResidualMicros != 0
+}
+
+func curExportBillInvoiceResidual(report *CURExportReconciliationReport) bool {
+	return report.BillLineItemCount != report.InvoiceLineItemCount ||
+		report.BillChargeMicros != report.InvoiceChargeMicros ||
+		report.BillCreditMicros != report.InvoiceCreditMicros ||
+		report.BillRefundMicros != report.InvoiceRefundMicros ||
+		report.BillTaxMicros != report.InvoiceTaxMicros ||
+		report.BillTotalMicros != report.InvoiceTotalMicros
+}
+
+func nullInt64Value(value sql.NullInt64) int64 {
+	if !value.Valid {
+		return 0
+	}
+	return value.Int64
 }
 
 func scanCURLineItem(row interface{ Scan(dest ...any) error }) (CURLineItem, error) {

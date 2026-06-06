@@ -1963,6 +1963,52 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if got := support[csvResponseColumnIndex(t, records[0], "line_item_type")]; got != "Fee" {
 		t.Fatalf("CUR CSV support line_item_type = %q, want Fee", got)
 	}
+
+	query.Set("line_item_status", "final")
+	resp, err = client.Get(server.URL + "/exports/reconciliation?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/reconciliation error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/reconciliation status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Export Reconciliation",
+		"Bill and Invoice Comparison",
+		"balanced",
+		"CUR CSV",
+		closeResult.Bill.ID,
+		closeResult.InvoiceObligation.InvoiceID,
+		"CUR-like CSV",
+		"$1.0832",
+		"$0.00",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /exports/reconciliation body missing %q: %s", want, body)
+		}
+	}
+
+	query.Set("usage_account_id", "111122223333")
+	resp, err = client.Get(server.URL + "/exports/reconciliation?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/reconciliation filtered error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/reconciliation filtered status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"excluded-lines",
+		"111122223333",
+		"final",
+		"$0.0832",
+		"$1.00",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /exports/reconciliation filtered body missing %q: %s", want, body)
+		}
+	}
 }
 
 func TestCostExplorerSavedReportsAreScopedByOwnerContext(t *testing.T) {
@@ -6132,6 +6178,18 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	invoicePath := invoicePathForID(invoiceID)
 	invoiceCSVPath := invoiceCSVPathForID(invoiceID)
 	invoicePDFPath := invoicePDFPathForID(invoiceID)
+	curCSVPath := curCSVExportPath(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     "999988887777",
+		LineItemStatus:     "final",
+	})
+	curReconcilePath := curExportReconciliationPath(persistence.CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     "999988887777",
+		LineItemStatus:     "final",
+	})
 	managementViewerQuery := "?viewer_role=management-account&viewer_account_id=999988887777"
 	memberViewerQuery := "?viewer_role=member-account&viewer_account_id=111122223333"
 	if !strings.Contains(body, invoicePath) {
@@ -6139,6 +6197,11 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(body, invoiceCSVPath) || !strings.Contains(body, invoicePDFPath) {
 		t.Fatalf("GET /bills after close missing invoice export links %q/%q: %s", invoiceCSVPath, invoicePDFPath, body)
+	}
+	escapedCURCSVPath := strings.ReplaceAll(curCSVPath, "&", "&amp;")
+	escapedCURReconcilePath := strings.ReplaceAll(curReconcilePath, "&", "&amp;")
+	if !strings.Contains(body, escapedCURCSVPath) || !strings.Contains(body, escapedCURReconcilePath) {
+		t.Fatalf("GET /bills after close missing CUR export links %q/%q: %s", curCSVPath, curReconcilePath, body)
 	}
 	resp, err = client.Get(server.URL + invoicePath)
 	if err != nil {

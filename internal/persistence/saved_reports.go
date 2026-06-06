@@ -312,6 +312,44 @@ func (r SavedReportRepository) Get(ctx context.Context, id string) (SavedReport,
 	return report, nil
 }
 
+// GetForOwner reads one saved report by ID after applying the simulated owner scope.
+func (r SavedReportRepository) GetForOwner(ctx context.Context, id, ownerAccountID, ownerRole string) (SavedReport, error) {
+	if r.db == nil {
+		return SavedReport{}, fmt.Errorf("database handle is required")
+	}
+	id = strings.TrimSpace(id)
+	ownerAccountID = strings.TrimSpace(ownerAccountID)
+	ownerRole = strings.TrimSpace(ownerRole)
+	if id == "" {
+		return SavedReport{}, fmt.Errorf("saved report ID is required")
+	}
+	if ownerAccountID == "" {
+		return SavedReport{}, fmt.Errorf("saved report owner account ID is required")
+	}
+	if err := validateSavedReportOwnerRole(ownerRole); err != nil {
+		return SavedReport{}, err
+	}
+
+	row := r.db.QueryRowContext(
+		ctx,
+		savedReportSelectSQL+`
+		 WHERE id = ?
+		   AND owner_account_id = ?
+		   AND owner_role = ?`,
+		id,
+		ownerAccountID,
+		ownerRole,
+	)
+	report, err := scanSavedReport(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return SavedReport{}, fmt.Errorf("saved report %q not found for owner %q/%q", id, ownerRole, ownerAccountID)
+		}
+		return SavedReport{}, fmt.Errorf("get saved report %q for owner %q/%q: %w", id, ownerRole, ownerAccountID, err)
+	}
+	return report, nil
+}
+
 // GetByName reads one saved report for an owner by case-insensitive report name.
 func (r SavedReportRepository) GetByName(ctx context.Context, ownerAccountID, name string) (SavedReport, error) {
 	if r.db == nil {

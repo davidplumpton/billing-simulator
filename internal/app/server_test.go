@@ -1837,6 +1837,176 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	}
 }
 
+func TestCostExplorerSavedReportsAreScopedByOwnerContext(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	savedReportRepo := persistence.NewSavedReportRepository(db)
+	managementReport, err := savedReportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-ui-management-scope",
+		Name:           "Management saved report",
+		Description:    "Management owner only",
+		OwnerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "management-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Groupings:      []persistence.SavedReportGrouping{{Type: "dimension", Key: "service"}},
+	})
+	if err != nil {
+		t.Fatalf("Create(management saved report) error = %v", err)
+	}
+	memberReport, err := savedReportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-ui-member-scope",
+		Name:           "Member saved report",
+		Description:    "Member owner only",
+		OwnerAccountID: "111122223333",
+		OwnerRole:      "member-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Groupings:      []persistence.SavedReportGrouping{{Type: "dimension", Key: "service"}},
+	})
+	if err != nil {
+		t.Fatalf("Create(member saved report) error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	managementQuery := url.Values{
+		"owner_account_id": {persistence.AnyCompanyRetailManagementAccountID},
+		"owner_role":       {"management-account"},
+	}
+	resp, err := client.Get(server.URL + "/cost-explorer?" + managementQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer management owner error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer management owner status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Management saved report") || strings.Contains(body, "Member saved report") {
+		t.Fatalf("management saved-report shelf body = %s, want only management report", body)
+	}
+
+	memberQuery := url.Values{
+		"owner_account_id": {"111122223333"},
+		"owner_role":       {"member-account"},
+	}
+	resp, err = client.Get(server.URL + "/cost-explorer?" + memberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer member owner error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer member owner status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Member saved report") ||
+		strings.Contains(body, "Management saved report") ||
+		!strings.Contains(body, `name="owner_account_id" value="111122223333"`) ||
+		!strings.Contains(body, `name="owner_role" value="member-account"`) {
+		t.Fatalf("member saved-report shelf body = %s, want only member report and owner context fields", body)
+	}
+
+	memberLoadQuery := url.Values{
+		"saved_report_id":  {memberReport.ID},
+		"owner_account_id": {"111122223333"},
+		"owner_role":       {"member-account"},
+	}
+	resp, err = client.Get(server.URL + "/cost-explorer?" + memberLoadQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer member saved report error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer member saved report status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Member saved report") ||
+		!strings.Contains(body, "Loaded") ||
+		strings.Contains(body, "Management saved report") {
+		t.Fatalf("member saved-report load body = %s, want only loaded member report", body)
+	}
+
+	crossOwnerLoadQuery := url.Values{
+		"saved_report_id":  {memberReport.ID},
+		"owner_account_id": {persistence.AnyCompanyRetailManagementAccountID},
+		"owner_role":       {"management-account"},
+	}
+	resp, err = client.Get(server.URL + "/cost-explorer?" + crossOwnerLoadQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer cross-owner saved report error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET /cost-explorer cross-owner saved report status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	if strings.Contains(body, "Member saved report") {
+		t.Fatalf("cross-owner saved-report load leaked member report: %s", body)
+	}
+
+	crossOwnerUpdate := url.Values{
+		"saved_report_id":  {memberReport.ID},
+		"report_name":      {"Member saved report takeover"},
+		"owner_account_id": {persistence.AnyCompanyRetailManagementAccountID},
+		"owner_role":       {"management-account"},
+		"date_range_start": {"2026-02-01"},
+		"date_range_end":   {"2026-03-01"},
+		"granularity":      {"monthly"},
+		"metric":           {"unblended_cost"},
+		"chart_type":       {"table"},
+		"group_1_type":     {"dimension"},
+		"group_1_key":      {"service"},
+	}
+	resp, err = client.PostForm(server.URL+"/cost-explorer/reports/save", crossOwnerUpdate)
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/save cross-owner update error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /cost-explorer/reports/save cross-owner update status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	reloadedMemberReport, err := savedReportRepo.Get(ctx, memberReport.ID)
+	if err != nil {
+		t.Fatalf("Get(member report after cross-owner update) error = %v", err)
+	}
+	if reloadedMemberReport.Name != memberReport.Name || reloadedMemberReport.OwnerAccountID != memberReport.OwnerAccountID || reloadedMemberReport.OwnerRole != memberReport.OwnerRole {
+		t.Fatalf("member report after cross-owner update = %+v, want unchanged %+v", reloadedMemberReport, memberReport)
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-explorer/reports/run", url.Values{
+		"saved_report_id":  {memberReport.ID},
+		"owner_account_id": {persistence.AnyCompanyRetailManagementAccountID},
+		"owner_role":       {"management-account"},
+	})
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/run cross-owner error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /cost-explorer/reports/run cross-owner status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	reloadedMemberReport, err = savedReportRepo.Get(ctx, memberReport.ID)
+	if err != nil {
+		t.Fatalf("Get(member report after cross-owner run) error = %v", err)
+	}
+	if reloadedMemberReport.LastRunStatus != "never_run" || reloadedMemberReport.LastRunAt != "" {
+		t.Fatalf("member report after cross-owner run = %+v, want no run metadata", reloadedMemberReport)
+	}
+	if managementReport.ID == memberReport.ID {
+		t.Fatalf("test reports share ID: management=%q member=%q", managementReport.ID, memberReport.ID)
+	}
+}
+
 func TestBudgetsUIRequiresWorkspace(t *testing.T) {
 	t.Parallel()
 

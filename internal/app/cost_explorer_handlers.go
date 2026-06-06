@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -203,22 +204,37 @@ type costExplorerLineItemsTablesView struct {
 }
 
 type costExplorerSavedReportView struct {
-	ID          string
-	Name        string
-	Description string
-	Owner       string
-	DateRange   string
-	Granularity string
-	Metric      string
-	ChartType   string
-	LastRun     string
-	LoadPath    string
-	Selected    bool
+	ID             string
+	Name           string
+	Description    string
+	OwnerAccountID string
+	OwnerRole      string
+	Owner          string
+	DateRange      string
+	Granularity    string
+	Metric         string
+	ChartType      string
+	LastRun        string
+	LoadPath       string
+	Selected       bool
 }
 
 type costExplorerTablesView struct {
 	Results      uiTableView
 	SavedReports uiTableView
+}
+
+// costExplorerRequestError marks user-supplied report-builder input errors.
+type costExplorerRequestError struct {
+	err error
+}
+
+func (e costExplorerRequestError) Error() string {
+	return e.err.Error()
+}
+
+func (e costExplorerRequestError) Unwrap() error {
+	return e.err
 }
 
 // newCostExplorerHandler builds the repositories needed for report-builder workflows.
@@ -312,6 +328,11 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 	}
 
 	if builder.SavedReportID != "" {
+		ownerScope := costExplorerSavedReportOwnerScopeFromBuilder(builder)
+		if _, err := h.savedReports.GetForOwner(r.Context(), builder.SavedReportID, ownerScope.OwnerAccountID, ownerScope.OwnerRole); err != nil {
+			h.renderCostExplorer(w, r, http.StatusBadRequest, err.Error(), "")
+			return
+		}
 		report, err := h.savedReports.Update(r.Context(), persistence.SavedReportUpdateRequest{
 			ID:             builder.SavedReportID,
 			Name:           builder.ReportName,
@@ -330,7 +351,7 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 			h.renderCostExplorer(w, r, http.StatusBadRequest, err.Error(), "")
 			return
 		}
-		http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Updated saved report "+report.Name), http.StatusSeeOther)
+		http.Redirect(w, r, costExplorerSavedReportPath(report, "Updated saved report "+report.Name), http.StatusSeeOther)
 		return
 	}
 
@@ -351,7 +372,7 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 		h.renderCostExplorer(w, r, http.StatusBadRequest, err.Error(), "")
 		return
 	}
-	http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Saved report "+report.Name), http.StatusSeeOther)
+	http.Redirect(w, r, costExplorerSavedReportPath(report, "Saved report "+report.Name), http.StatusSeeOther)
 }
 
 // handleRunCostExplorerReport executes a persisted saved report and records its latest run metadata.
@@ -373,6 +394,11 @@ func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, 
 		h.renderCostExplorer(w, r, http.StatusBadRequest, "saved report ID is required", "")
 		return
 	}
+	ownerScope, err := costExplorerSavedReportOwnerScopeFromValues(r.PostForm, costExplorerDefaultBuilder())
+	if err != nil {
+		h.renderCostExplorer(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
 
 	ctx := r.Context()
 	clock, err := h.clock.Get(ctx)
@@ -380,7 +406,7 @@ func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, 
 		h.renderCostExplorer(w, r, http.StatusInternalServerError, err.Error(), "")
 		return
 	}
-	report, err := h.savedReports.Get(ctx, savedReportID)
+	report, err := h.savedReports.GetForOwner(ctx, savedReportID, ownerScope.OwnerAccountID, ownerScope.OwnerRole)
 	if err != nil {
 		h.renderCostExplorer(w, r, http.StatusBadRequest, err.Error(), "")
 		return
@@ -397,7 +423,7 @@ func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, 
 			h.renderCostExplorer(w, r, http.StatusInternalServerError, recordErr.Error(), "")
 			return
 		}
-		http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Saved report "+report.Name+" failed"), http.StatusSeeOther)
+		http.Redirect(w, r, costExplorerSavedReportPath(report, "Saved report "+report.Name+" failed"), http.StatusSeeOther)
 		return
 	}
 	if _, err := h.savedReports.RecordLastRun(ctx, persistence.SavedReportRunUpdate{
@@ -410,7 +436,7 @@ func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, 
 		h.renderCostExplorer(w, r, http.StatusInternalServerError, err.Error(), "")
 		return
 	}
-	http.Redirect(w, r, "/cost-explorer?saved_report_id="+urlQueryEscape(report.ID)+"&flash="+urlQueryEscape("Ran saved report "+report.Name), http.StatusSeeOther)
+	http.Redirect(w, r, costExplorerSavedReportPath(report, "Ran saved report "+report.Name), http.StatusSeeOther)
 }
 
 // renderCostExplorerLineItems builds the drilldown page for one Cost Explorer result row.
@@ -457,6 +483,10 @@ func (h costExplorerHandler) renderCostExplorer(w http.ResponseWriter, r *http.R
 	if h.db != nil {
 		if err := h.loadCostExplorerPageData(r.Context(), r, &data); err != nil {
 			status = http.StatusInternalServerError
+			var requestErr costExplorerRequestError
+			if errors.As(err, &requestErr) {
+				status = http.StatusBadRequest
+			}
 			data.Error = err.Error()
 		}
 	}
@@ -532,11 +562,15 @@ func (h costExplorerHandler) loadCostExplorerPageData(ctx context.Context, r *ht
 	if err != nil {
 		return err
 	}
-	savedReports, err := h.savedReports.List(ctx, persistence.SavedReportListRequest{Limit: 100})
+	ownerScope, err := costExplorerSavedReportOwnerScopeFromValues(r.URL.Query(), defaults)
 	if err != nil {
 		return err
 	}
-	selectedReport, hasSelectedReport, err := h.selectedSavedReport(ctx, r, savedReports)
+	savedReports, err := h.savedReports.List(ctx, ownerScope.listRequest(100))
+	if err != nil {
+		return err
+	}
+	selectedReport, hasSelectedReport, err := h.selectedSavedReport(ctx, r, ownerScope, savedReports)
 	if err != nil {
 		return err
 	}
@@ -605,7 +639,7 @@ func (h costExplorerHandler) defaultBuilder(ctx context.Context) (costExplorerBu
 }
 
 // selectedSavedReport loads the selected saved report from the already listed reports.
-func (h costExplorerHandler) selectedSavedReport(ctx context.Context, r *http.Request, reports []persistence.SavedReport) (persistence.SavedReport, bool, error) {
+func (h costExplorerHandler) selectedSavedReport(ctx context.Context, r *http.Request, ownerScope costExplorerSavedReportOwnerScope, reports []persistence.SavedReport) (persistence.SavedReport, bool, error) {
 	selectedID := strings.TrimSpace(r.URL.Query().Get("saved_report_id"))
 	if selectedID == "" {
 		return persistence.SavedReport{}, false, nil
@@ -615,9 +649,9 @@ func (h costExplorerHandler) selectedSavedReport(ctx context.Context, r *http.Re
 			return report, true, nil
 		}
 	}
-	report, err := h.savedReports.Get(ctx, selectedID)
+	report, err := h.savedReports.GetForOwner(ctx, selectedID, ownerScope.OwnerAccountID, ownerScope.OwnerRole)
 	if err != nil {
-		return persistence.SavedReport{}, false, err
+		return persistence.SavedReport{}, false, costExplorerRequestError{err: err}
 	}
 	return report, true, nil
 }
@@ -630,7 +664,11 @@ func (h costExplorerHandler) builderFromRequest(ctx context.Context, r *http.Req
 	}
 	selectedID := strings.TrimSpace(r.URL.Query().Get("saved_report_id"))
 	if selectedID != "" && !costExplorerRequestHasBuilderFields(r) {
-		report, err := h.savedReports.Get(ctx, selectedID)
+		ownerScope, err := costExplorerSavedReportOwnerScopeFromValues(r.URL.Query(), defaults)
+		if err != nil {
+			return costExplorerBuilderView{}, err
+		}
+		report, err := h.savedReports.GetForOwner(ctx, selectedID, ownerScope.OwnerAccountID, ownerScope.OwnerRole)
 		if err != nil {
 			return costExplorerBuilderView{}, err
 		}
@@ -690,6 +728,37 @@ func costExplorerDefaultBuilder() costExplorerBuilderView {
 		ChartType:      "table",
 		Group1Type:     "dimension",
 		Group1Key:      "service",
+	}
+}
+
+type costExplorerSavedReportOwnerScope struct {
+	OwnerAccountID string
+	OwnerRole      string
+}
+
+// costExplorerSavedReportOwnerScopeFromValues derives the simulated saved-report shelf from request values.
+func costExplorerSavedReportOwnerScopeFromValues(values url.Values, defaults costExplorerBuilderView) (costExplorerSavedReportOwnerScope, error) {
+	builder, err := costExplorerBuilderFromValues(values, defaults)
+	if err != nil {
+		return costExplorerSavedReportOwnerScope{}, err
+	}
+	return costExplorerSavedReportOwnerScopeFromBuilder(builder), nil
+}
+
+// costExplorerSavedReportOwnerScopeFromBuilder extracts the owner shelf from a normalized builder.
+func costExplorerSavedReportOwnerScopeFromBuilder(builder costExplorerBuilderView) costExplorerSavedReportOwnerScope {
+	return costExplorerSavedReportOwnerScope{
+		OwnerAccountID: strings.TrimSpace(builder.OwnerAccountID),
+		OwnerRole:      strings.TrimSpace(builder.OwnerRole),
+	}
+}
+
+// listRequest converts the UI owner shelf into the persistence list filter.
+func (s costExplorerSavedReportOwnerScope) listRequest(limit int) persistence.SavedReportListRequest {
+	return persistence.SavedReportListRequest{
+		OwnerAccountID: s.OwnerAccountID,
+		OwnerRole:      s.OwnerRole,
+		Limit:          limit,
 	}
 }
 
@@ -1493,18 +1562,32 @@ func costExplorerSavedReportViewFromReport(report persistence.SavedReport, selec
 		lastRun += " " + report.LastRunAt
 	}
 	return costExplorerSavedReportView{
-		ID:          report.ID,
-		Name:        report.Name,
-		Description: report.Description,
-		Owner:       report.OwnerRole + " / " + report.OwnerAccountID,
-		DateRange:   report.DateRangeStart + " to " + report.DateRangeEnd,
-		Granularity: report.Granularity,
-		Metric:      strings.Join(report.Metrics, ", "),
-		ChartType:   report.ChartType,
-		LastRun:     lastRun,
-		LoadPath:    "/cost-explorer?saved_report_id=" + urlQueryEscape(report.ID),
-		Selected:    report.ID == selectedID,
+		ID:             report.ID,
+		Name:           report.Name,
+		Description:    report.Description,
+		OwnerAccountID: report.OwnerAccountID,
+		OwnerRole:      report.OwnerRole,
+		Owner:          report.OwnerRole + " / " + report.OwnerAccountID,
+		DateRange:      report.DateRangeStart + " to " + report.DateRangeEnd,
+		Granularity:    report.Granularity,
+		Metric:         strings.Join(report.Metrics, ", "),
+		ChartType:      report.ChartType,
+		LastRun:        lastRun,
+		LoadPath:       costExplorerSavedReportPath(report, ""),
+		Selected:       report.ID == selectedID,
 	}
+}
+
+// costExplorerSavedReportPath builds a report load URL that preserves the simulated owner context.
+func costExplorerSavedReportPath(report persistence.SavedReport, flashMessage string) string {
+	values := url.Values{}
+	values.Set("saved_report_id", report.ID)
+	values.Set("owner_account_id", report.OwnerAccountID)
+	values.Set("owner_role", report.OwnerRole)
+	if flashMessage != "" {
+		values.Set("flash", flashMessage)
+	}
+	return "/cost-explorer?" + values.Encode()
 }
 
 func costExplorerGroupLabel(group persistence.CostExplorerGroupValue) string {
@@ -1681,6 +1764,8 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 		{{else}}
 			<section class="report-toolbar">
 				<form method="get" action="/cost-explorer" class="saved-report-picker">
+					<input type="hidden" name="owner_account_id" value="{{.Builder.OwnerAccountID}}">
+					<input type="hidden" name="owner_role" value="{{.Builder.OwnerRole}}">
 					<label>Saved Report
 						<select name="saved_report_id">
 							<option value="">Custom report</option>
@@ -1914,6 +1999,8 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 											{{if .Selected}}<span class="status">Loaded</span>{{else}}<a class="button-link secondary" href="{{.LoadPath}}">Load</a>{{end}}
 											<form method="post" action="/cost-explorer/reports/run">
 												<input type="hidden" name="saved_report_id" value="{{.ID}}">
+												<input type="hidden" name="owner_account_id" value="{{.OwnerAccountID}}">
+												<input type="hidden" name="owner_role" value="{{.OwnerRole}}">
 												<button type="submit">Run</button>
 											</form>
 										</div>

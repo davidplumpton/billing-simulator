@@ -549,6 +549,11 @@ func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
 			title:      "<title>Bills - AWS Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/bills">Bills</a>`,
 		},
+		{
+			path:       "/scenarios",
+			title:      "<title>Scenarios - AWS Billing Simulator</title>",
+			activeLink: `<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
+		},
 	}
 
 	for _, page := range pages {
@@ -570,8 +575,9 @@ func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
 			!strings.Contains(body, `<a class="active" aria-current="page" href="/cost-explorer">Cost Explorer</a>`) {
 			t.Fatalf("GET %s missing Cost Explorer navigation link: %s", page.path, body)
 		}
-		if !strings.Contains(body, `<span aria-disabled="true">Scenarios</span>`) {
-			t.Fatalf("GET %s missing disabled future navigation item: %s", page.path, body)
+		if !strings.Contains(body, `<a href="/scenarios">Scenarios</a>`) &&
+			!strings.Contains(body, `<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`) {
+			t.Fatalf("GET %s missing Scenarios navigation link: %s", page.path, body)
 		}
 	}
 

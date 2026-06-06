@@ -636,6 +636,21 @@ code {
 	color: var(--danger);
 }
 
+.status.status-succeeded {
+	background: #e7f7ed;
+	color: #146c3c;
+}
+
+.status.status-failed {
+	background: #f4e7e5;
+	color: var(--danger);
+}
+
+.status.status-running {
+	background: #e6eef8;
+	color: #17446f;
+}
+
 .empty-cell {
 	color: var(--muted);
 	text-align: center;
@@ -820,6 +835,62 @@ code {
 	color: var(--accent-strong);
 }
 
+.scenario-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: 14px;
+}
+
+.scenario-card {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	min-height: 100%;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 16px;
+}
+
+.scenario-card-header,
+.scenario-actions {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.scenario-card-header h3,
+.scenario-card-header small {
+	overflow-wrap: anywhere;
+}
+
+.scenario-meta-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.scenario-meta-grid .detail-list,
+.scenario-run-detail {
+	border-bottom: 0;
+	padding: 0;
+}
+
+.scenario-actions {
+	align-items: center;
+	margin-top: auto;
+}
+
+.scenario-actions form {
+	margin: 0;
+}
+
+.scenario-actions button,
+.scenario-actions .button-link {
+	margin-top: 0;
+}
+
 .invoice-document {
 	background: var(--surface);
 	border: 1px solid var(--line);
@@ -921,6 +992,7 @@ code {
 		.organization-layout,
 		.fields,
 		.builder-panel .fields,
+		.scenario-meta-grid,
 		.filter-form,
 		.saved-report-picker,
 		.clock-form,

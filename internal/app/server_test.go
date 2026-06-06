@@ -1633,6 +1633,143 @@ func TestCostExplorerUIRequiresWorkspace(t *testing.T) {
 	}
 }
 
+func TestScenariosUIRequiresWorkspace(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/scenarios")
+	if err != nil {
+		t.Fatalf("GET /scenarios without workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Scenarios - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
+		"Workspace Required",
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /scenarios without workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/scenarios/launch", url.Values{"scenario_key": {"first-consolidated-bill"}})
+	if err != nil {
+		t.Fatalf("POST /scenarios/launch without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /scenarios/launch without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before launching scenarios.") {
+		t.Fatalf("POST /scenarios/launch without workspace missing workspace message: %s", body)
+	}
+}
+
+func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "scenarios-ui-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: 3 * time.Second}
+
+	resp, err := client.Get(server.URL() + "/scenarios")
+	if err != nil {
+		t.Fatalf("GET /scenarios error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Scenarios - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
+		"Available Scenarios",
+		"First consolidated bill",
+		"Missing Tags",
+		"Find the untagged data-transfer spike",
+		"Objective",
+		"Estimated Duration",
+		"Phase 1",
+		"Phase 2",
+		`action="/scenarios/launch"`,
+		`name="scenario_key" value="first-consolidated-bill"`,
+		"Start Lab",
+		"Recent Runs",
+		"No scenario runs",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /scenarios body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/scenarios/launch", url.Values{
+		"scenario_key": {"first-consolidated-bill"},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/launch error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/launch final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Launched First consolidated bill: 8/8 events succeeded, 1 bill issued",
+		"Start New Run",
+		"Resume in Bills",
+		"Succeeded",
+		"8/8",
+		"Recent Runs",
+		"close-march",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /scenarios/launch body missing %q: %s", want, body)
+		}
+	}
+
+	var status string
+	var eventsSucceeded, billsIssued int
+	if err := db.QueryRowContext(ctx, `
+		SELECT status, events_succeeded, bills_issued
+		FROM scenario_runs
+		WHERE definition_name = ?
+	`, "First consolidated bill").Scan(&status, &eventsSucceeded, &billsIssued); err != nil {
+		t.Fatalf("read launched scenario run: %v", err)
+	}
+	if status != "succeeded" || eventsSucceeded != 8 || billsIssued != 1 {
+		t.Fatalf("scenario run audit = %q/%d/%d, want succeeded/8/1", status, eventsSucceeded, billsIssued)
+	}
+}
+
 func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	t.Parallel()
 

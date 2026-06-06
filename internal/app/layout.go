@@ -123,7 +123,7 @@ func pageNavItems(active string) []pageNavItem {
 		{Key: "bills", Label: "Bills", Path: "/bills"},
 		{Key: "exports", Label: "Exports", Path: "/exports/reconciliation"},
 		{Key: "payments", Label: "Payments", Path: "/payments"},
-		{Key: "scenarios", Label: "Scenarios"},
+		{Key: "scenarios", Label: "Scenarios", Path: "/scenarios"},
 	}
 	for idx := range items {
 		items[idx].Active = items[idx].Key == active

@@ -44,6 +44,7 @@ The current codebase already includes these working foundations:
 - Cost allocation tag manager UI with discovered key/value coverage, spend and resource coverage by tag key/account/service, untagged and case-mismatched spend, activation, deactivation, 24-hour pending visibility timing, and usage-window tag snapshots.
 - Cost Category rule persistence, preview UI, and line-item assignment snapshots for ordered account, service, region, usage-type, line-item-type, tag, and existing-category matches, including unmatched spend, rule-order effects, open-period refreshes, and finalized-period history.
 - Cost Category split-charge rule persistence and allocation comparison UI for even, fixed-share, and proportional allocation methods, with deterministic rounding, source-line audit rows, raw/category/split/total cost views, unallocated residuals, open-period refreshes, and finalized-period protection.
+- Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Saved Cost Explorer report persistence for later report-builder UI work.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 
@@ -53,7 +54,7 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 
 The broader MVP and later phases include:
 
-- Cost Explorer-style filters, groupings, summary tables, report builder, charts, and saved report execution.
+- Cost Explorer-style summary tables, report builder, charts, and saved report execution.
 - Budgets and forecast/actual alert simulation.
 - Payment methods, payment profiles, payment state workflows, past-due handling, and remediation labs.
 - CUR-like and FOCUS-style exports plus a query lab.

@@ -84,6 +84,53 @@ func TestCostCategorySplitChargeRepositoryAllocatesEvenFixedAndProportional(t *t
 	}
 }
 
+func TestCostCategorySplitChargeRepositoryComparesAllocationTotals(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	seedCostCategorySplitChargeSpend(t, ctx, db)
+	categoryRepo := NewCostCategoryRepository(db)
+	splitRepo := NewCostCategorySplitChargeRepository(db)
+	category := createSplitChargeCostCategory(t, ctx, categoryRepo, "Product")
+	if _, err := splitRepo.CreateRule(ctx, CostCategorySplitChargeRuleCreateRequest{
+		CostCategoryID: category.ID,
+		SourceValue:    "Shared Platform",
+		Method:         CostCategorySplitMethodEven,
+		Targets: []CostCategorySplitChargeTargetCreateRequest{
+			{TargetValue: "Storefront"},
+			{TargetValue: "Payments"},
+			{TargetValue: "Analytics"},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule(even) error = %v", err)
+	}
+
+	comparison, err := splitRepo.CompareAllocations(ctx, CostCategorySplitChargeComparisonRequest{
+		CostCategoryID:     category.ID,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("CompareAllocations() error = %v", err)
+	}
+	if comparison.CostCategoryName != "Product" ||
+		comparison.RawCostMicros != 1_090_700 ||
+		comparison.CategoryCostMicros != 90_700 ||
+		comparison.SplitInCostMicros != supportBusinessMinimumCostMicros ||
+		comparison.SplitOutCostMicros != supportBusinessMinimumCostMicros ||
+		comparison.NetSplitCostMicros != 0 ||
+		comparison.TotalAllocatedCostMicros != 1_090_700 ||
+		comparison.UnallocatedResidualCostMicros != 0 {
+		t.Fatalf("comparison totals = %+v, want direct costs plus fully allocated support", comparison)
+	}
+
+	requireSplitComparisonRow(t, comparison.Rows, "Analytics", 0, 333_333, 0, 333_333, 0, 0, 1)
+	requireSplitComparisonRow(t, comparison.Rows, "Payments", 7_500, 333_333, 0, 340_833, 0, 1, 1)
+	requireSplitComparisonRow(t, comparison.Rows, "Shared Platform", supportBusinessMinimumCostMicros, 0, supportBusinessMinimumCostMicros, 0, 0, 1, 0)
+	requireSplitComparisonRow(t, comparison.Rows, "Storefront", 83_200, 333_334, 0, 416_534, 0, 1, 1)
+}
+
 func TestCostCategorySplitChargeRepositoryPreservesClosedAllocations(t *testing.T) {
 	t.Parallel()
 
@@ -359,4 +406,28 @@ func requireSplitAllocation(t *testing.T, allocations []CostCategorySplitChargeA
 	}
 	t.Fatalf("allocation for target %q not found in %+v", targetValue, allocations)
 	return CostCategorySplitChargeAllocation{}
+}
+
+func requireSplitComparisonRow(t *testing.T, rows []CostCategorySplitChargeComparisonRow, value string, rawCostMicros, splitInCostMicros, splitOutCostMicros, totalAllocatedCostMicros, residualCostMicros int64, lineItems, allocations int) CostCategorySplitChargeComparisonRow {
+	t.Helper()
+
+	for _, row := range rows {
+		if row.Value != value {
+			continue
+		}
+		if row.RawCostMicros != rawCostMicros ||
+			row.SplitInCostMicros != splitInCostMicros ||
+			row.SplitOutCostMicros != splitOutCostMicros ||
+			row.TotalAllocatedCostMicros != totalAllocatedCostMicros ||
+			row.UnallocatedResidualCostMicros != residualCostMicros ||
+			row.LineItemCount != lineItems ||
+			row.AllocationCount != allocations ||
+			row.CurrencyCode != defaultBillCurrencyCode ||
+			row.PayerAccountID != AnyCompanyRetailManagementAccountID {
+			t.Fatalf("comparison row for %s = %+v", value, row)
+		}
+		return row
+	}
+	t.Fatalf("comparison row %q not found in %+v", value, rows)
+	return CostCategorySplitChargeComparisonRow{}
 }

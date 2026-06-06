@@ -426,7 +426,7 @@ func (r CostCategoryRepository) CreateRule(ctx context.Context, request CostCate
 			}
 		}
 		_, err = refreshCostCategoryAssignmentsInTx(ctx, tx, "", "")
-		return nil
+		return err
 	}); err != nil {
 		return CostCategoryRule{}, err
 	}

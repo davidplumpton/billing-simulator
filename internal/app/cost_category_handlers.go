@@ -13,9 +13,10 @@ import (
 )
 
 type costCategoriesHandler struct {
-	db         *sql.DB
-	categories persistence.CostCategoryRepository
-	clock      persistence.SimulatorClockRepository
+	db           *sql.DB
+	categories   persistence.CostCategoryRepository
+	splitCharges persistence.CostCategorySplitChargeRepository
+	clock        persistence.SimulatorClockRepository
 }
 
 type costCategoriesPageData struct {
@@ -33,9 +34,12 @@ type costCategoriesPageData struct {
 	CategoryOptions     []uiSelectOptionView
 	DimensionOptions    []uiSelectOptionView
 	OperatorOptions     []uiSelectOptionView
+	SplitMethodOptions  []uiSelectOptionView
 	Categories          []costCategoryView
 	RuleEffects         []costCategoryRuleEffectView
 	LineItems           []costCategoryLineItemView
+	SplitRules          []costCategorySplitRuleView
+	AllocationRows      []costCategoryAllocationComparisonRowView
 	HasMoreLineItems    bool
 	Tables              costCategoryTablesView
 }
@@ -82,18 +86,48 @@ type costCategoryLineItemView struct {
 	Tags          []string
 }
 
+type costCategorySplitRuleView struct {
+	ID            string
+	SourceValue   string
+	Method        string
+	Description   string
+	Status        string
+	TargetSummary string
+}
+
+type costCategoryAllocationComparisonRowView struct {
+	Value                         string
+	PayerAccountID                string
+	CurrencyCode                  string
+	LineItems                     int
+	SourceLineItems               int
+	Allocations                   int
+	RawCost                       string
+	CategoryCost                  string
+	SplitAmount                   string
+	TotalAllocatedCost            string
+	UnallocatedResidual           string
+	UnallocatedResidualCostMicros int64
+	RawActivity                   string
+	SourceActivity                string
+	AllocationActivity            string
+}
+
 type costCategoryTablesView struct {
-	Categories  uiTableView
-	RuleEffects uiTableView
-	LineItems   uiTableView
+	Categories           uiTableView
+	RuleEffects          uiTableView
+	SplitRules           uiTableView
+	AllocationComparison uiTableView
+	LineItems            uiTableView
 }
 
 // newCostCategoriesHandler builds the repositories for Cost Category preview workflows.
 func newCostCategoriesHandler(db *sql.DB) costCategoriesHandler {
 	return costCategoriesHandler{
-		db:         db,
-		categories: persistence.NewCostCategoryRepository(db),
-		clock:      persistence.NewSimulatorClockRepository(db),
+		db:           db,
+		categories:   persistence.NewCostCategoryRepository(db),
+		splitCharges: persistence.NewCostCategorySplitChargeRepository(db),
+		clock:        persistence.NewSimulatorClockRepository(db),
 	}
 }
 
@@ -155,6 +189,29 @@ func (h costCategoriesHandler) handleCreateCostCategoryRule(w http.ResponseWrite
 	redirectCostCategory(w, r, rule.CostCategoryID, fmt.Sprintf("Created rule %d for %s", rule.RuleOrder, rule.CostCategoryName))
 }
 
+// handleCreateCostCategorySplitRule creates one split-charge rule for the selected category.
+func (h costCategoriesHandler) handleCreateCostCategorySplitRule(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderCostCategories(w, r, http.StatusServiceUnavailable, "Open a workspace before creating split-charge rules.", "")
+		return
+	}
+	request, err := h.costCategorySplitRuleRequestFromForm(r)
+	if err != nil {
+		h.renderCostCategories(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	rule, err := h.splitCharges.CreateRule(r.Context(), request)
+	if err != nil {
+		h.renderCostCategories(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	redirectCostCategory(w, r, rule.CostCategoryID, fmt.Sprintf("Created split rule for %s", rule.SourceValue))
+}
+
 // renderCostCategories builds the Cost Category preview page from the open workspace.
 func (h costCategoriesHandler) renderCostCategories(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	data := costCategoriesPageData{
@@ -165,6 +222,7 @@ func (h costCategoriesHandler) renderCostCategories(w http.ResponseWriter, r *ht
 		Tables:              costCategoryTables(),
 		DimensionOptions:    costCategoryDimensionOptions(""),
 		OperatorOptions:     costCategoryOperatorOptions(""),
+		SplitMethodOptions:  costCategorySplitMethodOptions(""),
 		NextRuleOrder:       10,
 	}
 	if h.db != nil {
@@ -251,6 +309,25 @@ func (h costCategoriesHandler) loadCostCategoriesPageData(ctx context.Context, r
 		data.LineItems = append(data.LineItems, costCategoryLineItemViewFromPreview(item))
 	}
 	data.HasMoreLineItems = preview.HasMoreLineItems
+
+	splitRules, err := h.splitCharges.ListRules(ctx, selectedID)
+	if err != nil {
+		return err
+	}
+	for _, rule := range splitRules {
+		data.SplitRules = append(data.SplitRules, costCategorySplitRuleViewFromRule(rule))
+	}
+	comparison, err := h.splitCharges.CompareAllocations(ctx, persistence.CostCategorySplitChargeComparisonRequest{
+		CostCategoryID:     selectedID,
+		BillingPeriodStart: clock.BillingPeriodStart,
+		BillingPeriodEnd:   clock.BillingPeriodEnd,
+	})
+	if err != nil {
+		return err
+	}
+	for _, row := range comparison.Rows {
+		data.AllocationRows = append(data.AllocationRows, costCategoryAllocationComparisonRowViewFromRow(row))
+	}
 	return nil
 }
 
@@ -284,6 +361,44 @@ func (h costCategoriesHandler) costCategoryRuleRequestFromForm(r *http.Request) 
 	}, nil
 }
 
+// costCategorySplitRuleRequestFromForm converts the browser form into ordered split targets.
+func (h costCategoriesHandler) costCategorySplitRuleRequestFromForm(r *http.Request) (persistence.CostCategorySplitChargeRuleCreateRequest, error) {
+	if err := r.ParseForm(); err != nil {
+		return persistence.CostCategorySplitChargeRuleCreateRequest{}, fmt.Errorf("parse cost category split rule form: %w", err)
+	}
+	method := strings.TrimSpace(r.PostForm.Get("method"))
+	fixedShares, err := splitFixedShareMicros(r.PostForm.Get("fixed_share_micros"))
+	if err != nil {
+		return persistence.CostCategorySplitChargeRuleCreateRequest{}, err
+	}
+	if method != persistence.CostCategorySplitMethodFixed && len(fixedShares) > 0 {
+		return persistence.CostCategorySplitChargeRuleCreateRequest{}, fmt.Errorf("fixed shares only apply to fixed split rules")
+	}
+	targetValues := splitRuleValues(r.PostForm.Get("target_values"))
+	targets := make([]persistence.CostCategorySplitChargeTargetCreateRequest, 0, len(targetValues))
+	targetSeen := map[string]bool{}
+	for i, value := range targetValues {
+		targetSeen[value] = true
+		targets = append(targets, persistence.CostCategorySplitChargeTargetCreateRequest{
+			TargetOrder:      (i + 1) * 10,
+			TargetValue:      value,
+			FixedShareMicros: fixedShares[value],
+		})
+	}
+	for value := range fixedShares {
+		if !targetSeen[value] {
+			return persistence.CostCategorySplitChargeRuleCreateRequest{}, fmt.Errorf("fixed share target %s is not listed as a target value", value)
+		}
+	}
+	return persistence.CostCategorySplitChargeRuleCreateRequest{
+		CostCategoryID: r.PostForm.Get("category_id"),
+		SourceValue:    r.PostForm.Get("source_value"),
+		Method:         method,
+		Description:    r.PostForm.Get("description"),
+		Targets:        targets,
+	}, nil
+}
+
 func redirectCostCategory(w http.ResponseWriter, r *http.Request, categoryID, flash string) {
 	query := "?flash=" + urlQueryEscape(flash)
 	if strings.TrimSpace(categoryID) != "" {
@@ -304,6 +419,33 @@ func splitRuleValues(raw string) []string {
 		}
 	}
 	return values
+}
+
+func splitFixedShareMicros(raw string) (map[string]int, error) {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	shares := map[string]int{}
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		value, shareText, ok := strings.Cut(token, "=")
+		if !ok {
+			return nil, fmt.Errorf("fixed shares must use value=micros entries")
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("fixed share value is required")
+		}
+		share, err := strconv.Atoi(strings.TrimSpace(shareText))
+		if err != nil {
+			return nil, fmt.Errorf("fixed share for %s must be a number", value)
+		}
+		shares[value] = share
+	}
+	return shares, nil
 }
 
 func nextCostCategoryRuleOrder(rules []persistence.CostCategoryRule) int {
@@ -368,6 +510,45 @@ func costCategoryLineItemViewFromPreview(item persistence.CostCategoryPreviewLin
 	}
 }
 
+func costCategorySplitRuleViewFromRule(rule persistence.CostCategorySplitChargeRule) costCategorySplitRuleView {
+	targets := make([]string, 0, len(rule.Targets))
+	for _, target := range rule.Targets {
+		label := target.TargetValue
+		if rule.Method == persistence.CostCategorySplitMethodFixed {
+			label = fmt.Sprintf("%s %s", target.TargetValue, formatFixedShareMicros(target.FixedShareMicros))
+		}
+		targets = append(targets, label)
+	}
+	return costCategorySplitRuleView{
+		ID:            rule.ID,
+		SourceValue:   rule.SourceValue,
+		Method:        costCategorySplitMethodLabel(rule.Method),
+		Description:   rule.Description,
+		Status:        rule.Status,
+		TargetSummary: strings.Join(targets, ", "),
+	}
+}
+
+func costCategoryAllocationComparisonRowViewFromRow(row persistence.CostCategorySplitChargeComparisonRow) costCategoryAllocationComparisonRowView {
+	return costCategoryAllocationComparisonRowView{
+		Value:                         row.Value,
+		PayerAccountID:                row.PayerAccountID,
+		CurrencyCode:                  row.CurrencyCode,
+		LineItems:                     row.LineItemCount,
+		SourceLineItems:               row.SourceLineItemCount,
+		Allocations:                   row.AllocationCount,
+		RawCost:                       formatUSDMicros(row.RawCostMicros),
+		CategoryCost:                  formatUSDMicros(row.CategoryCostMicros),
+		SplitAmount:                   formatUSDMicros(row.NetSplitCostMicros),
+		TotalAllocatedCost:            formatUSDMicros(row.TotalAllocatedCostMicros),
+		UnallocatedResidual:           formatUSDMicros(row.UnallocatedResidualCostMicros),
+		UnallocatedResidualCostMicros: row.UnallocatedResidualCostMicros,
+		RawActivity:                   formatCountLabel(row.LineItemCount, "raw line item", "raw line items"),
+		SourceActivity:                formatCountLabel(row.SourceLineItemCount, "source line item", "source line items"),
+		AllocationActivity:            formatCountLabel(row.AllocationCount, "split allocation", "split allocations"),
+	}
+}
+
 func costCategoryPreviewTags(snapshot map[string]string) []string {
 	tags := make([]string, 0, len(snapshot))
 	for key, value := range snapshot {
@@ -423,11 +604,61 @@ func costCategoryOperatorOptions(selected string) []uiSelectOptionView {
 	return views
 }
 
+func costCategorySplitMethodOptions(selected string) []uiSelectOptionView {
+	if selected == "" {
+		selected = persistence.CostCategorySplitMethodEven
+	}
+	options := []struct {
+		value string
+		label string
+	}{
+		{persistence.CostCategorySplitMethodEven, "Even"},
+		{persistence.CostCategorySplitMethodFixed, "Fixed"},
+		{persistence.CostCategorySplitMethodProportional, "Proportional"},
+	}
+	views := make([]uiSelectOptionView, 0, len(options))
+	for _, option := range options {
+		views = append(views, uiSelectOptionView{
+			Value:    option.value,
+			Label:    option.label,
+			Selected: option.value == selected,
+		})
+	}
+	return views
+}
+
+func costCategorySplitMethodLabel(method string) string {
+	for _, option := range costCategorySplitMethodOptions(method) {
+		if option.Value == method {
+			return option.Label
+		}
+	}
+	return method
+}
+
+func formatFixedShareMicros(value int) string {
+	whole := value / 10_000
+	fraction := value % 10_000
+	if fraction == 0 {
+		return fmt.Sprintf("%d%%", whole)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%d.%04d", whole, fraction), "0"), ".") + "%"
+}
+
+func formatCountLabel(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
+}
+
 func costCategoryTables() costCategoryTablesView {
 	return costCategoryTablesView{
-		Categories:  uiTable(uiTableHeaders("Category", "Default", "Status", "Rules", "Preview"), "No cost categories"),
-		RuleEffects: uiTable(uiTableHeaders("Order", "Value", "Conditions", "First Match", "Shadowed"), "No rules for the selected category"),
-		LineItems:   uiTable(uiTableHeaders("Line Item", "Service", "Cost", "Before", "Preview", "Rule", "Tags"), "No line items in the current billing period"),
+		Categories:           uiTable(uiTableHeaders("Category", "Default", "Status", "Rules", "Preview"), "No cost categories"),
+		RuleEffects:          uiTable(uiTableHeaders("Order", "Value", "Conditions", "First Match", "Shadowed"), "No rules for the selected category"),
+		SplitRules:           uiTable(uiTableHeaders("Source", "Method", "Targets", "Status"), "No split-charge rules for the selected category"),
+		AllocationComparison: uiTable(uiTableHeaders("Value", "Raw Cost", "Category Cost", "Split Amount", "Total Allocated", "Unallocated Residual", "Activity"), "No assigned costs in the current billing period"),
+		LineItems:            uiTable(uiTableHeaders("Line Item", "Service", "Cost", "Before", "Preview", "Rule", "Tags"), "No line items in the current billing period"),
 	}
 }
 
@@ -525,6 +756,33 @@ var costCategoriesPageTemplate = newPageTemplate("cost-categories-page", `<div c
 						</label>
 						<button type="submit">Create Rule</button>
 					</form>
+
+					<form method="post" action="/cost-categories/splits/create" class="panel compact">
+						<h2>New Split Rule</h2>
+						<label class="form-row">Category
+							<select name="category_id" required>
+								{{range .CategoryOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+							</select>
+						</label>
+						<label class="form-row">Source Value
+							<input name="source_value" required>
+						</label>
+						<label class="form-row">Method
+							<select name="method" required>
+								{{range .SplitMethodOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+							</select>
+						</label>
+						<label class="form-row">Target Values
+							<textarea name="target_values" rows="3" required></textarea>
+						</label>
+						<label class="form-row">Fixed Shares
+							<textarea name="fixed_share_micros" rows="3"></textarea>
+						</label>
+						<label class="form-row">Description
+							<input name="description">
+						</label>
+						<button type="submit">Create Split Rule</button>
+					</form>
 				{{end}}
 			</section>
 
@@ -574,6 +832,57 @@ var costCategoriesPageTemplate = newPageTemplate("cost-categories-page", `<div c
 								</tr>
 							{{else}}
 								{{template "ui.dense-table-empty-row" $.Tables.RuleEffects}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Split Charge Rules</h2>
+					<span>{{.SelectedCategory}}</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.SplitRules}}
+						<tbody>
+							{{range .SplitRules}}
+								<tr>
+									<td><strong>{{.SourceValue}}</strong>{{if .Description}}<small>{{.Description}}</small>{{end}}<small>{{.ID}}</small></td>
+									<td>{{.Method}}</td>
+									<td>{{.TargetSummary}}</td>
+									<td><span class="status">{{.Status}}</span></td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.SplitRules}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Allocation Comparison</h2>
+					<span>{{len .AllocationRows}} values</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.AllocationComparison}}
+						<tbody>
+							{{range .AllocationRows}}
+								<tr>
+									<td><strong>{{.Value}}</strong><small>{{.PayerAccountID}} / {{.CurrencyCode}}</small></td>
+									<td>{{.RawCost}}</td>
+									<td>{{.CategoryCost}}</td>
+									<td>{{.SplitAmount}}</td>
+									<td><strong>{{.TotalAllocatedCost}}</strong></td>
+									<td>{{if .UnallocatedResidualCostMicros}}<strong>{{.UnallocatedResidual}}</strong>{{else}}{{.UnallocatedResidual}}{{end}}</td>
+									<td><small>{{.RawActivity}}</small><small>{{.SourceActivity}}</small><small>{{.AllocationActivity}}</small></td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.AllocationComparison}}
 							{{end}}
 						</tbody>
 					</table>

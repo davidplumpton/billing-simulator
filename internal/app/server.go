@@ -151,6 +151,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/cost-categories", costCategories.handleCostCategories)
 	mux.HandleFunc("/cost-categories/categories/create", costCategories.handleCreateCostCategory)
 	mux.HandleFunc("/cost-categories/rules/create", costCategories.handleCreateCostCategoryRule)
+	mux.HandleFunc("/cost-categories/splits/create", costCategories.handleCreateCostCategorySplitRule)
 	mux.HandleFunc("/bills", bills.handleBills)
 	mux.HandleFunc("/invoices/", bills.handleInvoice)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

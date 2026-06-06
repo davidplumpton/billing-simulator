@@ -43,7 +43,7 @@ The current codebase already includes these working foundations:
 - Scenario JSON parsing and execution for deterministic lab setup, including a packaged "Find the untagged data-transfer spike" scenario seed.
 - Cost allocation tag manager UI with discovered key/value coverage, spend and resource coverage by tag key/account/service, untagged and case-mismatched spend, activation, deactivation, 24-hour pending visibility timing, and usage-window tag snapshots.
 - Cost Category rule persistence, preview UI, and line-item assignment snapshots for ordered account, service, region, usage-type, line-item-type, tag, and existing-category matches, including unmatched spend, rule-order effects, open-period refreshes, and finalized-period history.
-- Cost Category split-charge rule persistence for even, fixed-share, and proportional allocation methods, with deterministic rounding, source-line audit rows, open-period refreshes, and finalized-period protection.
+- Cost Category split-charge rule persistence and allocation comparison UI for even, fixed-share, and proportional allocation methods, with deterministic rounding, source-line audit rows, raw/category/split/total cost views, unallocated residuals, open-period refreshes, and finalized-period protection.
 - Saved Cost Explorer report persistence for later report-builder UI work.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 
@@ -57,7 +57,7 @@ The broader MVP and later phases include:
 - Budgets and forecast/actual alert simulation.
 - Payment methods, payment profiles, payment state workflows, past-due handling, and remediation labs.
 - CUR-like and FOCUS-style exports plus a query lab.
-- Cost category allocation comparison views, shared-cost lab workflows, and Billing Conductor-style pro forma views.
+- Shared-cost lab workflows and Billing Conductor-style pro forma views.
 - Instructor-authored scenarios, grading checks, and assessment review workflows.
 - More advanced billing fidelity such as credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized views.
 

@@ -1304,6 +1304,18 @@ func TestCostCategoriesUIRequiresWorkspace(t *testing.T) {
 	if !strings.Contains(body, "Open a workspace before creating cost categories.") {
 		t.Fatalf("POST /cost-categories/categories/create without workspace missing workspace message: %s", body)
 	}
+
+	resp, err = client.PostForm(server.URL+"/cost-categories/splits/create", url.Values{"category_id": {"cc-product"}})
+	if err != nil {
+		t.Fatalf("POST /cost-categories/splits/create without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /cost-categories/splits/create without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before creating split-charge rules.") {
+		t.Fatalf("POST /cost-categories/splits/create without workspace missing workspace message: %s", body)
+	}
 }
 
 func TestCostCategoryPreviewWorkflow(t *testing.T) {
@@ -1428,6 +1440,8 @@ func TestCostCategoryPreviewWorkflow(t *testing.T) {
 	for _, want := range []string{
 		"Rule Order Effects",
 		"Line Item Preview",
+		"Split Charge Rules",
+		"Allocation Comparison",
 		"Storefront",
 		"Compute",
 		"cost category Environment is Production",
@@ -1441,6 +1455,35 @@ func TestCostCategoryPreviewWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /cost-categories Product preview missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-categories/splits/create", url.Values{
+		"category_id":   {productID},
+		"source_value":  {"Unmapped"},
+		"method":        {persistence.CostCategorySplitMethodEven},
+		"target_values": {"Storefront\nCompute"},
+		"description":   {"Default storage shared across products"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product split rule error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product split rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Created split rule for Unmapped",
+		"Default storage shared across products",
+		"Even",
+		"Storefront, Compute",
+		"$0.08695",
+		"$0.00375",
+		"-$0.0075",
+		"1 split allocation",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create Product split rule body missing %q: %s", want, body)
 		}
 	}
 }
@@ -1651,6 +1694,33 @@ func TestCostCategoryRulesFeatureWorksInFreshWorkspace(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("POST create Product referenced-category rule body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/cost-categories/splits/create", url.Values{
+		"category_id":   {productID},
+		"source_value":  {"Unmapped"},
+		"method":        {persistence.CostCategorySplitMethodEven},
+		"target_values": {"Storefront\nPlatform"},
+		"description":   {"Share support across product values"},
+	})
+	if err != nil {
+		t.Fatalf("POST create Product split rule error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create Product split rule final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Created split rule for Unmapped",
+		"Split Charge Rules",
+		"Allocation Comparison",
+		"Storefront, Platform",
+		"$0.50",
+		"-$1.00",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create Product split rule body missing %q: %s", want, body)
 		}
 	}
 

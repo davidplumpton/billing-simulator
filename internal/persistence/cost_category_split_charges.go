@@ -97,6 +97,46 @@ type CostCategorySplitChargeAllocationListRequest struct {
 	Limit              int
 }
 
+// CostCategorySplitChargeComparisonRequest selects one category and period for allocation reporting.
+type CostCategorySplitChargeComparisonRequest struct {
+	CostCategoryID     string
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+}
+
+// CostCategorySplitChargeComparison reports direct and split-adjusted cost by Cost Category value.
+type CostCategorySplitChargeComparison struct {
+	CostCategoryID                string
+	CostCategoryName              string
+	BillingPeriodStart            string
+	BillingPeriodEnd              string
+	RawCostMicros                 int64
+	CategoryCostMicros            int64
+	SplitInCostMicros             int64
+	SplitOutCostMicros            int64
+	NetSplitCostMicros            int64
+	TotalAllocatedCostMicros      int64
+	UnallocatedResidualCostMicros int64
+	Rows                          []CostCategorySplitChargeComparisonRow
+}
+
+// CostCategorySplitChargeComparisonRow shows one value's pre-split and post-split allocation totals.
+type CostCategorySplitChargeComparisonRow struct {
+	Value                         string
+	PayerAccountID                string
+	CurrencyCode                  string
+	LineItemCount                 int
+	SourceLineItemCount           int
+	AllocationCount               int
+	RawCostMicros                 int64
+	CategoryCostMicros            int64
+	SplitInCostMicros             int64
+	SplitOutCostMicros            int64
+	NetSplitCostMicros            int64
+	TotalAllocatedCostMicros      int64
+	UnallocatedResidualCostMicros int64
+}
+
 // CostCategorySplitChargeRefreshResult reports how many open-period allocation rows were rebuilt.
 type CostCategorySplitChargeRefreshResult struct {
 	BillingPeriodsRefreshed     int
@@ -350,6 +390,246 @@ func (r CostCategorySplitChargeRepository) ListAllocations(ctx context.Context, 
 		return nil, fmt.Errorf("iterate cost category split charge allocations: %w", err)
 	}
 	return allocations, nil
+}
+
+// CompareAllocations summarizes raw category costs, split movement, and residuals for one billing period.
+func (r CostCategorySplitChargeRepository) CompareAllocations(ctx context.Context, request CostCategorySplitChargeComparisonRequest) (CostCategorySplitChargeComparison, error) {
+	if r.db == nil {
+		return CostCategorySplitChargeComparison{}, fmt.Errorf("database handle is required")
+	}
+	request = normalizeCostCategorySplitChargeComparisonRequest(request)
+	if err := validateCostCategorySplitChargeComparisonRequest(request); err != nil {
+		return CostCategorySplitChargeComparison{}, err
+	}
+
+	comparison := CostCategorySplitChargeComparison{
+		CostCategoryID:     request.CostCategoryID,
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+	}
+	if err := r.db.QueryRowContext(
+		ctx,
+		`SELECT name
+		 FROM cost_categories
+		 WHERE id = ?`,
+		request.CostCategoryID,
+	).Scan(&comparison.CostCategoryName); err != nil {
+		if err == sql.ErrNoRows {
+			return CostCategorySplitChargeComparison{}, fmt.Errorf("cost category %q not found", request.CostCategoryID)
+		}
+		return CostCategorySplitChargeComparison{}, fmt.Errorf("read cost category for split comparison: %w", err)
+	}
+
+	rowsByKey := map[costCategorySplitComparisonKey]*CostCategorySplitChargeComparisonRow{}
+	if err := r.addRawCostComparisonRows(ctx, request, rowsByKey); err != nil {
+		return CostCategorySplitChargeComparison{}, err
+	}
+	if err := r.addSplitInComparisonRows(ctx, request, rowsByKey); err != nil {
+		return CostCategorySplitChargeComparison{}, err
+	}
+	if err := r.addSplitOutComparisonRows(ctx, request, rowsByKey); err != nil {
+		return CostCategorySplitChargeComparison{}, err
+	}
+
+	keys := make([]costCategorySplitComparisonKey, 0, len(rowsByKey))
+	for key := range rowsByKey {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left := strings.ToLower(keys[i].value)
+		right := strings.ToLower(keys[j].value)
+		if left != right {
+			return left < right
+		}
+		if keys[i].payerAccountID != keys[j].payerAccountID {
+			return keys[i].payerAccountID < keys[j].payerAccountID
+		}
+		return keys[i].currencyCode < keys[j].currencyCode
+	})
+
+	for _, key := range keys {
+		row := *rowsByKey[key]
+		row.CategoryCostMicros = row.RawCostMicros - row.SplitOutCostMicros
+		row.NetSplitCostMicros = row.SplitInCostMicros - row.SplitOutCostMicros
+		row.TotalAllocatedCostMicros = row.CategoryCostMicros + row.SplitInCostMicros
+		comparison.RawCostMicros += row.RawCostMicros
+		comparison.CategoryCostMicros += row.CategoryCostMicros
+		comparison.SplitInCostMicros += row.SplitInCostMicros
+		comparison.SplitOutCostMicros += row.SplitOutCostMicros
+		comparison.NetSplitCostMicros += row.NetSplitCostMicros
+		comparison.TotalAllocatedCostMicros += row.TotalAllocatedCostMicros
+		comparison.UnallocatedResidualCostMicros += row.UnallocatedResidualCostMicros
+		comparison.Rows = append(comparison.Rows, row)
+	}
+	return comparison, nil
+}
+
+func (r CostCategorySplitChargeRepository) addRawCostComparisonRows(ctx context.Context, request CostCategorySplitChargeComparisonRequest, rowsByKey map[costCategorySplitComparisonKey]*CostCategorySplitChargeComparisonRow) error {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			assigned_value,
+			payer_account_id,
+			currency_code,
+			COUNT(*),
+			COALESCE(SUM(unblended_cost_micros), 0)
+		 FROM cost_category_line_item_assignments
+		 WHERE cost_category_id = ?
+		   AND billing_period_start = ?
+		   AND billing_period_end = ?
+		 GROUP BY assigned_value, payer_account_id, currency_code
+		 ORDER BY lower(assigned_value), payer_account_id, currency_code`,
+		request.CostCategoryID,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("list raw split comparison costs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var value, payerAccountID, currencyCode string
+		var lineItems int
+		var rawCostMicros int64
+		if err := rows.Scan(&value, &payerAccountID, &currencyCode, &lineItems, &rawCostMicros); err != nil {
+			return fmt.Errorf("scan raw split comparison cost: %w", err)
+		}
+		row := splitComparisonRow(rowsByKey, costCategorySplitComparisonKey{
+			value:          value,
+			payerAccountID: payerAccountID,
+			currencyCode:   currencyCode,
+		})
+		row.LineItemCount += lineItems
+		row.RawCostMicros += rawCostMicros
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate raw split comparison costs: %w", err)
+	}
+	return nil
+}
+
+func (r CostCategorySplitChargeRepository) addSplitInComparisonRows(ctx context.Context, request CostCategorySplitChargeComparisonRequest, rowsByKey map[costCategorySplitComparisonKey]*CostCategorySplitChargeComparisonRow) error {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			target_value,
+			payer_account_id,
+			currency_code,
+			COUNT(*),
+			COALESCE(SUM(allocated_cost_micros), 0)
+		 FROM cost_category_split_charge_allocations
+		 WHERE cost_category_id = ?
+		   AND billing_period_start = ?
+		   AND billing_period_end = ?
+		 GROUP BY target_value, payer_account_id, currency_code
+		 ORDER BY lower(target_value), payer_account_id, currency_code`,
+		request.CostCategoryID,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("list split-in comparison costs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var value, payerAccountID, currencyCode string
+		var allocations int
+		var splitInCostMicros int64
+		if err := rows.Scan(&value, &payerAccountID, &currencyCode, &allocations, &splitInCostMicros); err != nil {
+			return fmt.Errorf("scan split-in comparison cost: %w", err)
+		}
+		row := splitComparisonRow(rowsByKey, costCategorySplitComparisonKey{
+			value:          value,
+			payerAccountID: payerAccountID,
+			currencyCode:   currencyCode,
+		})
+		row.AllocationCount += allocations
+		row.SplitInCostMicros += splitInCostMicros
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate split-in comparison costs: %w", err)
+	}
+	return nil
+}
+
+func (r CostCategorySplitChargeRepository) addSplitOutComparisonRows(ctx context.Context, request CostCategorySplitChargeComparisonRequest, rowsByKey map[costCategorySplitComparisonKey]*CostCategorySplitChargeComparisonRow) error {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			source_value,
+			payer_account_id,
+			currency_code,
+			COUNT(*),
+			COALESCE(SUM(source_cost_micros), 0),
+			COALESCE(SUM(split_out_cost_micros), 0),
+			COALESCE(SUM(source_cost_micros - split_out_cost_micros), 0)
+		 FROM (
+			SELECT
+				rule_id,
+				source_line_item_id,
+				source_value,
+				payer_account_id,
+				currency_code,
+				MAX(source_cost_micros) AS source_cost_micros,
+				SUM(allocated_cost_micros) AS split_out_cost_micros
+			FROM cost_category_split_charge_allocations
+			WHERE cost_category_id = ?
+			  AND billing_period_start = ?
+			  AND billing_period_end = ?
+			GROUP BY rule_id, source_line_item_id, source_value, payer_account_id, currency_code
+		 ) source_allocations
+		 GROUP BY source_value, payer_account_id, currency_code
+		 ORDER BY lower(source_value), payer_account_id, currency_code`,
+		request.CostCategoryID,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("list split-out comparison costs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var value, payerAccountID, currencyCode string
+		var sourceLineItems int
+		var sourceCostMicros, splitOutCostMicros, residualCostMicros int64
+		if err := rows.Scan(&value, &payerAccountID, &currencyCode, &sourceLineItems, &sourceCostMicros, &splitOutCostMicros, &residualCostMicros); err != nil {
+			return fmt.Errorf("scan split-out comparison cost: %w", err)
+		}
+		row := splitComparisonRow(rowsByKey, costCategorySplitComparisonKey{
+			value:          value,
+			payerAccountID: payerAccountID,
+			currencyCode:   currencyCode,
+		})
+		row.SourceLineItemCount += sourceLineItems
+		row.SplitOutCostMicros += splitOutCostMicros
+		row.UnallocatedResidualCostMicros += residualCostMicros
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate split-out comparison costs: %w", err)
+	}
+	return nil
+}
+
+type costCategorySplitComparisonKey struct {
+	value          string
+	payerAccountID string
+	currencyCode   string
+}
+
+func splitComparisonRow(rowsByKey map[costCategorySplitComparisonKey]*CostCategorySplitChargeComparisonRow, key costCategorySplitComparisonKey) *CostCategorySplitChargeComparisonRow {
+	row, ok := rowsByKey[key]
+	if !ok {
+		row = &CostCategorySplitChargeComparisonRow{
+			Value:          key.value,
+			PayerAccountID: key.payerAccountID,
+			CurrencyCode:   key.currencyCode,
+		}
+		rowsByKey[key] = row
+	}
+	return row
 }
 
 func refreshCostCategorySplitAllocationsInTx(ctx context.Context, tx costCategoryAssignmentStore, periodStart, periodEnd string) (CostCategorySplitChargeRefreshResult, error) {
@@ -951,6 +1231,20 @@ func validateCostCategorySplitChargeAllocationListRequest(request CostCategorySp
 	}
 	if request.BillingPeriodStart == "" || request.BillingPeriodEnd == "" {
 		return fmt.Errorf("billing period start and end are both required when filtering split allocations by period")
+	}
+	return validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd)
+}
+
+func normalizeCostCategorySplitChargeComparisonRequest(request CostCategorySplitChargeComparisonRequest) CostCategorySplitChargeComparisonRequest {
+	request.CostCategoryID = strings.TrimSpace(request.CostCategoryID)
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	return request
+}
+
+func validateCostCategorySplitChargeComparisonRequest(request CostCategorySplitChargeComparisonRequest) error {
+	if request.CostCategoryID == "" {
+		return fmt.Errorf("cost category ID is required")
 	}
 	return validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd)
 }

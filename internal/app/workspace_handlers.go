@@ -190,6 +190,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/budgets/create", func(w http.ResponseWriter, r *http.Request) {
 		newBudgetHandler(workspace.DB()).handleCreateBudget(w, r)
 	})
+	mux.HandleFunc("/budgets/refresh", func(w http.ResponseWriter, r *http.Request) {
+		newBudgetHandler(workspace.DB()).handleRefreshBudgets(w, r)
+	})
 	mux.HandleFunc("/bills", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleBills(w, r)
 	})

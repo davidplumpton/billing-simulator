@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -1873,6 +1874,18 @@ func TestBudgetsUIRequiresWorkspace(t *testing.T) {
 	if !strings.Contains(body, "Open a workspace before creating budgets.") {
 		t.Fatalf("POST /budgets/create without workspace missing workspace message: %s", body)
 	}
+
+	resp, err = client.PostForm(server.URL+"/budgets/refresh", url.Values{})
+	if err != nil {
+		t.Fatalf("POST /budgets/refresh without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /budgets/refresh without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before refreshing budgets.") {
+		t.Fatalf("POST /budgets/refresh without workspace missing workspace message: %s", body)
+	}
 }
 
 func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
@@ -1926,6 +1939,7 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"Month and Scope",
 		"Thresholds",
 		"Create Budget",
+		"Refresh Forecasts and Alerts",
 		"Alert Notifications",
 		"Forecast Summaries",
 		"No budget threshold checks",
@@ -1965,13 +1979,9 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"80% / $0.08",
 		"$0.0832",
 		"83.2%",
-		"Forecast Summaries",
-		"10/28",
-		"$0.31616",
-		"Scheduled Events",
 		"Alert Notifications",
-		"In-app",
-		"actual threshold crossed",
+		"No budget alert notifications",
+		"No budget forecast summaries",
 		"Breached",
 		"OK",
 	} {
@@ -1991,7 +2001,50 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 	if len(budgets) != 1 || len(budgets[0].Thresholds) != 2 {
 		t.Fatalf("persisted budgets = %+v, want one budget with actual and forecast thresholds", budgets)
 	}
-	alerts, err := persistence.NewBudgetRepository(db).ListAlertNotifications(ctx, persistence.BudgetAlertNotificationListRequest{
+	budgetRepo := persistence.NewBudgetRepository(db)
+	forecasts, err := budgetRepo.ListForecastSummaries(ctx, persistence.BudgetForecastSummaryListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListForecastSummaries(after create) error = %v", err)
+	}
+	alerts, err := budgetRepo.ListAlertNotifications(ctx, persistence.BudgetAlertNotificationListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListAlertNotifications(after create) error = %v", err)
+	}
+	if len(forecasts) != 0 || len(alerts) != 0 {
+		t.Fatalf("generated budget state after create redirect = forecasts %+v alerts %+v, want no refresh side effects", forecasts, alerts)
+	}
+
+	resp, err = client.PostForm(server.URL+"/budgets/refresh", url.Values{})
+	if err != nil {
+		t.Fatalf("POST /budgets/refresh error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /budgets/refresh final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Refreshed budget forecasts and alerts",
+		"Storefront Feb Budget",
+		"Forecast Summaries",
+		"10/28",
+		"$0.31616",
+		"Scheduled Events",
+		"Alert Notifications",
+		"In-app",
+		"actual threshold crossed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /budgets/refresh body missing %q: %s", want, body)
+		}
+	}
+
+	alerts, err = budgetRepo.ListAlertNotifications(ctx, persistence.BudgetAlertNotificationListRequest{
 		BillingPeriodStart: "2026-02-01",
 		BillingPeriodEnd:   "2026-03-01",
 	})
@@ -2003,6 +2056,23 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		alerts[0].ThresholdType != persistence.BudgetThresholdTypeActual ||
 		alerts[0].NotificationChannel != "in_app" {
 		t.Fatalf("persisted alert notifications = %+v, want one in-app actual threshold alert", alerts)
+	}
+
+	beforeGET := readBudgetGeneratedStateFingerprint(t, ctx, db, "2026-02-01", "2026-03-01")
+	time.Sleep(10 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		resp, err = client.Get(server.URL + "/budgets")
+		if err != nil {
+			t.Fatalf("GET /budgets idempotency check %d error = %v", i+1, err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /budgets idempotency check %d status = %d, want %d; body=%s", i+1, resp.StatusCode, http.StatusOK, body)
+		}
+	}
+	afterGET := readBudgetGeneratedStateFingerprint(t, ctx, db, "2026-02-01", "2026-03-01")
+	if afterGET != beforeGET {
+		t.Fatalf("GET /budgets changed generated budget state:\nbefore=%s\nafter=%s", beforeGET, afterGET)
 	}
 }
 
@@ -5732,6 +5802,27 @@ func readCostCategoryID(t *testing.T, db *sql.DB, name string) string {
 		t.Fatalf("read cost category %q ID: %v", name, err)
 	}
 	return id
+}
+
+func readBudgetGeneratedStateFingerprint(t *testing.T, ctx context.Context, db *sql.DB, periodStart, periodEnd string) string {
+	t.Helper()
+
+	repo := persistence.NewBudgetRepository(db)
+	forecasts, err := repo.ListForecastSummaries(ctx, persistence.BudgetForecastSummaryListRequest{
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   periodEnd,
+	})
+	if err != nil {
+		t.Fatalf("ListForecastSummaries(%s to %s) error = %v", periodStart, periodEnd, err)
+	}
+	alerts, err := repo.ListAlertNotifications(ctx, persistence.BudgetAlertNotificationListRequest{
+		BillingPeriodStart: periodStart,
+		BillingPeriodEnd:   periodEnd,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertNotifications(%s to %s) error = %v", periodStart, periodEnd, err)
+	}
+	return fmt.Sprintf("forecasts=%#v\nalerts=%#v", forecasts, alerts)
 }
 
 // requireCostCategoryAssignmentByLineItem returns the persisted category assignment for one billed line item.

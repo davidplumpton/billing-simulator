@@ -162,6 +162,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/cost-explorer/reports/run", costExplorer.handleRunCostExplorerReport)
 	mux.HandleFunc("/budgets", budgets.handleBudgets)
 	mux.HandleFunc("/budgets/create", budgets.handleCreateBudget)
+	mux.HandleFunc("/budgets/refresh", budgets.handleRefreshBudgets)
 	mux.HandleFunc("/bills", bills.handleBills)
 	mux.HandleFunc("/invoices/", bills.handleInvoice)
 	mux.HandleFunc("/payments", payments.handlePayments)

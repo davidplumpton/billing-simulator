@@ -81,6 +81,14 @@ nav .active {
 	justify-content: flex-end;
 }
 
+.page-action-form {
+	margin: 0;
+}
+
+.page-action-form button {
+	margin-top: 0;
+}
+
 h1,
 h2,
 h3,

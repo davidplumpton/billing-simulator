@@ -147,6 +147,36 @@ func (h budgetHandler) handleCreateBudget(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, "/budgets?flash="+urlQueryEscape("Created budget "+budget.Name), http.StatusSeeOther)
 }
 
+// handleRefreshBudgets rebuilds forecast summaries and alert notifications after an explicit learner action.
+func (h budgetHandler) handleRefreshBudgets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		h.renderBudgets(w, r, http.StatusServiceUnavailable, budgetFormView{}, "Open a workspace before refreshing budgets.", "")
+		return
+	}
+	forecastResult, err := h.budgets.RefreshForecastSummaries(r.Context(), persistence.BudgetForecastRefreshRequest{})
+	if err != nil {
+		h.renderBudgets(w, r, http.StatusInternalServerError, budgetFormView{}, err.Error(), "")
+		return
+	}
+	evaluations, err := h.budgets.EvaluateBudgets(r.Context(), persistence.BudgetEvaluationRequest{
+		BillingPeriodStart: forecastResult.BillingPeriodStart,
+		BillingPeriodEnd:   forecastResult.BillingPeriodEnd,
+	})
+	if err != nil {
+		h.renderBudgets(w, r, http.StatusInternalServerError, budgetFormView{}, err.Error(), "")
+		return
+	}
+	if _, err := h.budgets.RecordAlertNotifications(r.Context(), evaluations); err != nil {
+		h.renderBudgets(w, r, http.StatusInternalServerError, budgetFormView{}, err.Error(), "")
+		return
+	}
+	http.Redirect(w, r, "/budgets?flash="+urlQueryEscape("Refreshed budget forecasts and alerts"), http.StatusSeeOther)
+}
+
 func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, status int, form budgetFormView, errorMessage, flashMessage string) {
 	data := budgetsPageData{
 		WorkspaceReady:      h.db != nil,
@@ -163,7 +193,10 @@ func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, sta
 	data.ScopeTypeOptions = budgetScopeTypeOptions(data.Form.ScopeType)
 
 	if h.db != nil {
-		forecastResult, err := h.budgets.RefreshForecastSummaries(r.Context(), persistence.BudgetForecastRefreshRequest{})
+		forecastSummaries, err := h.budgets.ListForecastSummaries(r.Context(), persistence.BudgetForecastSummaryListRequest{
+			BillingPeriodStart: data.Form.BillingPeriodStart,
+			BillingPeriodEnd:   data.Form.BillingPeriodEnd,
+		})
 		if err != nil && data.Error == "" {
 			data.Error = err.Error()
 			data.Notices = uiNotices(data.Flash, data.Error)
@@ -186,15 +219,18 @@ func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, sta
 			data.Error = err.Error()
 			data.Notices = uiNotices(data.Flash, data.Error)
 		}
-		alerts, err := h.budgets.RecordAlertNotifications(r.Context(), evaluations)
+		alerts, err := h.budgets.ListAlertNotifications(r.Context(), persistence.BudgetAlertNotificationListRequest{
+			BillingPeriodStart: data.Form.BillingPeriodStart,
+			BillingPeriodEnd:   data.Form.BillingPeriodEnd,
+		})
 		if err != nil && data.Error == "" {
 			data.Error = err.Error()
 			data.Notices = uiNotices(data.Flash, data.Error)
 		}
 		data.ThresholdRows = budgetThresholdRowsFromEvaluations(evaluations, categories)
-		data.ForecastRows = budgetForecastRowsFromSummaries(forecastResult.Summaries, evaluations)
+		data.ForecastRows = budgetForecastRowsFromSummaries(forecastSummaries, evaluations)
 		data.AlertRows = budgetAlertRowsFromNotifications(alerts)
-		data.StateCards = budgetStateCards(evaluations, forecastResult.Summaries, alerts)
+		data.StateCards = budgetStateCards(evaluations, forecastSummaries, alerts)
 	}
 
 	renderPage(w, status, pageLayoutOptions{
@@ -505,6 +541,9 @@ var budgetsPageTemplate = newPageTemplate("budgets-page", `<div class="page-head
 				<h1>Budgets</h1>
 			</div>
 			<div class="page-actions">
+				<form method="post" action="/budgets/refresh" class="page-action-form">
+					<button type="submit">Refresh Forecasts and Alerts</button>
+				</form>
 				<a class="button-link secondary" href="/cost-explorer">Cost Explorer</a>
 				<a class="button-link secondary" href="/resources">Resources</a>
 			</div>

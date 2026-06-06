@@ -347,6 +347,118 @@ func TestBudgetRepositoryRefreshesMonthEndForecastSummaries(t *testing.T) {
 	}
 }
 
+func TestBudgetRepositoryRecordsBudgetAlertNotifications(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-budget-alert-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Budget alert storefront web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app": "storefront",
+			},
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-budget-alert-ec2",
+			ResourceID:          "resource-budget-alert-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+
+	budgetRepo := NewBudgetRepository(db)
+	budget := createBudgetForTest(t, ctx, budgetRepo, BudgetCreateRequest{
+		ID:                 "budget-alert-account",
+		Name:               "Alert account",
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		BudgetAmountMicros: 100_000,
+		ScopeType:          BudgetScopeAccount,
+		ScopeValue:         "111122223333",
+		Thresholds: []BudgetThresholdCreateRequest{
+			{ID: "budget-alert-actual", ThresholdType: BudgetThresholdTypeActual, ThresholdBasisPoints: 8000},
+			{ID: "budget-alert-forecast", ThresholdType: BudgetThresholdTypeForecast, ThresholdBasisPoints: 12000},
+		},
+	})
+
+	evaluations, err := budgetRepo.EvaluateBudgets(ctx, BudgetEvaluationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		ForecastCostMicrosByBudgetID: map[string]int64{
+			budget.ID: 130_000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EvaluateBudgets() error = %v", err)
+	}
+	notifications, err := budgetRepo.RecordAlertNotifications(ctx, evaluations)
+	if err != nil {
+		t.Fatalf("RecordAlertNotifications() error = %v", err)
+	}
+	if len(notifications) != 2 {
+		t.Fatalf("RecordAlertNotifications() rows = %+v, want actual and forecast alerts", notifications)
+	}
+	byType := mapBudgetAlertNotificationsByType(notifications)
+	actual := byType[BudgetThresholdTypeActual]
+	if actual.BudgetID != budget.ID ||
+		actual.BudgetThresholdID != "budget-alert-actual" ||
+		actual.NotificationChannel != "in_app" ||
+		actual.SpendMicros != 83_200 ||
+		actual.ThresholdAmountMicros != 80_000 ||
+		actual.PercentUsedBasisPoints != 8320 ||
+		actual.LineItemCount != 1 ||
+		!strings.Contains(actual.Message, "actual threshold crossed") ||
+		actual.FirstTriggeredAt == "" ||
+		actual.LastObservedAt == "" {
+		t.Fatalf("actual alert notification = %+v, want in-app actual threshold crossing", actual)
+	}
+	forecast := byType[BudgetThresholdTypeForecast]
+	if forecast.BudgetThresholdID != "budget-alert-forecast" ||
+		forecast.SpendMicros != 130_000 ||
+		forecast.ThresholdAmountMicros != 120_000 ||
+		!strings.Contains(forecast.Message, "forecast threshold crossed") {
+		t.Fatalf("forecast alert notification = %+v, want forecast threshold crossing", forecast)
+	}
+
+	rechecked, err := budgetRepo.EvaluateBudgets(ctx, BudgetEvaluationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		ForecastCostMicrosByBudgetID: map[string]int64{
+			budget.ID: 140_000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("EvaluateBudgets(rechecked) error = %v", err)
+	}
+	updated, err := budgetRepo.RecordAlertNotifications(ctx, rechecked)
+	if err != nil {
+		t.Fatalf("RecordAlertNotifications(rechecked) error = %v", err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("RecordAlertNotifications(rechecked) rows = %+v, want no duplicate alerts", updated)
+	}
+	updatedByType := mapBudgetAlertNotificationsByType(updated)
+	if updatedByType[BudgetThresholdTypeForecast].ID != forecast.ID ||
+		updatedByType[BudgetThresholdTypeForecast].SpendMicros != 140_000 {
+		t.Fatalf("updated forecast alert = %+v, want same notification row with latest spend", updatedByType[BudgetThresholdTypeForecast])
+	}
+	if updatedByType[BudgetThresholdTypeActual].ID != actual.ID {
+		t.Fatalf("updated actual alert ID = %q, want original %q", updatedByType[BudgetThresholdTypeActual].ID, actual.ID)
+	}
+}
+
 func TestBudgetRepositoryValidatesDefinitionsAndEvaluationRequests(t *testing.T) {
 	t.Parallel()
 
@@ -451,4 +563,12 @@ func mapBudgetForecastSummariesByID(summaries []BudgetForecastSummary) map[strin
 		byID[summary.BudgetID] = summary
 	}
 	return byID
+}
+
+func mapBudgetAlertNotificationsByType(notifications []BudgetAlertNotification) map[string]BudgetAlertNotification {
+	byType := map[string]BudgetAlertNotification{}
+	for _, notification := range notifications {
+		byType[notification.ThresholdType] = notification
+	}
+	return byType
 }

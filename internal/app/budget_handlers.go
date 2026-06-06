@@ -31,6 +31,7 @@ type budgetsPageData struct {
 	StateCards          []budgetStateCardView
 	ThresholdRows       []budgetThresholdRowView
 	ForecastRows        []budgetForecastSummaryRowView
+	AlertRows           []budgetAlertNotificationRowView
 	Tables              budgetsTablesView
 }
 
@@ -79,9 +80,24 @@ type budgetForecastSummaryRowView struct {
 	ForecastCost    string
 }
 
+type budgetAlertNotificationRowView struct {
+	BudgetName       string
+	Period           string
+	Metric           string
+	ThresholdPercent string
+	ThresholdAmount  string
+	Spend            string
+	PercentUsed      string
+	Channel          string
+	FirstTriggeredAt string
+	LastObservedAt   string
+	Message          string
+}
+
 type budgetsTablesView struct {
 	Thresholds uiTableView
 	Forecasts  uiTableView
+	Alerts     uiTableView
 }
 
 // newBudgetHandler builds the server-rendered budgets workflow.
@@ -170,9 +186,15 @@ func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, sta
 			data.Error = err.Error()
 			data.Notices = uiNotices(data.Flash, data.Error)
 		}
+		alerts, err := h.budgets.RecordAlertNotifications(r.Context(), evaluations)
+		if err != nil && data.Error == "" {
+			data.Error = err.Error()
+			data.Notices = uiNotices(data.Flash, data.Error)
+		}
 		data.ThresholdRows = budgetThresholdRowsFromEvaluations(evaluations, categories)
 		data.ForecastRows = budgetForecastRowsFromSummaries(forecastResult.Summaries, evaluations)
-		data.StateCards = budgetStateCards(evaluations, forecastResult.Summaries)
+		data.AlertRows = budgetAlertRowsFromNotifications(alerts)
+		data.StateCards = budgetStateCards(evaluations, forecastResult.Summaries, alerts)
 	}
 
 	renderPage(w, status, pageLayoutOptions{
@@ -307,7 +329,27 @@ func budgetForecastRowsFromSummaries(summaries []persistence.BudgetForecastSumma
 	return rows
 }
 
-func budgetStateCards(evaluations []persistence.BudgetEvaluation, summaries []persistence.BudgetForecastSummary) []budgetStateCardView {
+func budgetAlertRowsFromNotifications(notifications []persistence.BudgetAlertNotification) []budgetAlertNotificationRowView {
+	rows := make([]budgetAlertNotificationRowView, 0, len(notifications))
+	for _, notification := range notifications {
+		rows = append(rows, budgetAlertNotificationRowView{
+			BudgetName:       notification.BudgetName,
+			Period:           notification.BillingPeriodStart + " to " + notification.BillingPeriodEnd,
+			Metric:           budgetThresholdTypeLabel(notification.ThresholdType),
+			ThresholdPercent: formatBudgetPercentBasisPoints(int64(notification.ThresholdBasisPoints)),
+			ThresholdAmount:  formatUSDMicros(notification.ThresholdAmountMicros),
+			Spend:            formatUSDMicros(notification.SpendMicros),
+			PercentUsed:      formatBudgetPercentBasisPoints(notification.PercentUsedBasisPoints),
+			Channel:          budgetAlertNotificationChannelLabel(notification.NotificationChannel),
+			FirstTriggeredAt: notification.FirstTriggeredAt,
+			LastObservedAt:   notification.LastObservedAt,
+			Message:          notification.Message,
+		})
+	}
+	return rows
+}
+
+func budgetStateCards(evaluations []persistence.BudgetEvaluation, summaries []persistence.BudgetForecastSummary, notifications []persistence.BudgetAlertNotification) []budgetStateCardView {
 	breached := 0
 	checks := 0
 	forecastCostMicros := int64(0)
@@ -328,6 +370,7 @@ func budgetStateCards(evaluations []persistence.BudgetEvaluation, summaries []pe
 		{Label: "Budgets", Value: strconv.Itoa(len(evaluations))},
 		{Label: "Threshold Checks", Value: strconv.Itoa(checks)},
 		{Label: "Breached", Value: strconv.Itoa(breached)},
+		{Label: "Alerts", Value: strconv.Itoa(len(notifications))},
 		{Label: "Forecast Spend", Value: formatUSDMicros(forecastCostMicros)},
 		{Label: "Scheduled Events", Value: strconv.Itoa(scheduledEvents)},
 	}
@@ -375,6 +418,13 @@ func budgetThresholdStatusClass(breached bool) string {
 		return "status-deactivated"
 	}
 	return ""
+}
+
+func budgetAlertNotificationChannelLabel(channel string) string {
+	if channel == "in_app" {
+		return "In-app"
+	}
+	return channel
 }
 
 func budgetScopeTypeOptions(selected string) []uiSelectOptionView {
@@ -446,6 +496,7 @@ func budgetsTables() budgetsTablesView {
 	return budgetsTablesView{
 		Thresholds: uiTable(uiTableHeaders("Budget", "Scope", "Period", "Amount", "Metric", "Threshold", "Spend", "Used", "Remaining", "Items", "Status"), "No budget threshold checks"),
 		Forecasts:  uiTable(uiTableHeaders("Budget", "Clock", "Elapsed", "Actual", "Run Rate", "Scheduled", "Events", "Forecast"), "No budget forecast summaries"),
+		Alerts:     uiTable(uiTableHeaders("Budget", "Period", "Metric", "Threshold", "Spend", "Used", "Channel", "First Seen", "Last Seen", "Message"), "No budget alert notifications"),
 	}
 }
 
@@ -561,6 +612,35 @@ var budgetsPageTemplate = newPageTemplate("budgets-page", `<div class="page-head
 								</tr>
 							{{else}}
 								{{template "ui.dense-table-empty-row" $.Tables.Thresholds}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Alert Notifications</h2>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.Alerts}}
+						<tbody>
+							{{range .AlertRows}}
+								<tr>
+									<td><strong>{{.BudgetName}}</strong></td>
+									<td>{{.Period}}</td>
+									<td>{{.Metric}}</td>
+									<td>{{.ThresholdPercent}} / {{.ThresholdAmount}}</td>
+									<td>{{.Spend}}</td>
+									<td>{{.PercentUsed}}</td>
+									<td>{{.Channel}}</td>
+									<td>{{.FirstTriggeredAt}}</td>
+									<td>{{.LastObservedAt}}</td>
+									<td>{{.Message}}</td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.Alerts}}
 							{{end}}
 						</tbody>
 					</table>

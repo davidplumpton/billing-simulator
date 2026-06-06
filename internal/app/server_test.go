@@ -131,8 +131,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 27 {
-		t.Fatalf("schema_migrations count = %d, want 27", count)
+	if count != 28 {
+		t.Fatalf("schema_migrations count = %d, want 28", count)
 	}
 
 	var catalogCount int
@@ -1664,8 +1664,10 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"Month and Scope",
 		"Thresholds",
 		"Create Budget",
+		"Alert Notifications",
 		"Forecast Summaries",
 		"No budget threshold checks",
+		"No budget alert notifications",
 		"No budget forecast summaries",
 		`<a class="active" aria-current="page" href="/budgets">Budgets</a>`,
 	} {
@@ -1705,6 +1707,9 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"10/28",
 		"$0.31616",
 		"Scheduled Events",
+		"Alert Notifications",
+		"In-app",
+		"actual threshold crossed",
 		"Breached",
 		"OK",
 	} {
@@ -1723,6 +1728,19 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 	}
 	if len(budgets) != 1 || len(budgets[0].Thresholds) != 2 {
 		t.Fatalf("persisted budgets = %+v, want one budget with actual and forecast thresholds", budgets)
+	}
+	alerts, err := persistence.NewBudgetRepository(db).ListAlertNotifications(ctx, persistence.BudgetAlertNotificationListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListAlertNotifications() error = %v", err)
+	}
+	if len(alerts) != 1 ||
+		alerts[0].BudgetID != budgets[0].ID ||
+		alerts[0].ThresholdType != persistence.BudgetThresholdTypeActual ||
+		alerts[0].NotificationChannel != "in_app" {
+		t.Fatalf("persisted alert notifications = %+v, want one in-app actual threshold alert", alerts)
 	}
 }
 

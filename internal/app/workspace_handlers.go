@@ -169,6 +169,12 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/cost-categories/splits/create", func(w http.ResponseWriter, r *http.Request) {
 		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategorySplitRule(w, r)
 	})
+	mux.HandleFunc("/cost-explorer", func(w http.ResponseWriter, r *http.Request) {
+		newCostExplorerHandler(workspace.DB()).handleCostExplorer(w, r)
+	})
+	mux.HandleFunc("/cost-explorer/reports/save", func(w http.ResponseWriter, r *http.Request) {
+		newCostExplorerHandler(workspace.DB()).handleSaveCostExplorerReport(w, r)
+	})
 	mux.HandleFunc("/bills", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleBills(w, r)
 	})

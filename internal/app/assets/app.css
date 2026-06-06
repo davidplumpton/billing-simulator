@@ -312,6 +312,55 @@ button:hover {
 	min-height: 36px;
 }
 
+.report-toolbar {
+	display: flex;
+	align-items: end;
+	justify-content: space-between;
+	gap: 16px;
+	margin-top: 18px;
+}
+
+.saved-report-picker {
+	display: grid;
+	grid-template-columns: minmax(260px, 420px) auto;
+	gap: 10px;
+	align-items: end;
+}
+
+.saved-report-picker button {
+	margin-top: 0;
+}
+
+.report-builder-form {
+	margin-top: 18px;
+}
+
+.builder-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(320px, 1fr));
+	gap: 16px;
+	align-items: start;
+}
+
+.builder-grid > section {
+	margin-top: 0;
+}
+
+.builder-panel .fields {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-top: 14px;
+}
+
+.form-actions button {
+	margin-top: 0;
+}
+
 [data-partial-surface][aria-busy="true"] {
 	opacity: 0.72;
 }
@@ -693,6 +742,7 @@ code {
 @media (max-width: 980px) {
 	.topbar,
 	.clock-strip,
+	.report-toolbar,
 	.invoice-title-row {
 		align-items: flex-start;
 		flex-direction: column;
@@ -708,13 +758,16 @@ code {
 	}
 
 	.form-grid,
+	.builder-grid,
 	.state-grid,
 	.organization-hero,
 	.organization-meta,
 	.organization-summary-grid,
 		.organization-layout,
 		.fields,
+		.builder-panel .fields,
 		.filter-form,
+		.saved-report-picker,
 		.clock-form,
 		.invoice-meta-grid,
 	.invoice-total-grid {

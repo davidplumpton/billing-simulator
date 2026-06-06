@@ -127,6 +127,7 @@ func newMux(db *sql.DB) http.Handler {
 	organization := newOrganizationHandler(db)
 	tags := newCostAllocationTagsHandler(db)
 	costCategories := newCostCategoriesHandler(db)
+	costExplorer := newCostExplorerHandler(db)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", resourceLab.handleRoot)
 	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
@@ -152,6 +153,8 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/cost-categories/categories/create", costCategories.handleCreateCostCategory)
 	mux.HandleFunc("/cost-categories/rules/create", costCategories.handleCreateCostCategoryRule)
 	mux.HandleFunc("/cost-categories/splits/create", costCategories.handleCreateCostCategorySplitRule)
+	mux.HandleFunc("/cost-explorer", costExplorer.handleCostExplorer)
+	mux.HandleFunc("/cost-explorer/reports/save", costExplorer.handleSaveCostExplorerReport)
 	mux.HandleFunc("/bills", bills.handleBills)
 	mux.HandleFunc("/invoices/", bills.handleInvoice)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

@@ -1318,6 +1318,169 @@ func TestCostCategoriesUIRequiresWorkspace(t *testing.T) {
 	}
 }
 
+func TestCostExplorerUIRequiresWorkspace(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/cost-explorer")
+	if err != nil {
+		t.Fatalf("GET /cost-explorer without workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Cost Explorer - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/cost-explorer">Cost Explorer</a>`,
+		"Workspace Required",
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer without workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/cost-explorer/reports/save", url.Values{"report_name": {"Spend"}})
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/save without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /cost-explorer/reports/save without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before saving Cost Explorer reports.") {
+		t.Fatalf("POST /cost-explorer/reports/save without workspace missing workspace message: %s", body)
+	}
+}
+
+func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedCostCategoryPreviewSpend(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/cost-explorer")
+	if err != nil {
+		t.Fatalf("GET /cost-explorer error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Report Definition",
+		"Time and Metric",
+		"Filters",
+		"Group By",
+		"Run Report",
+		"Save Report",
+		"No saved reports",
+		`<a class="active" aria-current="page" href="/cost-explorer">Cost Explorer</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer body missing %q: %s", want, body)
+		}
+	}
+
+	query := url.Values{
+		"date_range_start": {"2026-02-01"},
+		"date_range_end":   {"2026-03-01"},
+		"granularity":      {"daily"},
+		"metric":           {"unblended_cost"},
+		"chart_type":       {"line"},
+		"service_values":   {"Amazon EC2"},
+		"tag_key":          {"app"},
+		"tag_values":       {"storefront"},
+		"group_1_type":     {"dimension"},
+		"group_1_key":      {"service"},
+		"group_2_type":     {"tag"},
+		"group_2_key":      {"app"},
+		"run":              {"1"},
+	}
+	resp, err = client.Get(server.URL + "/cost-explorer?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer filtered report error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer filtered report status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Report Results",
+		"Service=AmazonEC2",
+		"tag:app=storefront",
+		"$0.0832",
+		"Unblended Cost",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer filtered report missing %q: %s", want, body)
+		}
+	}
+
+	saveForm := url.Values{}
+	for key, values := range query {
+		saveForm[key] = values
+	}
+	saveForm.Set("report_name", "Storefront EC2 daily")
+	saveForm.Set("description", "Browser-created report definition")
+	saveForm.Set("owner_account_id", persistence.AnyCompanyRetailManagementAccountID)
+	saveForm.Set("owner_role", "management-account")
+
+	resp, err = client.PostForm(server.URL+"/cost-explorer/reports/save", saveForm)
+	if err != nil {
+		t.Fatalf("POST /cost-explorer/reports/save error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /cost-explorer/reports/save final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Saved report Storefront EC2 daily",
+		"Storefront EC2 daily",
+		"Browser-created report definition",
+		"Loaded",
+		"line",
+		"Saved Reports",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /cost-explorer/reports/save body missing %q: %s", want, body)
+		}
+	}
+
+	report, err := persistence.NewSavedReportRepository(db).GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "Storefront EC2 daily")
+	if err != nil {
+		t.Fatalf("GetByName(saved report) error = %v", err)
+	}
+	if report.DateRangeStart != "2026-02-01" ||
+		report.DateRangeEnd != "2026-03-01" ||
+		report.Granularity != "daily" ||
+		report.ChartType != "line" ||
+		len(report.Groupings) != 2 ||
+		report.Groupings[0] != (persistence.SavedReportGrouping{Type: "dimension", Key: "service"}) ||
+		report.Groupings[1] != (persistence.SavedReportGrouping{Type: "tag", Key: "app"}) ||
+		report.Filters["service"][0] != "Amazon EC2" ||
+		report.Filters["tag:app"][0] != "storefront" {
+		t.Fatalf("saved report definition = %+v, want browser report filters and groupings", report)
+	}
+}
+
 func TestCostCategoryPreviewWorkflow(t *testing.T) {
 	t.Parallel()
 

@@ -228,7 +228,11 @@ func (r MonthEndCloseRepository) ClosePreviousPeriod(ctx context.Context, reques
 		if err := insertInvoiceObligation(ctx, tx, obligation); err != nil {
 			return err
 		}
-		document, err := invoiceDocumentFromBill(bill, obligation)
+		invoiceProfile, err := invoiceDocumentProfileForPayer(ctx, tx, bill.PayerAccountID, bill.CurrencyCode)
+		if err != nil {
+			return err
+		}
+		document, err := invoiceDocumentFromBillWithProfile(bill, obligation, invoiceProfile)
 		if err != nil {
 			return err
 		}

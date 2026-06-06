@@ -21,6 +21,16 @@ const (
 	defaultInvoiceBillToTaxRegistration = ""
 )
 
+type invoiceDocumentProfileFields struct {
+	SellerOfRecord        string
+	SellerAddress         string
+	SellerTaxRegistration string
+	BillToName            string
+	BillToEmail           string
+	BillToAddress         string
+	BillToTaxRegistration string
+}
+
 // InvoiceDocument stores the durable header and profile fields for a generated invoice.
 type InvoiceDocument struct {
 	InvoiceID             string
@@ -122,7 +132,11 @@ func (r InvoiceDocumentRepository) CreateForIssuedBill(ctx context.Context, bill
 	if r.db == nil {
 		return InvoiceDocument{}, fmt.Errorf("database handle is required")
 	}
-	document, err := invoiceDocumentFromBill(bill, obligation)
+	profile, err := invoiceDocumentProfileForPayer(ctx, r.db, bill.PayerAccountID, bill.CurrencyCode)
+	if err != nil {
+		return InvoiceDocument{}, err
+	}
+	document, err := invoiceDocumentFromBillWithProfile(bill, obligation, profile)
 	if err != nil {
 		return InvoiceDocument{}, err
 	}
@@ -236,6 +250,10 @@ func (r InvoiceDocumentRepository) GetPrintableByInvoiceID(ctx context.Context, 
 }
 
 func invoiceDocumentFromBill(bill Bill, obligation InvoiceObligation) (InvoiceDocument, error) {
+	return invoiceDocumentFromBillWithProfile(bill, obligation, defaultInvoiceDocumentProfileFields())
+}
+
+func invoiceDocumentFromBillWithProfile(bill Bill, obligation InvoiceObligation, profile invoiceDocumentProfileFields) (InvoiceDocument, error) {
 	billID := strings.TrimSpace(bill.ID)
 	obligationID := strings.TrimSpace(obligation.ID)
 	invoiceID := strings.TrimSpace(obligation.InvoiceID)
@@ -254,6 +272,7 @@ func invoiceDocumentFromBill(bill Bill, obligation InvoiceObligation) (InvoiceDo
 	if strings.TrimSpace(obligation.CurrencyCode) != strings.TrimSpace(bill.CurrencyCode) {
 		return InvoiceDocument{}, fmt.Errorf("invoice obligation currency must match bill currency")
 	}
+	profile = profile.withDefaults()
 
 	return InvoiceDocument{
 		InvoiceID:             invoiceID,
@@ -265,14 +284,14 @@ func invoiceDocumentFromBill(bill Bill, obligation InvoiceObligation) (InvoiceDo
 		BillingPeriodEnd:      bill.BillingPeriodEnd,
 		InvoiceDate:           obligation.InvoiceDate,
 		DueDate:               obligation.DueDate,
-		SellerOfRecord:        defaultInvoiceSellerOfRecord,
-		SellerAddress:         defaultInvoiceSellerAddress,
-		SellerTaxRegistration: defaultInvoiceSellerTaxRegistration,
+		SellerOfRecord:        profile.SellerOfRecord,
+		SellerAddress:         profile.SellerAddress,
+		SellerTaxRegistration: profile.SellerTaxRegistration,
 		PayerAccountID:        bill.PayerAccountID,
-		BillToName:            defaultInvoiceBillToName,
-		BillToEmail:           defaultInvoiceBillToEmail,
-		BillToAddress:         defaultInvoiceBillToAddress,
-		BillToTaxRegistration: defaultInvoiceBillToTaxRegistration,
+		BillToName:            profile.BillToName,
+		BillToEmail:           profile.BillToEmail,
+		BillToAddress:         profile.BillToAddress,
+		BillToTaxRegistration: profile.BillToTaxRegistration,
 		CurrencyCode:          bill.CurrencyCode,
 		LineItemCount:         bill.LineItemCount,
 		UsageChargeMicros:     bill.UsageChargeMicros,
@@ -281,6 +300,44 @@ func invoiceDocumentFromBill(bill Bill, obligation InvoiceObligation) (InvoiceDo
 		TaxMicros:             bill.TaxMicros,
 		TotalMicros:           bill.TotalMicros,
 	}, nil
+}
+
+func defaultInvoiceDocumentProfileFields() invoiceDocumentProfileFields {
+	return invoiceDocumentProfileFields{
+		SellerOfRecord:        defaultInvoiceSellerOfRecord,
+		SellerAddress:         defaultInvoiceSellerAddress,
+		SellerTaxRegistration: defaultInvoiceSellerTaxRegistration,
+		BillToName:            defaultInvoiceBillToName,
+		BillToEmail:           defaultInvoiceBillToEmail,
+		BillToAddress:         defaultInvoiceBillToAddress,
+		BillToTaxRegistration: defaultInvoiceBillToTaxRegistration,
+	}
+}
+
+func (profile invoiceDocumentProfileFields) withDefaults() invoiceDocumentProfileFields {
+	defaults := defaultInvoiceDocumentProfileFields()
+	if strings.TrimSpace(profile.SellerOfRecord) == "" {
+		profile.SellerOfRecord = defaults.SellerOfRecord
+	}
+	if strings.TrimSpace(profile.SellerAddress) == "" {
+		profile.SellerAddress = defaults.SellerAddress
+	}
+	if strings.TrimSpace(profile.SellerTaxRegistration) == "" {
+		profile.SellerTaxRegistration = defaults.SellerTaxRegistration
+	}
+	if strings.TrimSpace(profile.BillToName) == "" {
+		profile.BillToName = defaults.BillToName
+	}
+	if strings.TrimSpace(profile.BillToEmail) == "" {
+		profile.BillToEmail = defaults.BillToEmail
+	}
+	if strings.TrimSpace(profile.BillToAddress) == "" {
+		profile.BillToAddress = defaults.BillToAddress
+	}
+	if strings.TrimSpace(profile.BillToTaxRegistration) == "" {
+		profile.BillToTaxRegistration = defaults.BillToTaxRegistration
+	}
+	return profile
 }
 
 func (r InvoiceDocumentRepository) getByInvoiceID(ctx context.Context, invoiceID string) (InvoiceDocument, error) {

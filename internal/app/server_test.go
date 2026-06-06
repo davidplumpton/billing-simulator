@@ -131,8 +131,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 25 {
-		t.Fatalf("schema_migrations count = %d, want 25", count)
+	if count != 26 {
+		t.Fatalf("schema_migrations count = %d, want 26", count)
 	}
 
 	var catalogCount int
@@ -1571,6 +1571,133 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 		report.Filters["service"][0] != "Amazon EC2" ||
 		report.Filters["tag:app"][0] != "storefront" {
 		t.Fatalf("saved report definition = %+v, want browser report filters and groupings", report)
+	}
+}
+
+func TestBudgetsUIRequiresWorkspace(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/budgets")
+	if err != nil {
+		t.Fatalf("GET /budgets without workspace error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /budgets without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Budgets - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/budgets">Budgets</a>`,
+		"Workspace Required",
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /budgets without workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/budgets/create", url.Values{"name": {"Spend"}})
+	if err != nil {
+		t.Fatalf("POST /budgets/create without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /budgets/create without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before creating budgets.") {
+		t.Fatalf("POST /budgets/create without workspace missing workspace message: %s", body)
+	}
+}
+
+func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedCostCategoryPreviewSpend(t, ctx, db)
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	resp, err := client.Get(server.URL + "/budgets")
+	if err != nil {
+		t.Fatalf("GET /budgets error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /budgets status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Budget Definition",
+		"Month and Scope",
+		"Thresholds",
+		"Create Budget",
+		"No budget threshold checks",
+		`<a class="active" aria-current="page" href="/budgets">Budgets</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /budgets body missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/budgets/create", url.Values{
+		"name":                 {"Storefront Feb Budget"},
+		"description":          {"Storefront account guardrail"},
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"amount":               {"0.10"},
+		"scope_type":           {persistence.BudgetScopeAccount},
+		"scope_value":          {"111122223333"},
+		"actual_threshold":     {"80"},
+		"forecast_threshold":   {"120"},
+	})
+	if err != nil {
+		t.Fatalf("POST /budgets/create error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /budgets/create final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Created budget Storefront Feb Budget",
+		"Storefront Feb Budget",
+		"Account 111122223333",
+		"Actual",
+		"Forecast",
+		"80% / $0.08",
+		"$0.0832",
+		"83.2%",
+		"Breached",
+		"OK",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /budgets/create body missing %q: %s", want, body)
+		}
+	}
+
+	budgets, err := persistence.NewBudgetRepository(db).ListBudgets(ctx, persistence.BudgetListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		Status:             "active",
+	})
+	if err != nil {
+		t.Fatalf("ListBudgets() error = %v", err)
+	}
+	if len(budgets) != 1 || len(budgets[0].Thresholds) != 2 {
+		t.Fatalf("persisted budgets = %+v, want one budget with actual and forecast thresholds", budgets)
 	}
 }
 

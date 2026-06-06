@@ -361,6 +361,104 @@ button:hover {
 	margin-top: 0;
 }
 
+.report-chart-panel {
+	margin-bottom: 16px;
+	padding: 14px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
+.report-chart-heading {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 16px;
+	margin-bottom: 10px;
+}
+
+.report-chart-heading strong {
+	display: block;
+	font-size: 15px;
+}
+
+.chart-legend {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 6px 10px;
+	max-width: 560px;
+}
+
+.chart-legend span {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--muted);
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.chart-legend i {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 2px;
+}
+
+.report-chart {
+	display: block;
+	width: 100%;
+	height: auto;
+	min-height: 260px;
+}
+
+.chart-plot {
+	fill: #fbfcfd;
+	stroke: var(--line);
+}
+
+.chart-gridline {
+	stroke: #dfe5ea;
+	stroke-width: 1;
+}
+
+.chart-axis {
+	stroke: #83909a;
+	stroke-width: 1.25;
+}
+
+.chart-line {
+	fill: none;
+	stroke-width: 2.5;
+	stroke-linejoin: round;
+	stroke-linecap: round;
+}
+
+.chart-point {
+	stroke: #ffffff;
+	stroke-width: 1.5;
+}
+
+.chart-bar {
+	shape-rendering: crispEdges;
+}
+
+.chart-y-label,
+.chart-x-label {
+	fill: var(--muted);
+	font-size: 11px;
+}
+
+.chart-y-label {
+	text-anchor: end;
+	dominant-baseline: middle;
+}
+
+.chart-x-label {
+	text-anchor: middle;
+}
+
 [data-partial-surface][aria-busy="true"] {
 	opacity: 0.72;
 }

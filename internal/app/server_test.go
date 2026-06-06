@@ -1424,6 +1424,12 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Report Results",
+		`class="report-chart report-chart-line"`,
+		`<polyline class="chart-line"`,
+		`<circle class="chart-point"`,
+		"Period Start",
+		"Group 1",
+		"Group 2",
 		"Service=AmazonEC2",
 		"tag:app=storefront",
 		"$0.0832",
@@ -1431,6 +1437,38 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /cost-explorer filtered report missing %q: %s", want, body)
+		}
+	}
+
+	stackedQuery := url.Values{
+		"date_range_start": {"2026-02-01"},
+		"date_range_end":   {"2026-03-01"},
+		"granularity":      {"monthly"},
+		"metric":           {"unblended_cost"},
+		"chart_type":       {"stacked_bar"},
+		"group_1_type":     {"dimension"},
+		"group_1_key":      {"service"},
+		"run":              {"1"},
+	}
+	resp, err = client.Get(server.URL + "/cost-explorer?" + stackedQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer stacked report error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer stacked report status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`class="report-chart report-chart-stacked_bar"`,
+		`<rect class="chart-bar"`,
+		"Service=AmazonEC2",
+		"Service=AmazonS3",
+		"Max $0.0907",
+		"2026-02-01",
+		"2026-03-01",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer stacked report missing %q: %s", want, body)
 		}
 	}
 

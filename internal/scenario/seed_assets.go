@@ -13,6 +13,9 @@ const (
 	// FirstConsolidatedBillSeedKey identifies the packaged consolidated-billing starter lab.
 	FirstConsolidatedBillSeedKey = "first-consolidated-bill"
 
+	// MissingTagsSeedKey identifies the packaged cost allocation tag cleanup lab.
+	MissingTagsSeedKey = "missing-tags"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

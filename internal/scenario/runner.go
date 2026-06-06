@@ -28,6 +28,7 @@ type Runner struct {
 	db           *sql.DB
 	clock        persistence.SimulatorClockRepository
 	usage        persistence.ResourceUsageRepository
+	tags         persistence.CostAllocationTagRepository
 	daily        persistence.DailyMeteringJobRepository
 	monthEnd     persistence.MonthEndCloseRepository
 	organization persistence.OrganizationRepository
@@ -39,6 +40,7 @@ func NewRunner(db *sql.DB) Runner {
 		db:           db,
 		clock:        persistence.NewSimulatorClockRepository(db),
 		usage:        persistence.NewResourceUsageRepository(db),
+		tags:         persistence.NewCostAllocationTagRepository(db),
 		daily:        persistence.NewDailyMeteringJobRepository(db),
 		monthEnd:     persistence.NewMonthEndCloseRepository(db),
 		organization: persistence.NewOrganizationRepository(db),
@@ -279,11 +281,37 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		audit.BillLineItemsCreated = closed.BillLineItemsCreated
 		audit.BillID = closed.Bill.ID
 		audit.BillsIssued = boolToInt(closed.Bill.ID != "")
+	case EventActionRefreshCostAllocationTags:
+		if _, err := r.refreshCostAllocationTags(ctx, scheduledAt); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionActivateCostAllocationTag:
+		if _, err := r.activateCostAllocationTag(ctx, state, event, scheduledAt); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
 	default:
 		err := fmt.Errorf("scenario event action %q is not executable", event.Action)
 		return failScenarioRunEvent(audit, err)
 	}
 	return audit, nil
+}
+
+// refreshCostAllocationTags records the scenario's current resource tag inventory for billing workflows.
+func (r Runner) refreshCostAllocationTags(ctx context.Context, scheduledAt time.Time) (persistence.CostAllocationTagRefreshResult, error) {
+	return r.tags.RefreshDiscoveredTags(ctx, scheduledAt.UTC().Format(time.RFC3339))
+}
+
+// activateCostAllocationTag turns one discovered resource tag key into a billing cost allocation key.
+func (r Runner) activateCostAllocationTag(ctx context.Context, state *scenarioExecutionState, event Event, scheduledAt time.Time) (persistence.CostAllocationTagKey, error) {
+	return r.tags.ActivateTag(ctx, persistence.CostAllocationTagActivationRequest{
+		ID:                    stableScenarioID("cat_evt_scn", state.runID, event.ID, event.TagKey),
+		Key:                   event.TagKey,
+		RequestedAt:           scheduledAt.UTC().Format(time.RFC3339),
+		EventSource:           scenarioEventSource,
+		ScenarioRunID:         state.runID,
+		ScenarioEventID:       event.ID,
+		ScenarioEventSequence: event.Sequence,
+	})
 }
 
 // createAccount adds a scenario-owned member account and records lifecycle lineage.

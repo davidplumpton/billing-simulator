@@ -39,6 +39,9 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, FirstConsolidatedBillSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, FirstConsolidatedBillSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, MissingTagsSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, MissingTagsSeedKey)
+	}
 	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition() error = %v", err)
@@ -52,6 +55,17 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	}
 	if definition.Name != "First consolidated bill" || len(definition.Events) != 8 || definition.Events[0].Action != EventActionCreateAccount {
 		t.Fatalf("first consolidated bill definition = %+v, want account-creation lab fixture", definition)
+	}
+	definition, err = LoadSeedDefinition(MissingTagsSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", MissingTagsSeedKey, err)
+	}
+	if definition.Name != "Missing Tags" ||
+		len(definition.Events) != 10 ||
+		definition.Events[8].Action != EventActionRefreshCostAllocationTags ||
+		definition.Events[9].Action != EventActionActivateCostAllocationTag ||
+		definition.Events[9].TagKey != "owner" {
+		t.Fatalf("missing tags definition = %+v, want cost allocation tag lab fixture", definition)
 	}
 }
 
@@ -274,6 +288,124 @@ func TestRunnerAppliesFirstConsolidatedBillSeed(t *testing.T) {
 		"2026-04-01",
 		persistence.AnyCompanyRetailManagementAccountID); got != 0 {
 		t.Fatalf("final line items with non-management payer = %d, want all charges consolidated under management", got)
+	}
+}
+
+func TestRunnerAppliesMissingTagsSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(MissingTagsSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", MissingTagsSeedKey, err)
+	}
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(missing tags) error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded ||
+		result.Run.EventsSucceeded != 10 ||
+		result.ResourcesCreated != 4 ||
+		result.UsageEventsCreated != 4 ||
+		result.MeteringRecordsCreated != 4 ||
+		result.BillLineItemsCreated != 5 ||
+		result.BillsIssued != 0 {
+		t.Fatalf("Run() result = %+v, want successful missing tags lab counts", result)
+	}
+
+	tagRepo := persistence.NewCostAllocationTagRepository(db)
+	keys, err := tagRepo.ListDiscoveredKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListDiscoveredKeys() error = %v", err)
+	}
+	discovered := costAllocationKeysByNameForScenario(keys)
+	owner := discovered["owner"]
+	if owner.Key != "owner" ||
+		owner.ActivationStatus != "active" ||
+		owner.ActivatedAt != "2026-03-30T00:00:00Z" ||
+		owner.CostExplorerVisibleAt != "2026-03-31T00:00:00Z" ||
+		owner.ScenarioRunID != result.Run.ID ||
+		owner.ScenarioEventID != "activate-owner-tag" ||
+		owner.ScenarioEventSequence != 10 {
+		t.Fatalf("owner key = %+v, want active scenario-owned key pending 24-hour visibility", owner)
+	}
+	if discovered["Owner"].Key != "Owner" || discovered["Owner"].ActivationStatus != "discovered" {
+		t.Fatalf("Owner key = %+v, want case-distinct discovered key for mismatch lesson", discovered["Owner"])
+	}
+
+	visibleBefore, err := tagRepo.ListBillingVisibleKeys(ctx, "2026-03-30T23:59:59Z")
+	if err != nil {
+		t.Fatalf("ListBillingVisibleKeys(before) error = %v", err)
+	}
+	if len(visibleBefore) != 0 {
+		t.Fatalf("visible keys before delay = %+v, want none", visibleBefore)
+	}
+	visibleAfter, err := tagRepo.ListBillingVisibleKeys(ctx, "2026-03-31T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListBillingVisibleKeys(after) error = %v", err)
+	}
+	if len(visibleAfter) != 1 || visibleAfter[0].Key != "owner" {
+		t.Fatalf("visible keys after delay = %+v, want owner", visibleAfter)
+	}
+
+	events, err := tagRepo.ListActivationEvents(ctx, "owner")
+	if err != nil {
+		t.Fatalf("ListActivationEvents(owner) error = %v", err)
+	}
+	if len(events) != 1 ||
+		events[0].Action != "activate" ||
+		events[0].EventSource != "scenario" ||
+		events[0].ScenarioRunID != result.Run.ID ||
+		events[0].ScenarioEventID != "activate-owner-tag" ||
+		events[0].ScenarioEventSequence != 10 {
+		t.Fatalf("owner activation events = %+v, want one scenario activation event", events)
+	}
+
+	coverageRows, err := tagRepo.ListCoverage(ctx, persistence.CostAllocationTagCoverageRequest{
+		BillingPeriodStart: "2026-03-01",
+		BillingPeriodEnd:   "2026-04-01",
+	})
+	if err != nil {
+		t.Fatalf("ListCoverage() error = %v", err)
+	}
+	ownerCoverage := scenarioTagCoverageRow(coverageRows, "owner", persistence.CostAllocationCoverageDimensionKey, "owner")
+	if ownerCoverage.ActivationStatus != "active" ||
+		ownerCoverage.LineItemCount != 5 ||
+		ownerCoverage.ResourceCount != 4 ||
+		ownerCoverage.TaggedLineItemCount != 1 ||
+		ownerCoverage.TaggedResourceCount != 1 ||
+		ownerCoverage.CaseMismatchLineItemCount != 1 ||
+		ownerCoverage.CaseMismatchResourceCount != 1 ||
+		strings.Join(ownerCoverage.CaseMismatchKeys, ",") != "Owner" ||
+		ownerCoverage.UntaggedLineItemCount != 3 ||
+		ownerCoverage.UntaggedResourceCount != 2 ||
+		ownerCoverage.TaggedCostMicros == 0 ||
+		ownerCoverage.CaseMismatchCostMicros == 0 ||
+		ownerCoverage.UntaggedCostMicros == 0 {
+		t.Fatalf("owner coverage = %+v, want exact, case-mismatched, and missing owner spend", ownerCoverage)
+	}
+
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM bill_line_items
+		WHERE billing_period_start = ?
+		  AND billing_period_end = ?
+		  AND resource_id IS NOT NULL
+		  AND json_extract(tag_snapshot_json, '$.owner') IS NULL
+		  AND json_extract(tag_snapshot_json, '$.Owner') IS NULL`,
+		"2026-03-01",
+		"2026-04-01"); got != 2 {
+		t.Fatalf("missing owner line items = %d, want analytics and data-transfer rows", got)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM bill_line_items
+		WHERE billing_period_start = ?
+		  AND billing_period_end = ?
+		  AND json_extract(tag_snapshot_json, '$.Owner') IS NOT NULL`,
+		"2026-03-01",
+		"2026-04-01"); got != 1 {
+		t.Fatalf("case-mismatched Owner line items = %d, want payments row", got)
 	}
 }
 
@@ -554,6 +686,23 @@ func scenarioAccountsByName(accounts []persistence.OrganizationAccount) map[stri
 		byName[account.Name] = account
 	}
 	return byName
+}
+
+func costAllocationKeysByNameForScenario(keys []persistence.CostAllocationTagKey) map[string]persistence.CostAllocationTagKey {
+	byName := make(map[string]persistence.CostAllocationTagKey, len(keys))
+	for _, key := range keys {
+		byName[key.Key] = key
+	}
+	return byName
+}
+
+func scenarioTagCoverageRow(rows []persistence.CostAllocationTagCoverageRow, key, dimension, dimensionValue string) persistence.CostAllocationTagCoverageRow {
+	for _, row := range rows {
+		if row.Key == key && row.Dimension == dimension && row.DimensionValue == dimensionValue {
+			return row
+		}
+	}
+	return persistence.CostAllocationTagCoverageRow{}
 }
 
 func countScenarioRows(t *testing.T, db *sql.DB, query string, args ...any) int {

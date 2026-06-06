@@ -191,6 +191,41 @@ func TestParseDefinitionRejectsInvalidScenario(t *testing.T) {
 	assertErrorContains(t, err, "checks[1].type \"unknown_check\" is not supported")
 }
 
+func TestParseDefinitionValidatesCostAllocationTagEvents(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken tag lifecycle fixture",
+		"clock": {
+			"start": "2026-03-01"
+		},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "discover-tags",
+				"day": 1,
+				"action": "refresh_cost_allocation_tags"
+			},
+			{
+				"id": "missing-tag-key",
+				"day": 2,
+				"action": "activate_cost_allocation_tag"
+			},
+			{
+				"id": "bad-tag-key",
+				"day": 3,
+				"action": "activate_cost_allocation_tag",
+				"tag_key": "aws:owner"
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want cost allocation tag validation errors")
+	}
+	assertErrorContains(t, err, "events[1].tag_key is required for activate_cost_allocation_tag")
+	assertErrorContains(t, err, `events[2].tag_key key "aws:owner" must not start with aws:`)
+}
+
 func TestParseDefinitionReportsActionableScenarioErrors(t *testing.T) {
 	raw := []byte(`{
 		"name": "Broken authoring fixture",

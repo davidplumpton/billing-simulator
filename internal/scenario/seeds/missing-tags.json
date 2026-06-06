@@ -1,0 +1,117 @@
+{
+  "name": "Missing Tags",
+  "clock": {
+    "start": "2026-03-01"
+  },
+  "organization_template": "anycompany-retail",
+  "random_seed": 53,
+  "events": [
+    {
+      "id": "create-storefront-api",
+      "day": 2,
+      "action": "create_resource",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-api-prod",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "app": "storefront",
+        "env": "prod",
+        "owner": "storefront-team"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "storefront-api-hours",
+      "day": 3,
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-api-prod",
+      "amount_hours": 96
+    },
+    {
+      "id": "create-payments-worker",
+      "day": 4,
+      "action": "create_resource",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-worker-prod",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "app": "payments",
+        "env": "prod",
+        "Owner": "payments-team"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "payments-worker-hours",
+      "day": 5,
+      "action": "add_usage",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-worker-prod",
+      "amount_hours": 72
+    },
+    {
+      "id": "create-analytics-export",
+      "day": 6,
+      "action": "create_resource",
+      "account": "Analytics Prod",
+      "service": "Amazon S3",
+      "resource": "s3://analytics-export-prod",
+      "resource_type": "bucket",
+      "region": "us-east-1",
+      "tags": {
+        "app": "analytics",
+        "env": "prod"
+      },
+      "attributes": {
+        "storage_class": "standard"
+      }
+    },
+    {
+      "id": "analytics-export-storage",
+      "day": 7,
+      "action": "add_usage",
+      "account": "Analytics Prod",
+      "service": "Amazon S3",
+      "resource": "s3://analytics-export-prod",
+      "quantity": 1800,
+      "unit": "GBDay"
+    },
+    {
+      "id": "shared-egress-transfer",
+      "day": 12,
+      "action": "add_usage",
+      "account": "Shared Networking",
+      "service": "AWS Data Transfer",
+      "amount_gb": 2500,
+      "tags": {}
+    },
+    {
+      "id": "meter-march-estimates",
+      "day": 28,
+      "action": "run_daily_metering",
+      "payer_account": "Management"
+    },
+    {
+      "id": "discover-resource-tags",
+      "day": 29,
+      "action": "refresh_cost_allocation_tags"
+    },
+    {
+      "id": "activate-owner-tag",
+      "day": 30,
+      "action": "activate_cost_allocation_tag",
+      "tag_key": "owner"
+    }
+  ]
+}

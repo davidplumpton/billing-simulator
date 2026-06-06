@@ -58,6 +58,12 @@ const (
 
 	// EventActionIssueBill represents an explicit bill issuance step.
 	EventActionIssueBill EventAction = "issue_bill"
+
+	// EventActionRefreshCostAllocationTags rebuilds billing-side tag discovery from resource tags.
+	EventActionRefreshCostAllocationTags EventAction = "refresh_cost_allocation_tags"
+
+	// EventActionActivateCostAllocationTag activates one discovered resource tag key for billing reports.
+	EventActionActivateCostAllocationTag EventAction = "activate_cost_allocation_tag"
 )
 
 // Event describes one ordered resource, usage, clock, or billing operation.
@@ -81,6 +87,7 @@ type Event struct {
 	ResourceType       string            `json:"resource_type,omitempty"`
 	Region             string            `json:"region,omitempty"`
 	Status             string            `json:"status,omitempty"`
+	TagKey             string            `json:"tag_key,omitempty"`
 	Tags               map[string]string `json:"tags,omitempty"`
 	Attributes         map[string]string `json:"attributes,omitempty"`
 	UsageType          string            `json:"usage_type,omitempty"`
@@ -251,6 +258,7 @@ func normalizeEvent(event Event, index int) Event {
 	event.ResourceType = strings.TrimSpace(event.ResourceType)
 	event.Region = strings.TrimSpace(event.Region)
 	event.Status = strings.TrimSpace(event.Status)
+	event.TagKey = strings.TrimSpace(event.TagKey)
 	event.UsageType = strings.TrimSpace(event.UsageType)
 	event.Operation = strings.TrimSpace(event.Operation)
 	event.Unit = strings.TrimSpace(event.Unit)
@@ -308,6 +316,10 @@ func validateEvent(event Event, index int, problems *validationProblems) {
 		validateAdvanceClockEvent(path, event, problems)
 	case EventActionRunDailyMetering, EventActionCloseBillingPeriod, EventActionIssueBill:
 		validateBillingEvent(path, event, problems)
+	case EventActionRefreshCostAllocationTags:
+		// The scheduled timestamp is enough; resource tags are discovered from workspace state.
+	case EventActionActivateCostAllocationTag:
+		validateCostAllocationTagEvent(path, event, problems)
 	default:
 		problems.add("%s.action %q is not supported", path, event.Action)
 	}
@@ -413,6 +425,15 @@ func validateBillingEvent(path string, event Event, problems *validationProblems
 	if event.PayerAccount == "" && event.PayerAccountID == "" {
 		problems.add("%s.payer_account or %s.payer_account_id is required for %s", path, path, event.Action)
 	}
+}
+
+// validateCostAllocationTagEvent checks the tag key named by a billing tag lifecycle event.
+func validateCostAllocationTagEvent(path string, event Event, problems *validationProblems) {
+	if event.TagKey == "" {
+		problems.add("%s.tag_key is required for %s", path, event.Action)
+		return
+	}
+	validateScenarioTagKey(path+".tag_key", event.TagKey, problems)
 }
 
 func validateCheck(check Check, index int, problems *validationProblems) {

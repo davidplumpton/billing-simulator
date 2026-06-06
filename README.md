@@ -50,6 +50,7 @@ The current codebase already includes these working foundations:
 - Monthly budget definitions scoped by linked account, service, tag, or Cost Category with actual and forecast threshold checks backed by persisted simple month-end forecasts from elapsed-day run rate and scheduled scenario usage, plus in-app alert notification history for breached thresholds.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 - Payment setup persistence for seller-of-record profiles, payer bill-to profiles, card/ACH/invoice-remittance/Advance Pay method types, default method selection, and invoice seller/bill-to snapshotting.
+- Payments UI for due invoices, payment history, failed payment reasons, retry and collection actions, past-due/payment-state transitions, unapplied Advance Pay balances, and payment-method fixes.
 
 Some implemented pieces are persistence or policy foundations that do not yet have a full browser workflow. The backlog tracks those UI and reporting steps.
 
@@ -57,7 +58,7 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 
 The broader MVP and later phases include:
 
-- Payment state workflows, past-due handling, and remediation labs.
+- Payment remediation labs and richer past-due teaching workflows.
 - CUR-like and FOCUS-style exports plus a query lab.
 - Shared-cost lab workflows and Billing Conductor-style pro forma views.
 - Instructor-authored scenarios, grading checks, and assessment review workflows.

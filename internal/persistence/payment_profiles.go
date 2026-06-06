@@ -630,6 +630,73 @@ func (r PaymentProfileRepository) SetDefaultPaymentMethod(ctx context.Context, m
 	return r.GetPaymentMethod(ctx, methodID)
 }
 
+// ResolvePaymentMethodFailure reactivates one method after a simulated profile fix.
+func (r PaymentProfileRepository) ResolvePaymentMethodFailure(ctx context.Context, methodID string) (PaymentMethod, error) {
+	if r.db == nil {
+		return PaymentMethod{}, fmt.Errorf("database handle is required")
+	}
+	methodID = strings.TrimSpace(methodID)
+	if methodID == "" {
+		return PaymentMethod{}, fmt.Errorf("payment method ID is required")
+	}
+	if err := WithTransaction(ctx, r.db, func(tx *sql.Tx) error {
+		method, err := getPaymentMethodByID(ctx, tx, methodID)
+		if err != nil {
+			return err
+		}
+		profile, err := getPaymentProfileByID(ctx, tx, method.PaymentProfileID)
+		if err != nil {
+			return err
+		}
+		if profile.Status != paymentProfileStatusActive {
+			return fmt.Errorf("payment method profile must be active")
+		}
+		result, err := tx.ExecContext(
+			ctx,
+			`UPDATE payment_methods
+			 SET status = ?,
+			     failure_reason = '',
+			     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			 WHERE id = ?`,
+			paymentMethodStatusActive,
+			method.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("resolve payment method %q: %w", method.ID, err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read payment method fix update count: %w", err)
+		}
+		if rowsAffected != 1 {
+			return fmt.Errorf("payment method %q was not updated", method.ID)
+		}
+		hasDefault, err := paymentMethodDefaultExists(ctx, tx, method.PaymentProfileID)
+		if err != nil {
+			return err
+		}
+		if !hasDefault {
+			if err := clearDefaultPaymentMethods(ctx, tx, method.PaymentProfileID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(
+				ctx,
+				`UPDATE payment_methods
+				 SET is_default = 1,
+				     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				 WHERE id = ?`,
+				method.ID,
+			); err != nil {
+				return fmt.Errorf("select fixed payment method %q as default: %w", method.ID, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return PaymentMethod{}, err
+	}
+	return r.GetPaymentMethod(ctx, methodID)
+}
+
 type paymentProfileQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }

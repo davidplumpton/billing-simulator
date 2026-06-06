@@ -129,6 +129,7 @@ func newMux(db *sql.DB) http.Handler {
 	costCategories := newCostCategoriesHandler(db)
 	costExplorer := newCostExplorerHandler(db)
 	budgets := newBudgetHandler(db)
+	payments := newPaymentsHandler(db)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", resourceLab.handleRoot)
 	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
@@ -162,6 +163,8 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/budgets/create", budgets.handleCreateBudget)
 	mux.HandleFunc("/bills", bills.handleBills)
 	mux.HandleFunc("/invoices/", bills.handleInvoice)
+	mux.HandleFunc("/payments", payments.handlePayments)
+	mux.HandleFunc("/payments/action", payments.handlePaymentAction)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

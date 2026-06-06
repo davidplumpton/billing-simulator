@@ -193,6 +193,12 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/invoices/", func(w http.ResponseWriter, r *http.Request) {
 		newBillsHandler(workspace.DB()).handleInvoice(w, r)
 	})
+	mux.HandleFunc("/payments", func(w http.ResponseWriter, r *http.Request) {
+		newPaymentsHandler(workspace.DB()).handlePayments(w, r)
+	})
+	mux.HandleFunc("/payments/action", func(w http.ResponseWriter, r *http.Request) {
+		newPaymentsHandler(workspace.DB()).handlePaymentAction(w, r)
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

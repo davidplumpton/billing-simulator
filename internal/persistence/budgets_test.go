@@ -191,6 +191,162 @@ func TestBudgetRepositoryChecksMonthlyBudgetThresholdsByScope(t *testing.T) {
 	}
 }
 
+func TestBudgetRepositoryRefreshesMonthEndForecastSummaries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	actualItem := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-budget-forecast-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "Budget forecast storefront",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app": "storefront",
+			},
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-budget-forecast-actual",
+			ResourceID:          "resource-budget-forecast-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-02T00:00:00Z",
+			UsageQuantityMicros: 24_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	if actualItem.UnblendedCostMicros != 998_400 {
+		t.Fatalf("actual item cost = %d, want 998400", actualItem.UnblendedCostMicros)
+	}
+
+	if _, err := NewResourceUsageRepository(db).RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                    "usage-budget-forecast-scheduled",
+		ResourceID:            "resource-budget-forecast-ec2",
+		UsageType:             "instance-hours:t3.medium",
+		Operation:             "RunInstances",
+		UsageStartTime:        "2026-02-20T00:00:00Z",
+		UsageEndTime:          "2026-02-20T02:00:00Z",
+		UsageQuantityMicros:   2_000_000,
+		UsageUnit:             "Hours",
+		EventSource:           "scenario",
+		ScenarioRunID:         "scenario-budget-forecast",
+		ScenarioEventID:       "future-scale-up",
+		ScenarioEventSequence: 2,
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(future scenario) error = %v", err)
+	}
+
+	categoryRepo := NewCostCategoryRepository(db)
+	category, err := categoryRepo.CreateCategory(ctx, CostCategoryCreateRequest{
+		ID:           "cc_budget_forecast_product",
+		Name:         "Budget Forecast Product",
+		DefaultValue: "Unallocated",
+	})
+	if err != nil {
+		t.Fatalf("CreateCategory() error = %v", err)
+	}
+	if _, err := categoryRepo.CreateRule(ctx, CostCategoryRuleCreateRequest{
+		ID:             "ccr_budget_forecast_storefront",
+		CostCategoryID: category.ID,
+		RuleOrder:      1,
+		Value:          "Storefront",
+		Conditions: []CostCategoryRuleCondition{
+			{
+				ID:        "ccrc_budget_forecast_app",
+				Dimension: CostCategoryRuleMatchTag,
+				Operator:  CostCategoryRuleOperatorIn,
+				TagKey:    "app",
+				Values:    []string{"storefront"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRule() error = %v", err)
+	}
+
+	budgetRepo := NewBudgetRepository(db)
+	accountBudget := createBudgetForTest(t, ctx, budgetRepo, BudgetCreateRequest{
+		ID:                 "budget-forecast-account",
+		Name:               "Forecast account",
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		BudgetAmountMicros: 2_850_000,
+		ScopeType:          BudgetScopeAccount,
+		ScopeValue:         "111122223333",
+		Thresholds: []BudgetThresholdCreateRequest{
+			{ThresholdType: BudgetThresholdTypeActual, ThresholdBasisPoints: 10000},
+			{ThresholdType: BudgetThresholdTypeForecast, ThresholdBasisPoints: 10000},
+		},
+	})
+	categoryBudget := createBudgetForTest(t, ctx, budgetRepo, BudgetCreateRequest{
+		ID:                 "budget-forecast-category",
+		Name:               "Forecast category",
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		BudgetAmountMicros: 2_850_000,
+		ScopeType:          BudgetScopeCostCategory,
+		ScopeKey:           category.Name,
+		ScopeValue:         "Storefront",
+		Thresholds: []BudgetThresholdCreateRequest{
+			{ThresholdType: BudgetThresholdTypeForecast, ThresholdBasisPoints: 10000},
+		},
+	})
+
+	result, err := budgetRepo.RefreshForecastSummaries(ctx, BudgetForecastRefreshRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		CurrentTime:        "2026-02-11T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("RefreshForecastSummaries() error = %v", err)
+	}
+	if result.BillingPeriodStart != "2026-02-01" || result.BillingPeriodEnd != "2026-03-01" || result.CurrentTime != "2026-02-11T00:00:00Z" {
+		t.Fatalf("forecast result period = %+v, want February at current time", result)
+	}
+	summaries := mapBudgetForecastSummariesByID(result.Summaries)
+	for _, budget := range []Budget{accountBudget, categoryBudget} {
+		summary := summaries[budget.ID]
+		if summary.ActualCostMicros != 998_400 ||
+			summary.ElapsedDays != 10 ||
+			summary.PeriodDays != 28 ||
+			summary.RunRateForecastMicros != 2_795_520 ||
+			summary.ScheduledEventCostMicros != 83_200 ||
+			summary.ForecastCostMicros != 2_878_720 ||
+			summary.LineItemCount != 1 ||
+			summary.ScheduledUsageEventCount != 1 {
+			t.Fatalf("forecast summary for %s = %+v, want actual, run-rate, scheduled event, and final forecast", budget.ID, summary)
+		}
+	}
+
+	evaluations, err := budgetRepo.EvaluateBudgets(ctx, BudgetEvaluationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("EvaluateBudgets() error = %v", err)
+	}
+	byID := mapBudgetEvaluationsByID(evaluations)
+	account := byID[accountBudget.ID]
+	if account.ActualCostMicros != 998_400 || account.ForecastCostMicros != 2_878_720 {
+		t.Fatalf("account evaluation = %+v, want persisted forecast", account)
+	}
+	if account.ThresholdChecks[0].Breached {
+		t.Fatalf("account actual threshold = %+v, want actual under budget", account.ThresholdChecks[0])
+	}
+	if !account.ThresholdChecks[1].Breached {
+		t.Fatalf("account forecast threshold = %+v, want persisted forecast breach", account.ThresholdChecks[1])
+	}
+	categoryEval := byID[categoryBudget.ID]
+	if categoryEval.ForecastCostMicros != 2_878_720 || !categoryEval.ThresholdChecks[0].Breached {
+		t.Fatalf("category evaluation = %+v, want future scenario cost matched by Cost Category rule", categoryEval)
+	}
+}
+
 func TestBudgetRepositoryValidatesDefinitionsAndEvaluationRequests(t *testing.T) {
 	t.Parallel()
 
@@ -285,6 +441,14 @@ func mapBudgetEvaluationsByID(evaluations []BudgetEvaluation) map[string]BudgetE
 	byID := map[string]BudgetEvaluation{}
 	for _, evaluation := range evaluations {
 		byID[evaluation.Budget.ID] = evaluation
+	}
+	return byID
+}
+
+func mapBudgetForecastSummariesByID(summaries []BudgetForecastSummary) map[string]BudgetForecastSummary {
+	byID := map[string]BudgetForecastSummary{}
+	for _, summary := range summaries {
+		byID[summary.BudgetID] = summary
 	}
 	return byID
 }

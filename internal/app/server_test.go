@@ -131,8 +131,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("schema_migrations count = %d, want 26", count)
+	if count != 27 {
+		t.Fatalf("schema_migrations count = %d, want 27", count)
 	}
 
 	var catalogCount int
@@ -1627,6 +1627,25 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		}
 	})
 	seedCostCategoryPreviewSpend(t, ctx, db)
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-02-11T00:00:00Z"); err != nil {
+		t.Fatalf("Set simulator clock error = %v", err)
+	}
+	if _, err := persistence.NewResourceUsageRepository(db).RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                    "usage-budget-ui-scheduled",
+		ResourceID:            "resource-cost-category-web",
+		UsageType:             "instance-hours:t3.medium",
+		Operation:             "RunInstances",
+		UsageStartTime:        "2026-02-20T00:00:00Z",
+		UsageEndTime:          "2026-02-20T02:00:00Z",
+		UsageQuantityMicros:   2_000_000,
+		UsageUnit:             "Hours",
+		EventSource:           "scenario",
+		ScenarioRunID:         "scenario-budget-ui",
+		ScenarioEventID:       "future-scale-up",
+		ScenarioEventSequence: 2,
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(future scenario) error = %v", err)
+	}
 
 	server := httptest.NewServer(newMux(db))
 	t.Cleanup(server.Close)
@@ -1645,7 +1664,9 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"Month and Scope",
 		"Thresholds",
 		"Create Budget",
+		"Forecast Summaries",
 		"No budget threshold checks",
+		"No budget forecast summaries",
 		`<a class="active" aria-current="page" href="/budgets">Budgets</a>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1662,7 +1683,7 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"scope_type":           {persistence.BudgetScopeAccount},
 		"scope_value":          {"111122223333"},
 		"actual_threshold":     {"80"},
-		"forecast_threshold":   {"120"},
+		"forecast_threshold":   {"400"},
 	})
 	if err != nil {
 		t.Fatalf("POST /budgets/create error = %v", err)
@@ -1680,6 +1701,10 @@ func TestBudgetsPageCreatesAndEvaluatesBudget(t *testing.T) {
 		"80% / $0.08",
 		"$0.0832",
 		"83.2%",
+		"Forecast Summaries",
+		"10/28",
+		"$0.31616",
+		"Scheduled Events",
 		"Breached",
 		"OK",
 	} {

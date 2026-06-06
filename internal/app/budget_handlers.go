@@ -30,6 +30,7 @@ type budgetsPageData struct {
 	CategoryOptions     []string
 	StateCards          []budgetStateCardView
 	ThresholdRows       []budgetThresholdRowView
+	ForecastRows        []budgetForecastSummaryRowView
 	Tables              budgetsTablesView
 }
 
@@ -67,8 +68,20 @@ type budgetThresholdRowView struct {
 	StatusClass      string
 }
 
+type budgetForecastSummaryRowView struct {
+	BudgetName      string
+	CurrentTime     string
+	ElapsedDays     string
+	ActualCost      string
+	RunRateForecast string
+	ScheduledCost   string
+	ScheduledEvents int
+	ForecastCost    string
+}
+
 type budgetsTablesView struct {
 	Thresholds uiTableView
+	Forecasts  uiTableView
 }
 
 // newBudgetHandler builds the server-rendered budgets workflow.
@@ -134,6 +147,12 @@ func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, sta
 	data.ScopeTypeOptions = budgetScopeTypeOptions(data.Form.ScopeType)
 
 	if h.db != nil {
+		forecastResult, err := h.budgets.RefreshForecastSummaries(r.Context(), persistence.BudgetForecastRefreshRequest{})
+		if err != nil && data.Error == "" {
+			data.Error = err.Error()
+			data.Notices = uiNotices(data.Flash, data.Error)
+		}
+
 		categories, err := h.categories.ListCategories(r.Context())
 		if err != nil && data.Error == "" {
 			data.Error = err.Error()
@@ -152,7 +171,8 @@ func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, sta
 			data.Notices = uiNotices(data.Flash, data.Error)
 		}
 		data.ThresholdRows = budgetThresholdRowsFromEvaluations(evaluations, categories)
-		data.StateCards = budgetStateCards(evaluations)
+		data.ForecastRows = budgetForecastRowsFromSummaries(forecastResult.Summaries, evaluations)
+		data.StateCards = budgetStateCards(evaluations, forecastResult.Summaries)
 	}
 
 	renderPage(w, status, pageLayoutOptions{
@@ -262,9 +282,36 @@ func budgetThresholdRowsFromEvaluations(evaluations []persistence.BudgetEvaluati
 	return rows
 }
 
-func budgetStateCards(evaluations []persistence.BudgetEvaluation) []budgetStateCardView {
+func budgetForecastRowsFromSummaries(summaries []persistence.BudgetForecastSummary, evaluations []persistence.BudgetEvaluation) []budgetForecastSummaryRowView {
+	names := map[string]string{}
+	for _, evaluation := range evaluations {
+		names[evaluation.Budget.ID] = evaluation.Budget.Name
+	}
+	rows := make([]budgetForecastSummaryRowView, 0, len(summaries))
+	for _, summary := range summaries {
+		budgetName := names[summary.BudgetID]
+		if budgetName == "" {
+			budgetName = summary.BudgetID
+		}
+		rows = append(rows, budgetForecastSummaryRowView{
+			BudgetName:      budgetName,
+			CurrentTime:     summary.CurrentTime,
+			ElapsedDays:     fmt.Sprintf("%d/%d", summary.ElapsedDays, summary.PeriodDays),
+			ActualCost:      formatUSDMicros(summary.ActualCostMicros),
+			RunRateForecast: formatUSDMicros(summary.RunRateForecastMicros),
+			ScheduledCost:   formatUSDMicros(summary.ScheduledEventCostMicros),
+			ScheduledEvents: summary.ScheduledUsageEventCount,
+			ForecastCost:    formatUSDMicros(summary.ForecastCostMicros),
+		})
+	}
+	return rows
+}
+
+func budgetStateCards(evaluations []persistence.BudgetEvaluation, summaries []persistence.BudgetForecastSummary) []budgetStateCardView {
 	breached := 0
 	checks := 0
+	forecastCostMicros := int64(0)
+	scheduledEvents := 0
 	for _, evaluation := range evaluations {
 		for _, check := range evaluation.ThresholdChecks {
 			checks++
@@ -273,10 +320,16 @@ func budgetStateCards(evaluations []persistence.BudgetEvaluation) []budgetStateC
 			}
 		}
 	}
+	for _, summary := range summaries {
+		forecastCostMicros += summary.ForecastCostMicros
+		scheduledEvents += summary.ScheduledUsageEventCount
+	}
 	return []budgetStateCardView{
 		{Label: "Budgets", Value: strconv.Itoa(len(evaluations))},
 		{Label: "Threshold Checks", Value: strconv.Itoa(checks)},
 		{Label: "Breached", Value: strconv.Itoa(breached)},
+		{Label: "Forecast Spend", Value: formatUSDMicros(forecastCostMicros)},
+		{Label: "Scheduled Events", Value: strconv.Itoa(scheduledEvents)},
 	}
 }
 
@@ -392,6 +445,7 @@ func formatBudgetPercentBasisPoints(value int64) string {
 func budgetsTables() budgetsTablesView {
 	return budgetsTablesView{
 		Thresholds: uiTable(uiTableHeaders("Budget", "Scope", "Period", "Amount", "Metric", "Threshold", "Spend", "Used", "Remaining", "Items", "Status"), "No budget threshold checks"),
+		Forecasts:  uiTable(uiTableHeaders("Budget", "Clock", "Elapsed", "Actual", "Run Rate", "Scheduled", "Events", "Forecast"), "No budget forecast summaries"),
 	}
 }
 
@@ -507,6 +561,33 @@ var budgetsPageTemplate = newPageTemplate("budgets-page", `<div class="page-head
 								</tr>
 							{{else}}
 								{{template "ui.dense-table-empty-row" $.Tables.Thresholds}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Forecast Summaries</h2>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.Forecasts}}
+						<tbody>
+							{{range .ForecastRows}}
+								<tr>
+									<td><strong>{{.BudgetName}}</strong></td>
+									<td>{{.CurrentTime}}</td>
+									<td>{{.ElapsedDays}}</td>
+									<td>{{.ActualCost}}</td>
+									<td>{{.RunRateForecast}}</td>
+									<td>{{.ScheduledCost}}</td>
+									<td>{{.ScheduledEvents}}</td>
+									<td>{{.ForecastCost}}</td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.Forecasts}}
 							{{end}}
 						</tbody>
 					</table>

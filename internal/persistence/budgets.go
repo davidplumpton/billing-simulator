@@ -355,6 +355,11 @@ func (r BudgetRepository) EvaluateBudgets(ctx context.Context, request BudgetEva
 		return nil, err
 	}
 
+	forecastSummaries, err := r.budgetForecastSummaryMap(ctx, request.BillingPeriodStart, request.BillingPeriodEnd)
+	if err != nil {
+		return nil, err
+	}
+
 	evaluations := make([]BudgetEvaluation, 0, len(budgets))
 	for _, budget := range budgets {
 		actualCostMicros, lineItemCount, err := r.actualCostForBudget(ctx, budget)
@@ -362,6 +367,9 @@ func (r BudgetRepository) EvaluateBudgets(ctx context.Context, request BudgetEva
 			return nil, err
 		}
 		forecastCostMicros := actualCostMicros
+		if summary, ok := forecastSummaries[budget.ID]; ok {
+			forecastCostMicros = summary.ForecastCostMicros
+		}
 		if forecast, ok := request.ForecastCostMicrosByBudgetID[budget.ID]; ok {
 			forecastCostMicros = forecast
 		}

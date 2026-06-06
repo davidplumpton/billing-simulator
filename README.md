@@ -47,7 +47,7 @@ The current codebase already includes these working foundations:
 - Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Cost Explorer derived summary tables for daily cost, monthly account/service spend, tag coverage, and Cost Category value rollups after billing changes.
 - Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
-- Monthly budget definitions scoped by linked account, service, tag, or Cost Category with actual and forecast threshold checks.
+- Monthly budget definitions scoped by linked account, service, tag, or Cost Category with actual and forecast threshold checks backed by persisted simple month-end forecasts from elapsed-day run rate and scheduled scenario usage.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 
 Some implemented pieces are persistence or policy foundations that do not yet have a full browser workflow. The backlog tracks those UI and reporting steps.
@@ -56,7 +56,7 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 
 The broader MVP and later phases include:
 
-- Budget forecasting and in-app alert notification simulation.
+- In-app budget alert notification simulation.
 - Payment methods, payment profiles, payment state workflows, past-due handling, and remediation labs.
 - CUR-like and FOCUS-style exports plus a query lab.
 - Shared-cost lab workflows and Billing Conductor-style pro forma views.

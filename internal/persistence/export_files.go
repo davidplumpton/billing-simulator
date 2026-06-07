@@ -220,7 +220,7 @@ func (r ExportFileRepository) Read(ctx context.Context, filename string) (Export
 	return record, content, nil
 }
 
-// List returns generated export metadata rows ordered with the newest row first.
+// List returns generated export metadata rows ordered with the most recently updated row first.
 func (r ExportFileRepository) List(ctx context.Context, request ExportFileListRequest) ([]ExportFile, error) {
 	if r.db == nil {
 		return nil, fmt.Errorf("database handle is required")
@@ -251,7 +251,7 @@ func (r ExportFileRepository) List(ctx context.Context, request ExportFileListRe
 		   AND (? = '' OR billing_period_end = ?)
 		   AND (? = '' OR payer_account_id = ?)
 		   AND (? = '' OR usage_account_id = ?)
-		 ORDER BY created_at DESC, filename DESC
+		 ORDER BY updated_at DESC, created_at DESC, filename DESC
 		 LIMIT ?`,
 		request.ExportType,
 		request.ExportType,

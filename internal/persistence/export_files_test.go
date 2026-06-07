@@ -144,6 +144,100 @@ func TestExportFileRepositoryWritesFileAndMetadata(t *testing.T) {
 	}
 }
 
+func TestExportFileRepositoryListOrdersRegeneratedFilesByUpdatedAt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspacePath := t.TempDir()
+	db, err := OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	repo := NewExportFileRepository(db, workspacePath)
+	older, err := repo.Write(ctx, ExportFileWriteRequest{
+		Filename:           "cur-older-created.csv",
+		ExportType:         ExportFileTypeCURCSV,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		Content:            []byte("older\n"),
+	})
+	if err != nil {
+		t.Fatalf("Write(older) error = %v", err)
+	}
+	newer, err := repo.Write(ctx, ExportFileWriteRequest{
+		Filename:           "cur-newer-created.csv",
+		ExportType:         ExportFileTypeCURCSV,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		Content:            []byte("newer\n"),
+	})
+	if err != nil {
+		t.Fatalf("Write(newer) error = %v", err)
+	}
+
+	olderCreatedAt := "2000-01-01T00:00:00.000Z"
+	olderUpdatedAt := "2000-01-01T00:00:00.000Z"
+	newerCreatedAt := "2001-01-01T00:00:00.000Z"
+	newerUpdatedAt := "2001-01-01T00:00:00.000Z"
+	for _, row := range []struct {
+		filename  string
+		createdAt string
+		updatedAt string
+	}{
+		{filename: older.Filename, createdAt: olderCreatedAt, updatedAt: olderUpdatedAt},
+		{filename: newer.Filename, createdAt: newerCreatedAt, updatedAt: newerUpdatedAt},
+	} {
+		if _, err := db.ExecContext(
+			ctx,
+			`UPDATE workspace_export_files SET created_at = ?, updated_at = ? WHERE filename = ?`,
+			row.createdAt,
+			row.updatedAt,
+			row.filename,
+		); err != nil {
+			t.Fatalf("set deterministic timestamps for %s: %v", row.filename, err)
+		}
+	}
+
+	listed, err := repo.List(ctx, ExportFileListRequest{ExportType: ExportFileTypeCURCSV})
+	if err != nil {
+		t.Fatalf("List(before regeneration) error = %v", err)
+	}
+	if len(listed) != 2 || listed[0].Filename != newer.Filename || listed[1].Filename != older.Filename {
+		t.Fatalf("List(before regeneration) = %+v, want newer created export before older export", listed)
+	}
+
+	regenerated, err := repo.Write(ctx, ExportFileWriteRequest{
+		Filename:           older.Filename,
+		ExportType:         ExportFileTypeCURCSV,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		Content:            []byte("regenerated older\n"),
+	})
+	if err != nil {
+		t.Fatalf("Write(regenerate older) error = %v", err)
+	}
+	if regenerated.CreatedAt != olderCreatedAt || regenerated.UpdatedAt == olderUpdatedAt {
+		t.Fatalf("regenerated metadata = %+v, want original created_at and refreshed updated_at", regenerated)
+	}
+
+	listed, err = repo.List(ctx, ExportFileListRequest{ExportType: ExportFileTypeCURCSV})
+	if err != nil {
+		t.Fatalf("List(after regeneration) error = %v", err)
+	}
+	if len(listed) != 2 || listed[0].Filename != older.Filename || listed[1].Filename != newer.Filename {
+		t.Fatalf("List(after regeneration) = %+v, want regenerated older export first", listed)
+	}
+}
+
 func TestExportFileRepositoryValidatesRequests(t *testing.T) {
 	t.Parallel()
 

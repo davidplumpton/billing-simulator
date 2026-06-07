@@ -2774,6 +2774,18 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if !storedExportNames[exportFilename] || !storedExportNames[filteredExportFilename] {
 		t.Fatalf("stored export filenames = %+v, want %q and %q", storedExportNames, exportFilename, filteredExportFilename)
 	}
+	for _, row := range []struct {
+		filename  string
+		createdAt string
+		updatedAt string
+	}{
+		{filename: exportFilename, createdAt: "2000-01-01T00:00:00.000Z", updatedAt: "2000-01-01T00:00:00.000Z"},
+		{filename: filteredExportFilename, createdAt: "2001-01-01T00:00:00.000Z", updatedAt: "2001-01-01T00:00:00.000Z"},
+	} {
+		if _, err := db.ExecContext(ctx, `UPDATE workspace_export_files SET created_at = ?, updated_at = ? WHERE filename = ?`, row.createdAt, row.updatedAt, row.filename); err != nil {
+			t.Fatalf("set deterministic export timestamps for %s: %v", row.filename, err)
+		}
+	}
 
 	resp, err = client.Get(server.URL + "/exports")
 	if err != nil {
@@ -2786,6 +2798,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	for _, want := range []string{
 		"Generated Exports",
 		"2 files",
+		"recently updated first",
 		exportFilename,
 		filteredExportFilename,
 		"Download",
@@ -2802,6 +2815,11 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /exports body missing %q: %s", want, body)
 		}
+	}
+	baseExportIndex := strings.Index(body, exportFilename)
+	filteredExportIndex := strings.Index(body, filteredExportFilename)
+	if baseExportIndex == -1 || filteredExportIndex == -1 || filteredExportIndex > baseExportIndex {
+		t.Fatalf("GET /exports order put base index %d and filtered index %d, want filtered newer export before base export: %s", baseExportIndex, filteredExportIndex, body)
 	}
 
 	downloadPath := exportFileDownloadPath(exportFilename)
@@ -2878,6 +2896,19 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	}
 	if !strings.Contains(string(regeneratedContent), "2026-03-02T10:15:00Z") {
 		t.Fatalf("regenerated CUR CSV missing refreshed generated_at: %s", regeneratedContent)
+	}
+	resp, err = client.Get(server.URL + "/exports")
+	if err != nil {
+		t.Fatalf("GET /exports after regeneration error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports after regeneration status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	baseExportIndex = strings.Index(body, exportFilename)
+	filteredExportIndex = strings.Index(body, filteredExportFilename)
+	if baseExportIndex == -1 || filteredExportIndex == -1 || baseExportIndex > filteredExportIndex {
+		t.Fatalf("GET /exports after regeneration put base index %d and filtered index %d, want regenerated base export first: %s", baseExportIndex, filteredExportIndex, body)
 	}
 
 	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-02T10:45:00Z"); err != nil {

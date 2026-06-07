@@ -1220,7 +1220,7 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 			<section>
 				<div class="section-heading">
 					<h2>Generated Exports</h2>
-					<span>{{len .Files}} files</span>
+					<span>{{len .Files}} files, recently updated first</span>
 				</div>
 				<div class="table-wrap">
 					<table class="dense-table exports-table">

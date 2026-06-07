@@ -284,11 +284,11 @@ func scenarioActionWhatChanged(actionType string) string {
 func scenarioActionDataSource(actionType string) string {
 	switch actionType {
 	case "create_account":
-		return "organization_accounts, account_lifecycle_events"
+		return "accounts, organization_account_hierarchy, account_lifecycle_events"
 	case "create_resource":
 		return "resources, resource_tags"
 	case "add_usage", "generate_usage":
-		return "resource_usage_events"
+		return "resources, usage_events"
 	case "advance_clock":
 		return "simulator_clock"
 	case "run_daily_metering":
@@ -296,7 +296,7 @@ func scenarioActionDataSource(actionType string) string {
 	case "close_billing_period", "issue_bill":
 		return "bills, bill_line_items, invoice_obligations, invoice_documents"
 	case "refresh_cost_allocation_tags", "activate_cost_allocation_tag":
-		return "cost_allocation_tag_keys, cost_allocation_tag_values"
+		return "cost_allocation_tag_keys, cost_allocation_tag_inventory, cost_allocation_tag_activation_events"
 	case "create_cost_category":
 		return "cost_categories"
 	case "create_cost_category_rule":
@@ -304,9 +304,9 @@ func scenarioActionDataSource(actionType string) string {
 	case "create_cost_category_split_rule":
 		return "cost_category_split_charge_rules, cost_category_split_charge_allocations"
 	case "create_payment_method":
-		return "payment_methods, payer_payment_profiles"
-	case "schedule_payment", "process_payment", "fail_payment", "mark_payment_due":
-		return "invoice_obligations, invoice_payment_events"
+		return "payment_profiles, payment_methods"
+	case "schedule_payment", "process_payment", "fail_payment", "mark_payment_due", "mark_payment_past_due", "collect_payment":
+		return "invoice_obligations, invoice_payment_states, invoice_payment_events"
 	default:
 		return "scenario_run_events"
 	}
@@ -330,7 +330,7 @@ func scenarioActionBillingConcept(actionType string) string {
 		return "Cost allocation tags must be discovered and activated before they appear in billing reports."
 	case "create_cost_category", "create_cost_category_rule", "create_cost_category_split_rule":
 		return "Cost Categories classify and allocate spend through ordered business rules."
-	case "create_payment_method", "schedule_payment", "process_payment", "fail_payment", "mark_payment_due":
+	case "create_payment_method", "schedule_payment", "process_payment", "fail_payment", "mark_payment_due", "mark_payment_past_due", "collect_payment":
 		return "Payment lifecycle changes invoice collection state without changing underlying usage charges."
 	default:
 		return "Scenario audit rows make the billing lab reproducible and inspectable."
@@ -350,7 +350,7 @@ func scenarioCheckDataSource(checkType string) string {
 	case "bill_reconciled":
 		return "bills, bill_line_items"
 	case "payment_status":
-		return "invoice_obligations, invoice_payment_events"
+		return "invoice_obligations, invoice_payment_states, invoice_payment_events"
 	default:
 		return "scenario_learner_check_results"
 	}

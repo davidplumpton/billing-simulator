@@ -384,12 +384,6 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 		InvoiceID:      invoiceID,
 		Error:          errorMessage,
 	}
-	if h.db != nil && errorMessage == "" {
-		if err := h.ensureInvoiceViewerAccess(r.Context(), r); err != nil {
-			status = http.StatusForbidden
-			data.Error = err.Error()
-		}
-	}
 	if h.db != nil && data.Error == "" {
 		printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
 		if err != nil {
@@ -400,6 +394,9 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 				status = http.StatusInternalServerError
 				data.Error = err.Error()
 			}
+		} else if err := h.ensureInvoiceViewerAccess(r.Context(), r, printable.Document.PayerAccountID); err != nil {
+			status = http.StatusForbidden
+			data.Error = err.Error()
 		} else {
 			data = invoicePageDataFromPrintable(printable)
 		}
@@ -451,10 +448,6 @@ func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "workspace required", http.StatusConflict)
 		return
 	}
-	if err := h.ensureInvoiceViewerAccess(r.Context(), r); err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
-	}
 	printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -462,6 +455,10 @@ func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, i
 			return
 		}
 		http.Error(w, "export invoice CSV: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.ensureInvoiceViewerAccess(r.Context(), r, printable.Document.PayerAccountID); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -482,16 +479,17 @@ func (h billsHandler) handleInvoicePDFPlan(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "workspace required", http.StatusConflict)
 		return
 	}
-	if err := h.ensureInvoiceViewerAccess(r.Context(), r); err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
-		return
-	}
-	if _, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID); err != nil {
+	printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "prepare invoice PDF: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.ensureInvoiceViewerAccess(r.Context(), r, printable.Document.PayerAccountID); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -618,13 +616,16 @@ func (h billsHandler) billingPolicyFromFilter(ctx context.Context, filter billsF
 }
 
 // ensureInvoiceViewerAccess enforces financial-document access when a simulated viewer is selected.
-func (h billsHandler) ensureInvoiceViewerAccess(ctx context.Context, r *http.Request) error {
+func (h billsHandler) ensureInvoiceViewerAccess(ctx context.Context, r *http.Request, payerAccountID string) error {
 	policy, scoped, err := h.billingPolicyFromFilter(ctx, billsFilterFromRequest(r))
 	if err != nil || !scoped {
 		return err
 	}
 	if !policy.AllowsView(billingvisibility.ViewInvoices) {
 		return fmt.Errorf("billing role %q cannot view invoices", policy.Role)
+	}
+	if payerAccountID != "" && !policy.AllowsPayerAccount(payerAccountID) {
+		return fmt.Errorf("billing role %q cannot view invoice for payer account %q", policy.Role, payerAccountID)
 	}
 	return nil
 }
@@ -685,9 +686,9 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter bil
 		if viewer.Role == billingvisibility.RoleMemberAccount.String() && viewer.AccountID != "" {
 			usageAccountID = viewer.AccountID
 		}
-		invoicePath = invoicePathForID(summary.InvoiceID)
-		invoiceCSVPath = invoiceCSVPathForID(summary.InvoiceID)
-		invoicePDFPath = invoicePDFPathForID(summary.InvoiceID)
+		invoicePath = invoicePathForIDWithViewer(summary.InvoiceID, viewer)
+		invoiceCSVPath = invoiceCSVPathForIDWithViewer(summary.InvoiceID, viewer)
+		invoicePDFPath = invoicePDFPathForIDWithViewer(summary.InvoiceID, viewer)
 		curCSVPath = curCSVExportPathWithViewer(persistence.CURCSVExportRequest{
 			BillingPeriodStart: summary.BillingPeriodStart,
 			BillingPeriodEnd:   summary.BillingPeriodEnd,
@@ -1090,14 +1091,35 @@ func invoicePathForID(invoiceID string) string {
 	return "/invoices/" + url.PathEscape(strings.TrimSpace(invoiceID))
 }
 
+func invoicePathForIDWithViewer(invoiceID string, viewer exportViewerFields) string {
+	return invoicePathWithViewer(invoicePathForID(invoiceID), viewer)
+}
+
 // invoiceCSVPathForID returns the detailed-charge CSV download URL for an invoice.
 func invoiceCSVPathForID(invoiceID string) string {
 	return invoicePathForID(invoiceID) + invoiceCSVPathSuffix
 }
 
+func invoiceCSVPathForIDWithViewer(invoiceID string, viewer exportViewerFields) string {
+	return invoicePathWithViewer(invoiceCSVPathForID(invoiceID), viewer)
+}
+
 // invoicePDFPathForID returns the reserved packaged-PDF URL for an invoice.
 func invoicePDFPathForID(invoiceID string) string {
 	return invoicePathForID(invoiceID) + invoicePDFPathSuffix
+}
+
+func invoicePDFPathForIDWithViewer(invoiceID string, viewer exportViewerFields) string {
+	return invoicePathWithViewer(invoicePDFPathForID(invoiceID), viewer)
+}
+
+func invoicePathWithViewer(path string, viewer exportViewerFields) string {
+	values := url.Values{}
+	viewer.appendToValues(values)
+	if len(values) == 0 {
+		return path
+	}
+	return path + "?" + values.Encode()
 }
 
 // invoiceCSVFilename sanitizes invoice IDs for the CSV content-disposition filename.

@@ -7591,6 +7591,7 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		LineItemStatus:     "final",
 	})
 	managementViewerQuery := "?viewer_role=management-account&viewer_account_id=999988887777"
+	escapedManagementInvoiceQuery := "viewer_account_id=999988887777&amp;viewer_role=management-account"
 	memberViewerQuery := "?viewer_role=member-account&viewer_account_id=111122223333"
 	if !strings.Contains(body, invoicePath) {
 		t.Fatalf("GET /bills after close missing printable invoice link %q: %s", invoiceID, body)
@@ -7602,6 +7603,23 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	escapedCURReconcilePath := strings.ReplaceAll(curReconcilePath, "&", "&amp;")
 	if !strings.Contains(body, escapedCURCSVPath) || !strings.Contains(body, escapedCURReconcilePath) {
 		t.Fatalf("GET /bills after close missing CUR export links %q/%q: %s", curCSVPath, curReconcilePath, body)
+	}
+	resp, err = client.Get(server.URL + "/bills" + managementViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /bills management viewer after close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills management viewer after close status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`href="` + invoicePath + `?` + escapedManagementInvoiceQuery + `"`,
+		`href="` + invoiceCSVPath + `?` + escapedManagementInvoiceQuery + `"`,
+		`href="` + invoicePDFPath + `?` + escapedManagementInvoiceQuery + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills management viewer after close missing scoped invoice link %q: %s", want, body)
+		}
 	}
 	resp, err = client.Get(server.URL + invoicePath)
 	if err != nil {
@@ -7652,6 +7670,15 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(body, "Invoice "+invoiceID) || !strings.Contains(body, "Workflow web") {
 		t.Fatalf("GET /invoices/{id} management viewer missing invoice details: %s", body)
+	}
+	crossPayerViewerQuery := "?viewer_role=management-account&viewer_account_id=000000000000"
+	resp, err = client.Get(server.URL + invoicePath + crossPayerViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id} cross-payer management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /invoices/{id} cross-payer management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
 
 	resp, err = client.Get(server.URL + invoiceCSVPath)
@@ -7706,6 +7733,14 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	if !strings.Contains(body, invoiceID) || !strings.Contains(body, "Workflow web") || !strings.Contains(body, "999988887777") {
 		t.Fatalf("GET /invoices/{id}/line-items.csv management viewer missing export details: %s", body)
 	}
+	resp, err = client.Get(server.URL + invoiceCSVPath + crossPayerViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/line-items.csv cross-payer management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /invoices/{id}/line-items.csv cross-payer management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
 
 	resp, err = client.Get(server.URL + invoicePDFPath + memberViewerQuery)
 	if err != nil {
@@ -7740,6 +7775,14 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(body, "packaged HTML-to-PDF renderer") || !strings.Contains(body, invoicePath) {
 		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing implementation plan: %s", body)
+	}
+	resp, err = client.Get(server.URL + invoicePDFPath + crossPayerViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /invoices/{id}/document.pdf cross-payer management viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /invoices/{id}/document.pdf cross-payer management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
 }
 

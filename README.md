@@ -62,6 +62,7 @@ The broader MVP and later phases include:
 
 - Richer past-due payment remediation teaching workflows.
 - FOCUS-style exports and a query lab.
+- Query-lab SQL examples should target generated CUR-like exports; the current dependency decision keeps DuckDB optional and external rather than embedded in the simulator binary. See [docs/query-lab-duckdb-decision.md](docs/query-lab-duckdb-decision.md).
 - Billing Conductor-style pro forma views and additional shared-cost lab workflows.
 - Richer instructor-authored scenarios and assessment review workflows.
 - More advanced billing fidelity such as credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized views.

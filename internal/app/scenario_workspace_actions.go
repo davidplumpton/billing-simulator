@@ -36,7 +36,7 @@ type scenarioArchiveBill struct {
 
 type scenarioArchiveManifest struct {
 	ArchivedAt         string                `json:"archived_at"`
-	WorkspacePath      string                `json:"workspace_path"`
+	WorkspaceLabel     string                `json:"workspace_label"`
 	DatabasePath       string                `json:"database_path"`
 	FeedbackReportPath string                `json:"feedback_report_path"`
 	ScenarioRun        scenarioRunAudit      `json:"scenario_run"`
@@ -375,7 +375,7 @@ func (h scenarioHandler) archiveScenarioRun(ctx context.Context, runID string) (
 
 	manifest := scenarioArchiveManifest{
 		ArchivedAt:         archivedAt,
-		WorkspacePath:      workspacePath,
+		WorkspaceLabel:     scenarioArchiveWorkspaceLabel(workspacePath),
 		DatabasePath:       "workspace/simulator.db",
 		FeedbackReportPath: feedbackReportPath,
 		ScenarioRun:        run,
@@ -614,6 +614,15 @@ func addBytesToZip(zipWriter *zip.Writer, archivePath string, data []byte) error
 		return fmt.Errorf("write archive entry %q: %w", archivePath, err)
 	}
 	return nil
+}
+
+// scenarioArchiveWorkspaceLabel returns a display label without preserving local path components.
+func scenarioArchiveWorkspaceLabel(workspacePath string) string {
+	label := filepath.Base(filepath.Clean(strings.TrimSpace(workspacePath)))
+	if label == "." || label == string(filepath.Separator) {
+		return "workspace"
+	}
+	return safeCSVFilenamePart(label, "workspace")
 }
 
 // defaultScenarioClonePath suggests a sibling workspace directory for a scenario clone.

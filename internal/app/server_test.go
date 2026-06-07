@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -2227,10 +2228,24 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 	defer archiveReader.Close()
 	archiveNames := map[string]bool{}
+	var manifestJSON []byte
 	curExportCount := 0
 	reconciliationCount := 0
 	for _, file := range archiveReader.File {
 		archiveNames[file.Name] = true
+		if file.Name == "manifest.json" {
+			manifestReader, err := file.Open()
+			if err != nil {
+				t.Fatalf("open archive manifest: %v", err)
+			}
+			manifestJSON, err = io.ReadAll(manifestReader)
+			if closeErr := manifestReader.Close(); closeErr != nil {
+				t.Fatalf("close archive manifest: %v", closeErr)
+			}
+			if err != nil {
+				t.Fatalf("read archive manifest: %v", err)
+			}
+		}
 		if strings.HasSuffix(file.Name, "-cur.csv") {
 			curExportCount++
 		}
@@ -2240,6 +2255,29 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 	if !archiveNames["manifest.json"] || !archiveNames["workspace/simulator.db"] || !archiveNames["feedback-report.json"] || curExportCount != 1 || reconciliationCount != 1 {
 		t.Fatalf("archive entries = %+v, want manifest, feedback report, database, one CUR CSV, and one reconciliation JSON", archiveNames)
+	}
+	if len(manifestJSON) == 0 {
+		t.Fatal("archive manifest was empty")
+	}
+	if strings.Contains(string(manifestJSON), cfg.WorkspacePath) || strings.Contains(string(manifestJSON), root) {
+		t.Fatalf("archive manifest leaked local workspace root %q: %s", root, manifestJSON)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
+		t.Fatalf("parse archive manifest: %v; body=%s", err, manifestJSON)
+	}
+	if _, ok := manifest["workspace_path"]; ok {
+		t.Fatalf("archive manifest included deprecated workspace_path field: %s", manifestJSON)
+	}
+	workspaceLabel, ok := manifest["workspace_label"].(string)
+	if !ok || workspaceLabel == "" {
+		t.Fatalf("archive manifest workspace_label = %#v, want non-empty string", manifest["workspace_label"])
+	}
+	if strings.Contains(workspaceLabel, string(os.PathSeparator)) {
+		t.Fatalf("archive manifest workspace_label contains path separator: %q", workspaceLabel)
+	}
+	if manifest["database_path"] != "workspace/simulator.db" || manifest["feedback_report_path"] != "feedback-report.json" {
+		t.Fatalf("archive manifest paths = database:%#v feedback:%#v, want stable archive-relative paths", manifest["database_path"], manifest["feedback_report_path"])
 	}
 
 	resp, err = client.PostForm(server.URL()+"/scenarios/reset", url.Values{

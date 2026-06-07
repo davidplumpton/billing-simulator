@@ -28,6 +28,38 @@ type scenariosPageData struct {
 	Tables               scenarioTablesView
 }
 
+type scenarioEditorPageData struct {
+	WorkspaceReady      bool
+	WorkspaceEmptyState uiEmptyStateView
+	Notices             []uiNoticeView
+	Draft               string
+	Preview             scenarioEditorPreviewView
+}
+
+type scenarioEditorPreviewView struct {
+	HasResult            bool
+	Valid                bool
+	Status               string
+	StatusClass          string
+	Name                 string
+	ClockStart           string
+	OrganizationTemplate string
+	RandomSeed           string
+	EventCount           string
+	CheckCount           string
+	SimulatedDuration    string
+	Events               []scenarioEditorEventView
+	Problems             []string
+}
+
+type scenarioEditorEventView struct {
+	Sequence string
+	ID       string
+	Action   string
+	Schedule string
+	Target   string
+}
+
 type scenarioTablesView struct {
 	RecentRuns uiTableView
 }
@@ -115,6 +147,39 @@ func (h scenarioHandler) handleScenarios(w http.ResponseWriter, r *http.Request)
 	h.renderScenarios(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
+// handleScenarioEditor renders the local draft editor for scenario definitions.
+func (h scenarioHandler) handleScenarioEditor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	h.renderScenarioEditor(w, http.StatusOK, "", "", scenarioEditorDefaultDraft(), scenarioEditorPreviewView{})
+}
+
+// handleValidateScenarioEditor validates a draft scenario without launching it.
+func (h scenarioHandler) handleValidateScenarioEditor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		http.Error(w, "Open a workspace before validating scenario drafts.", http.StatusServiceUnavailable)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.renderScenarioEditor(w, http.StatusBadRequest, "parse scenario editor form: "+err.Error(), "", scenarioEditorDefaultDraft(), scenarioEditorPreviewView{})
+		return
+	}
+
+	draft := r.PostForm.Get("scenario_document")
+	definition, err := scenario.ParseDefinition(strings.NewReader(draft))
+	if err != nil {
+		h.renderScenarioEditor(w, http.StatusOK, "", "", draft, scenarioEditorPreviewFromError(err))
+		return
+	}
+	h.renderScenarioEditor(w, http.StatusOK, "", "Scenario draft is valid.", draft, scenarioEditorPreviewFromDefinition(definition))
+}
+
 // handleLaunchScenario runs one packaged scenario seed and records its durable audit rows.
 func (h scenarioHandler) handleLaunchScenario(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -188,6 +253,21 @@ func (h scenarioHandler) renderScenarios(w http.ResponseWriter, r *http.Request,
 		Title:     "Scenarios - AWS Billing Simulator",
 		ActiveNav: "scenarios",
 	}, scenariosPageTemplate, data, "render scenarios page")
+}
+
+// renderScenarioEditor prepares the scenario authoring preview page without mutating workspace state.
+func (h scenarioHandler) renderScenarioEditor(w http.ResponseWriter, status int, errorMessage, flashMessage, draft string, preview scenarioEditorPreviewView) {
+	data := scenarioEditorPageData{
+		WorkspaceReady:      h.db != nil,
+		WorkspaceEmptyState: uiWorkspaceRequiredState(),
+		Notices:             uiNotices(flashMessage, errorMessage),
+		Draft:               draft,
+		Preview:             preview,
+	}
+	renderPage(w, status, pageLayoutOptions{
+		Title:     "Scenario Editor - AWS Billing Simulator",
+		ActiveNav: "scenarios",
+	}, scenarioEditorPageTemplate, data, "render scenario editor page")
 }
 
 // loadScenarioCatalog combines embedded seed definitions with app-level lab metadata.
@@ -455,10 +535,244 @@ func defaultScenarioMetadata() scenarioCatalogMetadata {
 	}
 }
 
+// scenarioEditorDefaultDraft returns a minimal valid YAML draft for local authoring.
+func scenarioEditorDefaultDraft() string {
+	return strings.TrimSpace(`name: Draft scenario
+clock:
+  start: 2026-03-01
+organization_template: anycompany-retail
+random_seed: 1
+events:
+  - id: create-draft-resource
+    day: 1
+    action: create_resource
+    account: Storefront Prod
+    service: Amazon EC2
+    resource: draft-web
+    resource_type: ec2_instance
+    region: us-east-1
+    tags:
+      app: storefront
+      env: dev
+    attributes:
+      instance_type: t3.medium
+  - id: draft-web-hours
+    day: 2
+    action: add_usage
+    account: Storefront Prod
+    service: Amazon EC2
+    resource: draft-web
+    amount_hours: 4
+checks:
+  - id: review-spend
+    type: saved_report_exists
+    report_name: Draft spend review`) + "\n"
+}
+
+// scenarioEditorPreviewFromDefinition summarizes a successfully parsed scenario draft.
+func scenarioEditorPreviewFromDefinition(definition scenario.Definition) scenarioEditorPreviewView {
+	events := make([]scenarioEditorEventView, 0, len(definition.Events))
+	for _, event := range definition.Events {
+		events = append(events, scenarioEditorEventView{
+			Sequence: strconv.Itoa(event.Sequence),
+			ID:       event.ID,
+			Action:   string(event.Action),
+			Schedule: scenarioEditorEventSchedule(event),
+			Target:   scenarioEditorEventTarget(event),
+		})
+	}
+	randomSeed := ""
+	if definition.RandomSeed != 0 {
+		randomSeed = strconv.FormatInt(definition.RandomSeed, 10)
+	}
+	return scenarioEditorPreviewView{
+		HasResult:            true,
+		Valid:                true,
+		Status:               "Valid",
+		StatusClass:          "status-succeeded",
+		Name:                 definition.Name,
+		ClockStart:           definition.Clock.Start,
+		OrganizationTemplate: definition.OrganizationTemplate,
+		RandomSeed:           randomSeed,
+		EventCount:           scenarioCountLabel(len(definition.Events), "event", "events"),
+		CheckCount:           scenarioCountLabel(len(definition.Checks), "check", "checks"),
+		SimulatedDuration:    scenarioSimulatedDuration(definition),
+		Events:               events,
+	}
+}
+
+// scenarioEditorPreviewFromError keeps parser and validation failures visible beside the draft.
+func scenarioEditorPreviewFromError(err error) scenarioEditorPreviewView {
+	problems := []string{err.Error()}
+	var validationErr scenario.ValidationError
+	if errors.As(err, &validationErr) {
+		problems = append([]string{}, validationErr.Problems...)
+	}
+	return scenarioEditorPreviewView{
+		HasResult:   true,
+		Valid:       false,
+		Status:      "Invalid",
+		StatusClass: "status-failed",
+		Problems:    problems,
+	}
+}
+
+func scenarioEditorEventSchedule(event scenario.Event) string {
+	if event.At != "" {
+		return event.At
+	}
+	if event.Day > 0 {
+		return "Day " + strconv.Itoa(event.Day)
+	}
+	return "-"
+}
+
+func scenarioEditorEventTarget(event scenario.Event) string {
+	for _, value := range []string{
+		event.Resource,
+		event.ResourceID,
+		event.Account,
+		event.AccountID,
+		event.Category,
+		event.BudgetName,
+		event.ReportName,
+		event.PayerAccount,
+		event.PayerAccountID,
+	} {
+		if value != "" {
+			return value
+		}
+	}
+	return "-"
+}
+
+func scenarioCountLabel(count int, singular, plural string) string {
+	if count == 1 {
+		return "1 " + singular
+	}
+	return strconv.Itoa(count) + " " + plural
+}
+
+var scenarioEditorPageTemplate = newPageTemplate("scenario-editor-page", `<div class="page-heading">
+			<div>
+				<h1>Scenario Editor</h1>
+			</div>
+			<div class="page-actions">
+				<a class="button-link secondary" href="/scenarios">Scenarios</a>
+			</div>
+		</div>
+
+		{{template "ui.notices" .Notices}}
+
+		{{if not .WorkspaceReady}}
+			{{template "ui.empty-state" .WorkspaceEmptyState}}
+		{{else}}
+			<section class="scenario-editor-layout">
+				<form method="post" action="/scenarios/editor/validate" class="panel scenario-editor-form">
+					<div class="section-heading">
+						<h2>Draft</h2>
+						<span>YAML</span>
+					</div>
+					<label class="form-row">Scenario YAML
+						<textarea name="scenario_document" class="scenario-editor-textarea" spellcheck="false" required>{{.Draft}}</textarea>
+					</label>
+					<div class="inline-actions">
+						<button type="submit">Validate Draft</button>
+						<a class="button-link secondary" href="/scenarios">Cancel</a>
+					</div>
+				</form>
+
+				<section class="panel scenario-editor-preview">
+					<div class="section-heading">
+						<h2>Validation Preview</h2>
+						{{if .Preview.HasResult}}<span class="status {{.Preview.StatusClass}}">{{.Preview.Status}}</span>{{end}}
+					</div>
+					{{if .Preview.HasResult}}
+						{{if .Preview.Valid}}
+							<div class="detail-list">
+								<span>Name</span>
+								<strong>{{.Preview.Name}}</strong>
+							</div>
+							<div class="scenario-editor-summary">
+								<div class="detail-list">
+									<span>Clock Start</span>
+									<strong>{{.Preview.ClockStart}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Template</span>
+									<strong>{{.Preview.OrganizationTemplate}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Events</span>
+									<strong>{{.Preview.EventCount}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Checks</span>
+									<strong>{{.Preview.CheckCount}}</strong>
+								</div>
+								<div class="detail-list">
+									<span>Simulated Window</span>
+									<strong>{{.Preview.SimulatedDuration}}</strong>
+								</div>
+								{{if .Preview.RandomSeed}}
+									<div class="detail-list">
+										<span>Random Seed</span>
+										<strong>{{.Preview.RandomSeed}}</strong>
+									</div>
+								{{end}}
+							</div>
+							<div class="table-wrap scenario-editor-events">
+								<table class="dense-table">
+									<thead>
+										<tr>
+											<th>#</th>
+											<th>Event</th>
+											<th>Action</th>
+											<th>Schedule</th>
+											<th>Target</th>
+										</tr>
+									</thead>
+									<tbody>
+										{{range .Preview.Events}}
+											<tr>
+												<td>{{.Sequence}}</td>
+												<td><strong>{{.ID}}</strong></td>
+												<td>{{.Action}}</td>
+												<td>{{.Schedule}}</td>
+												<td>{{.Target}}</td>
+											</tr>
+										{{else}}
+											<tr><td colspan="5">No events</td></tr>
+										{{end}}
+									</tbody>
+								</table>
+							</div>
+						{{else}}
+							<ul class="validation-list">
+								{{range .Preview.Problems}}
+									<li>{{.}}</li>
+								{{end}}
+							</ul>
+						{{end}}
+					{{else}}
+						<section class="empty compact-empty">
+							<h2>No Preview</h2>
+						</section>
+					{{end}}
+				</section>
+			</section>
+		{{end}}
+`)
+
 var scenariosPageTemplate = newPageTemplate("scenarios-page", `<div class="page-heading">
 			<div>
 				<h1>Scenarios</h1>
 			</div>
+			{{if .WorkspaceReady}}
+				<div class="page-actions">
+					<a class="button-link secondary" href="/scenarios/editor">Scenario Editor</a>
+				</div>
+			{{end}}
 		</div>
 
 		{{template "ui.notices" .Notices}}

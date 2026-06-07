@@ -1660,6 +1660,37 @@ func TestScenariosUIRequiresWorkspace(t *testing.T) {
 		}
 	}
 
+	resp, err = client.Get(server.URL + "/scenarios/editor")
+	if err != nil {
+		t.Fatalf("GET /scenarios/editor without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios/editor without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Scenario Editor - AWS Billing Simulator</title>`,
+		`<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
+		"Workspace Required",
+		`href="/workspaces"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /scenarios/editor without workspace missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/scenarios/editor/validate", url.Values{"scenario_document": {"name: Draft"}})
+	if err != nil {
+		t.Fatalf("POST /scenarios/editor/validate without workspace error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST /scenarios/editor/validate without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, "Open a workspace before validating scenario drafts.") {
+		t.Fatalf("POST /scenarios/editor/validate without workspace missing workspace message: %s", body)
+	}
+
 	resp, err = client.PostForm(server.URL+"/scenarios/launch", url.Values{"scenario_key": {"first-consolidated-bill"}})
 	if err != nil {
 		t.Fatalf("POST /scenarios/launch without workspace error = %v", err)
@@ -1704,6 +1735,153 @@ func TestScenariosUIRequiresWorkspace(t *testing.T) {
 		if !strings.Contains(body, action.want) {
 			t.Fatalf("POST %s without workspace missing %q: %s", action.path, action.want, body)
 		}
+	}
+}
+
+func TestScenarioEditorValidationPreviewWorksInFreshWorkspace(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "scenario-editor-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: 3 * time.Second}
+
+	resp, err := client.Get(server.URL() + "/scenarios/editor")
+	if err != nil {
+		t.Fatalf("GET /scenarios/editor error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios/editor status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Scenario Editor - AWS Billing Simulator</title>`,
+		`action="/scenarios/editor/validate"`,
+		"Scenario YAML",
+		"Validation Preview",
+		"name: Draft scenario",
+		"Validate Draft",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /scenarios/editor body missing %q: %s", want, body)
+		}
+	}
+
+	validDraft := `
+name: Browser-authored YAML scenario
+clock:
+  start: 2026-03-01
+organization_template: anycompany-retail
+events:
+  - id: create-browser-web
+    day: 1
+    action: create_resource
+    account: Storefront Prod
+    service: Amazon EC2
+    resource: browser-web
+    resource_type: ec2_instance
+    region: us-east-1
+    tags:
+      app: storefront
+  - id: browser-web-hours
+    day: 2
+    action: add_usage
+    account: Storefront Prod
+    service: Amazon EC2
+    resource: browser-web
+    amount_hours: 12
+checks:
+  - type: saved_report_exists
+    report_name: Browser spend review
+`
+	resp, err = client.PostForm(server.URL()+"/scenarios/editor/validate", url.Values{
+		"scenario_document": {validDraft},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/editor/validate valid draft error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/editor/validate valid draft status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Scenario draft is valid.",
+		"Valid",
+		"Browser-authored YAML scenario",
+		"2026-03-01",
+		"2 events",
+		"1 check",
+		"create-browser-web",
+		"browser-web-hours",
+		"add_usage",
+		"Day 2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /scenarios/editor/validate valid body missing %q: %s", want, body)
+		}
+	}
+
+	invalidDraft := `
+name: ""
+clock:
+  start: March 2026
+organization_template: anycompany-retail
+events:
+  - id: missing-quantity
+    day: 1
+    action: add_usage
+    account: Storefront Prod
+    service: Amazon EC2
+`
+	resp, err = client.PostForm(server.URL()+"/scenarios/editor/validate", url.Values{
+		"scenario_document": {invalidDraft},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/editor/validate invalid draft error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/editor/validate invalid draft status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Invalid",
+		"name is required",
+		"clock.start must use YYYY-MM-DD",
+		"events[0] must include amount_gb, amount_hours, quantity, or quantity_micros",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /scenarios/editor/validate invalid body missing %q: %s", want, body)
+		}
+	}
+
+	var runCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_runs`).Scan(&runCount); err != nil {
+		t.Fatalf("count scenario runs after editor validation: %v", err)
+	}
+	if runCount != 0 {
+		t.Fatalf("scenario run count after editor validation = %d, want 0", runCount)
 	}
 }
 

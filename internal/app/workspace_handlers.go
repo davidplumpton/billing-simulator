@@ -220,6 +220,12 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/scenarios", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceScenarioHandler(workspace).handleScenarios(w, r)
 	})
+	mux.HandleFunc("/scenarios/editor", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceScenarioHandler(workspace).handleScenarioEditor(w, r)
+	})
+	mux.HandleFunc("/scenarios/editor/validate", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceScenarioHandler(workspace).handleValidateScenarioEditor(w, r)
+	})
 	mux.HandleFunc("/scenarios/launch", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceScenarioHandler(workspace).handleLaunchScenario(w, r)
 	})

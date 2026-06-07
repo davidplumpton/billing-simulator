@@ -254,7 +254,7 @@ func (e ValidationError) Error() string {
 	return "scenario definition invalid: " + strings.Join(e.Problems, "; ")
 }
 
-// ParseDefinition parses a JSON scenario definition from a bounded reader.
+// ParseDefinition parses a JSON or YAML scenario definition from a bounded reader.
 func ParseDefinition(r io.Reader) (Definition, error) {
 	if r == nil {
 		return Definition{}, fmt.Errorf("scenario definition reader is required")
@@ -269,16 +269,27 @@ func ParseDefinition(r io.Reader) (Definition, error) {
 	return ParseDefinitionBytes(data)
 }
 
-// ParseDefinitionBytes parses a JSON scenario definition from memory.
+// ParseDefinitionBytes parses a JSON or YAML scenario definition from memory.
 func ParseDefinitionBytes(data []byte) (Definition, error) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
 		return Definition{}, fmt.Errorf("scenario definition is required")
 	}
-	if data[0] != '{' {
-		return Definition{}, fmt.Errorf("scenario definition must be a JSON object")
+	switch data[0] {
+	case '{':
+		return parseDefinitionJSONBytes(data)
+	case '[':
+		return Definition{}, fmt.Errorf("scenario definition must be a JSON object or YAML mapping")
+	default:
+		jsonData, err := parseDefinitionYAMLBytes(data)
+		if err != nil {
+			return Definition{}, fmt.Errorf("parse scenario definition YAML: %w", err)
+		}
+		return parseDefinitionJSONBytes(jsonData)
 	}
+}
 
+func parseDefinitionJSONBytes(data []byte) (Definition, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	decoder.DisallowUnknownFields()

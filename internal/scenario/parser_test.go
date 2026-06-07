@@ -128,6 +128,61 @@ func TestParseDefinitionParsesScenarioJSON(t *testing.T) {
 	}
 }
 
+func TestParseDefinitionParsesScenarioYAML(t *testing.T) {
+	raw := strings.NewReader(`
+name: YAML allocation lab
+clock:
+  start: 2026-03-01
+organization_template: anycompany-retail
+random_seed: 7
+events:
+  - id: create-yaml-web
+    day: 1
+    action: create_resource
+    account: Storefront Prod
+    service: Amazon EC2
+    resource: yaml-web
+    resource_type: ec2_instance
+    region: us-east-1
+    tags: {app: storefront, env: prod}
+    attributes:
+      instance_type: t3.medium
+  - id: yaml-web-hours
+    day: 2
+    action: add_usage
+    account: Storefront Prod
+    service: Amazon EC2
+    resource: yaml-web
+    amount_hours: 8
+checks:
+  - type: saved_report_exists
+    report_name: YAML spend review
+`)
+
+	definition, err := ParseDefinition(raw)
+	if err != nil {
+		t.Fatalf("ParseDefinition(YAML) returned error: %v", err)
+	}
+	if definition.Name != "YAML allocation lab" ||
+		definition.Clock.Start != "2026-03-01" ||
+		definition.OrganizationTemplate != "anycompany-retail" ||
+		definition.RandomSeed != 7 {
+		t.Fatalf("YAML definition header = %+v", definition)
+	}
+	if len(definition.Events) != 2 || definition.Events[0].Sequence != 1 || definition.Events[1].Sequence != 2 {
+		t.Fatalf("YAML events = %+v, want two sequenced events", definition.Events)
+	}
+	if definition.Events[0].Tags["app"] != "storefront" || definition.Events[0].Attributes["instance_type"] != "t3.medium" {
+		t.Fatalf("YAML resource maps = tags:%+v attributes:%+v", definition.Events[0].Tags, definition.Events[0].Attributes)
+	}
+	if definition.Events[1].AmountHours == nil || definition.Events[1].AmountHours.String() != "8" {
+		t.Fatalf("YAML amount_hours = %#v, want json number 8", definition.Events[1].AmountHours)
+	}
+	if len(definition.Checks) != 1 || definition.Checks[0].ID != "check-001" {
+		t.Fatalf("YAML checks = %+v, want normalized check", definition.Checks)
+	}
+}
+
 func TestParseDefinitionRejectsInvalidScenario(t *testing.T) {
 	raw := []byte(`{
 		"name": " ",
@@ -189,6 +244,39 @@ func TestParseDefinitionRejectsInvalidScenario(t *testing.T) {
 	assertErrorContains(t, err, "events[2].action \"unsupported_action\" is not supported")
 	assertErrorContains(t, err, "checks[0].report_name is required for saved_report_exists")
 	assertErrorContains(t, err, "checks[1].type \"unknown_check\" is not supported")
+}
+
+func TestParseDefinitionRejectsInvalidScenarioYAML(t *testing.T) {
+	raw := strings.NewReader(`
+name: ""
+clock:
+  start: March 2026
+organization_template: ""
+random_seed: -1
+events:
+  - id: missing-usage-quantity
+    day: 1
+    action: add_usage
+    account: Ghost Account
+    service: Amazon EC2
+checks:
+  - type: saved_report_exists
+`)
+
+	_, err := ParseDefinition(raw)
+	if err == nil {
+		t.Fatal("ParseDefinition(YAML) succeeded, want validation error")
+	}
+	var validationErr ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error type = %T, want ValidationError: %v", err, err)
+	}
+	assertErrorContains(t, err, "name is required")
+	assertErrorContains(t, err, "clock.start must use YYYY-MM-DD")
+	assertErrorContains(t, err, "organization_template is required")
+	assertErrorContains(t, err, "random_seed must be zero or greater")
+	assertErrorContains(t, err, "events[0] must include amount_gb, amount_hours, quantity, or quantity_micros")
+	assertErrorContains(t, err, "checks[0].report_name is required for saved_report_exists")
 }
 
 func TestParseDefinitionValidatesCostAllocationTagEvents(t *testing.T) {

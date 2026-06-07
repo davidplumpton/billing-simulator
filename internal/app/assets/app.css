@@ -920,6 +920,55 @@ code {
 	white-space: nowrap;
 }
 
+.scenario-editor-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+	gap: 16px;
+	align-items: start;
+}
+
+.scenario-editor-form,
+.scenario-editor-preview {
+	min-width: 0;
+}
+
+.scenario-editor-textarea {
+	min-height: 520px;
+	font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+	white-space: pre;
+	overflow: auto;
+}
+
+.scenario-editor-summary {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+	margin-bottom: 14px;
+}
+
+.scenario-editor-summary .detail-list {
+	border-bottom: 0;
+	padding: 0;
+}
+
+.scenario-editor-events {
+	margin-top: 14px;
+}
+
+.validation-list {
+	margin: 0;
+	padding-left: 20px;
+	color: var(--danger);
+}
+
+.validation-list li + li {
+	margin-top: 6px;
+}
+
+.compact-empty {
+	padding: 12px;
+}
+
 .invoice-document {
 	background: var(--surface);
 	border: 1px solid var(--line);
@@ -1022,6 +1071,8 @@ code {
 		.fields,
 		.builder-panel .fields,
 		.scenario-meta-grid,
+		.scenario-editor-layout,
+		.scenario-editor-summary,
 		.filter-form,
 		.saved-report-picker,
 		.clock-form,

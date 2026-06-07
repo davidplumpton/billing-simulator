@@ -2668,6 +2668,22 @@ func TestCURCSVExportFilenameIncludesRequestVariantDimensions(t *testing.T) {
 	if filtered == base {
 		t.Fatal("curCSVExportFilename() collapsed filtered and unfiltered exports to the same filename")
 	}
+
+	memberScoped := curCSVExportFilename(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     "final",
+		Visibility:         persistence.BillingVisibilityFilter{UsageAccountID: "111122223333"},
+		Limit:              25,
+	})
+	if want := "cur-2026-02-01-2026-03-01-payer-999988887777-usage-111122223333-status-final-limit-25-visibility-usage-111122223333.csv"; memberScoped != want {
+		t.Fatalf("curCSVExportFilename(member scoped) = %q, want %q", memberScoped, want)
+	}
+	if memberScoped == filtered {
+		t.Fatal("curCSVExportFilename() collapsed member-scoped and management-scoped usage exports to the same filename")
+	}
 }
 
 func TestQueryLabPageShowsCURCSVExamples(t *testing.T) {
@@ -3290,6 +3306,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
 		UsageAccountID:     "111122223333",
 		LineItemStatus:     "final",
+		Visibility:         persistence.BillingVisibilityFilter{UsageAccountID: "111122223333"},
 		Limit:              2,
 	})
 	resp, err = client.Get(server.URL + "/exports/cur.csv?" + memberQuery.Encode())
@@ -3347,9 +3364,55 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	}
 	if memberRecord.UsageAccountID != "111122223333" ||
 		memberRecord.GenerationParameters["usage_account_id"] != "111122223333" ||
+		memberRecord.GenerationParameters["visibility_scope"] != "usage-account" ||
+		memberRecord.GenerationParameters["visibility_account_id"] != "111122223333" ||
 		memberRecord.GenerationParameters["source_bill_id"] != "" ||
 		memberRecord.GenerationParameters["rows_written"] != "1" {
 		t.Fatalf("member CUR export metadata = %+v, want member-scoped export without payer bill ID", memberRecord)
+	}
+
+	managementSameShapeQuery := url.Values{}
+	for key, values := range memberQuery {
+		managementSameShapeQuery[key] = values
+	}
+	managementSameShapeQuery.Del("viewer_role")
+	managementSameShapeQuery.Del("viewer_account_id")
+	managementSameShapeQuery.Set("usage_account_id", "111122223333")
+	managementSameShapeFilename := curCSVExportFilename(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     "final",
+		Limit:              2,
+	})
+	if managementSameShapeFilename == memberExportFilename {
+		t.Fatalf("management and member stored CUR export filenames both = %q, want visibility-scoped variants", memberExportFilename)
+	}
+	resp, err = client.PostForm(server.URL+"/exports/generate-cur", managementSameShapeQuery)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-cur matching management export error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/generate-cur matching management export status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated "+managementSameShapeFilename+" from 1 source rows") {
+		t.Fatalf("POST /exports/generate-cur matching management export body missing flash: %s", body)
+	}
+	managementSameShapeContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), managementSameShapeFilename))
+	if err != nil {
+		t.Fatalf("read matching management CUR CSV export: %v", err)
+	}
+	if !strings.Contains(string(managementSameShapeContent), closeResult.Bill.ID) {
+		t.Fatalf("matching management CUR CSV export missing payer bill ID metadata: %s", managementSameShapeContent)
+	}
+	memberExportContentAfterManagement, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), memberExportFilename))
+	if err != nil {
+		t.Fatalf("read member CUR CSV export after matching management export: %v", err)
+	}
+	if string(memberExportContentAfterManagement) != memberCSVBody {
+		t.Fatalf("matching management export overwrote member-scoped export:\nmember=%s\nwant=%s", memberExportContentAfterManagement, memberCSVBody)
 	}
 
 	crossAccountMemberQuery := url.Values{}
@@ -3386,11 +3449,14 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /exports member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
-	if !strings.Contains(body, memberExportFilename) || !strings.Contains(body, filteredExportFilename) {
-		t.Fatalf("GET /exports member viewer missing own usage-account exports: %s", body)
+	if !strings.Contains(body, memberExportFilename) {
+		t.Fatalf("GET /exports member viewer missing own usage-account export: %s", body)
 	}
-	if strings.Contains(body, exportFilename) || strings.Contains(body, "usage all accounts") {
-		t.Fatalf("GET /exports member viewer leaked all-account export: %s", body)
+	if strings.Contains(body, exportFilename) ||
+		strings.Contains(body, filteredExportFilename) ||
+		strings.Contains(body, managementSameShapeFilename) ||
+		strings.Contains(body, "usage all accounts") {
+		t.Fatalf("GET /exports member viewer leaked broader export: %s", body)
 	}
 
 	resp, err = client.Get(server.URL + exportFileDownloadPathWithViewer(exportFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
@@ -3401,6 +3467,14 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("GET all-account export as member status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
+	resp, err = client.Get(server.URL + exportFileDownloadPathWithViewer(managementSameShapeFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
+	if err != nil {
+		t.Fatalf("GET matching management export as member error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET matching management export as member status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
 	resp, err = client.Get(server.URL + exportFileDownloadPathWithViewer(memberExportFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
 	if err != nil {
 		t.Fatalf("GET member export as member error = %v", err)
@@ -3409,7 +3483,9 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET member export as member status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
-	if strings.Contains(body, "AWSSupport") || !strings.Contains(body, "resource-cur-export-ui") {
+	if strings.Contains(body, "AWSSupport") ||
+		strings.Contains(body, closeResult.Bill.ID) ||
+		!strings.Contains(body, "resource-cur-export-ui") {
 		t.Fatalf("GET member export as member body = %s, want own usage row only", body)
 	}
 

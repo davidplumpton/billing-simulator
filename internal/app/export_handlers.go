@@ -401,7 +401,7 @@ func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, st
 				status = http.StatusInternalServerError
 				data.Error = "list exports: " + err.Error()
 			} else {
-				data.Files = exportFileRowsFromFiles(files, viewer)
+				data.Files = exportFileRowsFromFiles(visibleExportFilesForPolicy(files, policy), viewer)
 			}
 		}
 	}
@@ -662,14 +662,44 @@ func (h exportsHandler) scopedCURCSVExportRequest(ctx context.Context, request p
 	if err != nil {
 		return persistence.CURCSVExportRequest{}, err
 	}
+	request.Visibility.PayerAccountID = strings.TrimSpace(request.Visibility.PayerAccountID)
+	request.Visibility.UsageAccountID = strings.TrimSpace(request.Visibility.UsageAccountID)
+	if request.Visibility.PayerAccountID != "" && request.Visibility.UsageAccountID != "" {
+		return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("CUR export visibility cannot be scoped to both payer and usage accounts")}
+	}
+	if request.Visibility.UsageAccountID != "" {
+		if !policy.AllowsUsageAccount(request.Visibility.UsageAccountID) {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export usage account %q", policy.Role, request.Visibility.UsageAccountID)}
+		}
+		if request.UsageAccountID != "" && request.UsageAccountID != request.Visibility.UsageAccountID {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export usage account %q", policy.Role, request.UsageAccountID)}
+		}
+		request.UsageAccountID = request.Visibility.UsageAccountID
+		request.Visibility = persistence.BillingVisibilityFilter{UsageAccountID: request.Visibility.UsageAccountID}
+	}
+	if request.Visibility.PayerAccountID != "" {
+		if !policy.AllowsPayerAccount(request.Visibility.PayerAccountID) {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.Visibility.PayerAccountID)}
+		}
+		if request.PayerAccountID != "" && request.PayerAccountID != request.Visibility.PayerAccountID {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.PayerAccountID)}
+		}
+		request.PayerAccountID = request.Visibility.PayerAccountID
+		request.Visibility = persistence.BillingVisibilityFilter{PayerAccountID: request.Visibility.PayerAccountID}
+	}
 	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
 		if request.PayerAccountID != "" && request.PayerAccountID != payerAccountID {
 			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.PayerAccountID)}
 		}
 		request.PayerAccountID = payerAccountID
-		request.Visibility = persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}
+		if request.Visibility.UsageAccountID == "" {
+			request.Visibility = persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}
+		}
 	}
 	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
+		if request.Visibility.PayerAccountID != "" {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.Visibility.PayerAccountID)}
+		}
 		if request.PayerAccountID != "" && defaultPayerAccountID != "" && request.PayerAccountID != defaultPayerAccountID {
 			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.PayerAccountID)}
 		}
@@ -703,6 +733,17 @@ func (h exportsHandler) scopedCURExportReconciliationRequest(ctx context.Context
 	return request, nil
 }
 
+// visibleExportFilesForPolicy removes stored files whose generation scope is broader than the viewer can inspect.
+func visibleExportFilesForPolicy(files []persistence.ExportFile, policy billingvisibility.Policy) []persistence.ExportFile {
+	visible := make([]persistence.ExportFile, 0, len(files))
+	for _, file := range files {
+		if err := ensureExportFileVisibleToPolicy(policy, file); err == nil {
+			visible = append(visible, file)
+		}
+	}
+	return visible
+}
+
 func ensureExportFileVisibleToPolicy(policy billingvisibility.Policy, file persistence.ExportFile) error {
 	if !policy.AllowsView(billingvisibility.ViewExports) {
 		return exportAccessError{err: fmt.Errorf("billing role %q cannot view exports", policy.Role)}
@@ -719,6 +760,13 @@ func ensureExportFileVisibleToPolicy(policy billingvisibility.Policy, file persi
 		}
 		if file.UsageAccountID != usageAccountID {
 			return exportAccessError{err: fmt.Errorf("billing role %q cannot access export for usage account %q", policy.Role, file.UsageAccountID)}
+		}
+		scope, accountID, err := exportFileVisibilityScope(file)
+		if err != nil {
+			return exportAccessError{err: err}
+		}
+		if scope != exportVisibilityScopeUsageAccount || accountID != usageAccountID {
+			return exportAccessError{err: fmt.Errorf("billing role %q cannot access export generated outside usage account scope %q", policy.Role, usageAccountID)}
 		}
 		return nil
 	}
@@ -942,12 +990,17 @@ func curCSVExportRequestFromExportFile(file persistence.ExportFile) (persistence
 	if file.ExportType != persistence.ExportFileTypeCURCSV {
 		return persistence.CURCSVExportRequest{}, fmt.Errorf("export type %q cannot be regenerated as CUR CSV", file.ExportType)
 	}
+	visibility, err := curCSVExportVisibilityFromGenerationParameters(file.GenerationParameters)
+	if err != nil {
+		return persistence.CURCSVExportRequest{}, err
+	}
 	request := persistence.CURCSVExportRequest{
 		BillingPeriodStart: file.BillingPeriodStart,
 		BillingPeriodEnd:   file.BillingPeriodEnd,
 		PayerAccountID:     file.PayerAccountID,
 		UsageAccountID:     file.UsageAccountID,
 		LineItemStatus:     file.GenerationParameters["line_item_status"],
+		Visibility:         visibility,
 	}
 	if rawLimit := strings.TrimSpace(file.GenerationParameters["limit"]); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)
@@ -1124,6 +1177,9 @@ func curCSVExportFilename(request persistence.CURCSVExportRequest) string {
 		"limit",
 		safeCSVFilenamePart(limitPart, "default"),
 	}
+	if request.Visibility.UsageAccountID != "" {
+		parts = append(parts, "visibility", "usage", safeCSVFilenamePart(request.Visibility.UsageAccountID, "usage-account"))
+	}
 	return strings.Join(parts, "-") + ".csv"
 }
 
@@ -1169,20 +1225,82 @@ func curCSVExportPathWithViewer(request persistence.CURCSVExportRequest, viewer 
 }
 
 func curCSVExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
+	visibilityScope, visibilityAccountID := curCSVExportVisibilityScope(request.Visibility)
 	parameters := map[string]string{
-		"billing_period_start": request.BillingPeriodStart,
-		"billing_period_end":   request.BillingPeriodEnd,
-		"payer_account_id":     request.PayerAccountID,
-		"usage_account_id":     request.UsageAccountID,
-		"line_item_status":     request.LineItemStatus,
-		"generated_at":         result.GeneratedAt,
-		"source_bill_id":       result.SourceBillID,
-		"rows_written":         strconv.Itoa(result.RowsWritten),
+		"billing_period_start":  request.BillingPeriodStart,
+		"billing_period_end":    request.BillingPeriodEnd,
+		"payer_account_id":      request.PayerAccountID,
+		"usage_account_id":      request.UsageAccountID,
+		"line_item_status":      request.LineItemStatus,
+		"visibility_scope":      visibilityScope,
+		"visibility_account_id": visibilityAccountID,
+		"generated_at":          result.GeneratedAt,
+		"source_bill_id":        result.SourceBillID,
+		"rows_written":          strconv.Itoa(result.RowsWritten),
 	}
 	if request.Limit > 0 {
 		parameters["limit"] = strconv.Itoa(request.Limit)
 	}
 	return parameters
+}
+
+const (
+	exportVisibilityScopeAllAccounts   = "all-accounts"
+	exportVisibilityScopePayerAccount  = "payer-account"
+	exportVisibilityScopeUsageAccount  = "usage-account"
+	exportVisibilityScopeKey           = "visibility_scope"
+	exportVisibilityAccountIDParameter = "visibility_account_id"
+)
+
+// curCSVExportVisibilityScope serializes the policy row scope used when producing stored export bytes.
+func curCSVExportVisibilityScope(visibility persistence.BillingVisibilityFilter) (string, string) {
+	usageAccountID := strings.TrimSpace(visibility.UsageAccountID)
+	if usageAccountID != "" {
+		return exportVisibilityScopeUsageAccount, usageAccountID
+	}
+	payerAccountID := strings.TrimSpace(visibility.PayerAccountID)
+	if payerAccountID != "" {
+		return exportVisibilityScopePayerAccount, payerAccountID
+	}
+	return exportVisibilityScopeAllAccounts, ""
+}
+
+// curCSVExportVisibilityFromGenerationParameters restores the row scope needed to regenerate a stored export.
+func curCSVExportVisibilityFromGenerationParameters(parameters map[string]string) (persistence.BillingVisibilityFilter, error) {
+	scope := strings.TrimSpace(parameters[exportVisibilityScopeKey])
+	accountID := strings.TrimSpace(parameters[exportVisibilityAccountIDParameter])
+	switch scope {
+	case "":
+		return persistence.BillingVisibilityFilter{}, nil
+	case exportVisibilityScopeAllAccounts:
+		return persistence.BillingVisibilityFilter{}, nil
+	case exportVisibilityScopePayerAccount:
+		if accountID == "" {
+			return persistence.BillingVisibilityFilter{}, fmt.Errorf("stored export payer visibility account ID is required")
+		}
+		return persistence.BillingVisibilityFilter{PayerAccountID: accountID}, nil
+	case exportVisibilityScopeUsageAccount:
+		if accountID == "" {
+			return persistence.BillingVisibilityFilter{}, fmt.Errorf("stored export usage visibility account ID is required")
+		}
+		return persistence.BillingVisibilityFilter{UsageAccountID: accountID}, nil
+	default:
+		return persistence.BillingVisibilityFilter{}, fmt.Errorf("stored export visibility scope %q is unsupported", scope)
+	}
+}
+
+// exportFileVisibilityScope reads the stored generation scope used for member export authorization.
+func exportFileVisibilityScope(file persistence.ExportFile) (string, string, error) {
+	visibility, err := curCSVExportVisibilityFromGenerationParameters(file.GenerationParameters)
+	if err != nil {
+		return "", "", err
+	}
+	scope, accountID := curCSVExportVisibilityScope(visibility)
+	if strings.TrimSpace(file.GenerationParameters[exportVisibilityScopeKey]) == "" {
+		scope = ""
+		accountID = ""
+	}
+	return scope, accountID, nil
 }
 
 func curExportReconciliationPath(request persistence.CURExportReconciliationRequest) string {

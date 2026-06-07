@@ -196,6 +196,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/exports/regenerate", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleRegenerateExport(w, r)
 	})
+	mux.HandleFunc("/exports/generate-cur", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleGenerateCURCSVExport(w, r)
+	})
 	mux.HandleFunc("/exports/cur.csv", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleCURCSV(w, r)
 	})

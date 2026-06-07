@@ -30,6 +30,7 @@ type exportsPageData struct {
 	WorkspaceEmptyState uiEmptyStateView
 	Actions             uiActionBarView
 	Filters             exportFileFilterView
+	GenerateCURCSV      curCSVGenerationFormView
 	Files               []exportFileRowView
 	Tables              exportsTablesView
 }
@@ -49,6 +50,21 @@ type exportFileFilterView struct {
 	ApplyButton        uiSubmitButtonView
 	ClearPath          string
 	HasFilters         bool
+}
+
+type curCSVGenerationFormView struct {
+	BillingPeriodStart  string
+	BillingPeriodEnd    string
+	PayerAccountID      string
+	UsageAccountID      string
+	ViewerRole          string
+	ViewerAccountID     string
+	LineItemStatus      string
+	Limit               string
+	ViewerRoleField     uiSelectFieldView
+	ViewerAccountField  uiInputFieldView
+	LineItemStatusField uiSelectFieldView
+	GenerateButton      uiSubmitButtonView
 }
 
 type exportFileRowView struct {
@@ -149,6 +165,18 @@ func (e exportAccessError) Error() string {
 }
 
 func (e exportAccessError) Unwrap() error {
+	return e.err
+}
+
+type exportStorageError struct {
+	err error
+}
+
+func (e exportStorageError) Error() string {
+	return e.err.Error()
+}
+
+func (e exportStorageError) Unwrap() error {
 	return e.err
 }
 
@@ -274,19 +302,58 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var body bytes.Buffer
-	result, err := h.cur.WriteCSVExport(r.Context(), &body, request)
+	record, result, err := h.persistCURCSVExportFile(r.Context(), request)
 	if err != nil {
-		h.renderExports(w, r, http.StatusBadRequest, "regenerate export: "+err.Error(), "")
-		return
-	}
-	record, err := h.writeCURCSVExportFile(r.Context(), request, body.Bytes(), result)
-	if err != nil {
-		h.renderExports(w, r, http.StatusInternalServerError, "regenerate export: "+err.Error(), "")
+		h.renderExports(w, r, exportGenerationHTTPStatus(err), "regenerate export: "+err.Error(), "")
 		return
 	}
 
 	flash := fmt.Sprintf("Regenerated %s from %d source rows", record.Filename, result.RowsWritten)
+	http.Redirect(w, r, exportsPathWithViewer(exportViewerFieldsFromValues(r.PostForm), flash), http.StatusSeeOther)
+}
+
+// handleGenerateCURCSVExport writes a new persisted CUR-like CSV export from explicit form input.
+func (h exportsHandler) handleGenerateCURCSVExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+	if h.workspacePath == "" {
+		http.Error(w, "workspace path required", http.StatusConflict)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.renderExports(w, r, http.StatusBadRequest, "generate CUR export: "+err.Error(), "")
+		return
+	}
+
+	request, err := curCSVExportRequestFromForm(r)
+	if err != nil {
+		h.renderExports(w, r, http.StatusBadRequest, "generate CUR export: "+err.Error(), "")
+		return
+	}
+	policy, err := h.exportPolicyFromValues(r.Context(), r.PostForm)
+	if err != nil {
+		h.renderExports(w, r, exportHTTPStatus(err), "generate CUR export: "+err.Error(), "")
+		return
+	}
+	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
+	if err != nil {
+		h.renderExports(w, r, exportHTTPStatus(err), "generate CUR export: "+err.Error(), "")
+		return
+	}
+
+	record, result, err := h.persistCURCSVExportFile(r.Context(), request)
+	if err != nil {
+		h.renderExports(w, r, exportGenerationHTTPStatus(err), "generate CUR export: "+err.Error(), "")
+		return
+	}
+
+	flash := fmt.Sprintf("Generated %s from %d source rows", record.Filename, result.RowsWritten)
 	http.Redirect(w, r, exportsPathWithViewer(exportViewerFieldsFromValues(r.PostForm), flash), http.StatusSeeOther)
 }
 
@@ -298,6 +365,7 @@ func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, st
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
 		Actions:             uiActionBar(uiActionLink("Query Lab", "/query-lab"), uiActionLink("Reconciliation", curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{}, viewer)), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
 		Filters:             exportFileFilterFromRequest(r),
+		GenerateCURCSV:      curCSVGenerationFormFromRequest(r),
 		Tables:              exportsTablesView{Files: exportFilesTable()},
 	}
 	if h.db != nil && data.Error == "" {
@@ -373,19 +441,10 @@ func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body bytes.Buffer
-	result, err := h.cur.WriteCSVExport(r.Context(), &body, request)
+	_, err = h.cur.WriteCSVExport(r.Context(), &body, request)
 	if err != nil {
 		http.Error(w, "export CUR CSV: "+err.Error(), http.StatusBadRequest)
 		return
-	}
-	if r.Method == http.MethodGet && h.workspacePath != "" {
-		record, err := h.writeCURCSVExportFile(r.Context(), request, body.Bytes(), result)
-		if err != nil {
-			http.Error(w, "store CUR CSV export: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("X-Simulator-Export-Filename", record.Filename)
-		w.Header().Set("X-Simulator-Export-Checksum", record.ChecksumSHA256)
 	}
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -466,15 +525,22 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 }
 
 func curCSVExportRequestFromQuery(r *http.Request) (persistence.CURCSVExportRequest, error) {
-	query := r.URL.Query()
+	return curCSVExportRequestFromValues(r.URL.Query())
+}
+
+func curCSVExportRequestFromForm(r *http.Request) (persistence.CURCSVExportRequest, error) {
+	return curCSVExportRequestFromValues(r.PostForm)
+}
+
+func curCSVExportRequestFromValues(values url.Values) (persistence.CURCSVExportRequest, error) {
 	request := persistence.CURCSVExportRequest{
-		BillingPeriodStart: query.Get("billing_period_start"),
-		BillingPeriodEnd:   query.Get("billing_period_end"),
-		PayerAccountID:     query.Get("payer_account_id"),
-		UsageAccountID:     query.Get("usage_account_id"),
-		LineItemStatus:     query.Get("line_item_status"),
+		BillingPeriodStart: values.Get("billing_period_start"),
+		BillingPeriodEnd:   values.Get("billing_period_end"),
+		PayerAccountID:     values.Get("payer_account_id"),
+		UsageAccountID:     values.Get("usage_account_id"),
+		LineItemStatus:     values.Get("line_item_status"),
 	}
-	if rawLimit := strings.TrimSpace(query.Get("limit")); rawLimit != "" {
+	if rawLimit := strings.TrimSpace(values.Get("limit")); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)
 		if err != nil {
 			return persistence.CURCSVExportRequest{}, fmt.Errorf("limit must be an integer")
@@ -501,6 +567,20 @@ func curExportReconciliationRequestFromQuery(r *http.Request) (persistence.CUREx
 		request.Limit = limit
 	}
 	return request, nil
+}
+
+// persistCURCSVExportFile generates CUR-like CSV bytes and records them in the workspace export inventory.
+func (h exportsHandler) persistCURCSVExportFile(ctx context.Context, request persistence.CURCSVExportRequest) (persistence.ExportFile, persistence.CURCSVExportResult, error) {
+	var body bytes.Buffer
+	result, err := h.cur.WriteCSVExport(ctx, &body, request)
+	if err != nil {
+		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, err
+	}
+	record, err := h.writeCURCSVExportFile(ctx, request, body.Bytes(), result)
+	if err != nil {
+		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, exportStorageError{err: err}
+	}
+	return record, result, nil
 }
 
 func (h exportsHandler) writeCURCSVExportFile(ctx context.Context, request persistence.CURCSVExportRequest, content []byte, result persistence.CURCSVExportResult) (persistence.ExportFile, error) {
@@ -653,6 +733,18 @@ func exportHTTPStatus(err error) int {
 	return http.StatusBadRequest
 }
 
+func exportGenerationHTTPStatus(err error) int {
+	var accessErr exportAccessError
+	if errors.As(err, &accessErr) {
+		return http.StatusForbidden
+	}
+	var storageErr exportStorageError
+	if errors.As(err, &storageErr) {
+		return http.StatusInternalServerError
+	}
+	return http.StatusBadRequest
+}
+
 func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
 	query := r.URL.Query()
 	filter := exportFileFilterView{
@@ -679,6 +771,25 @@ func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
 		filter.ViewerAccountID != "" ||
 		filter.Limit != ""
 	return filter
+}
+
+func curCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
+	query := r.URL.Query()
+	form := curCSVGenerationFormView{
+		BillingPeriodStart: query.Get("billing_period_start"),
+		BillingPeriodEnd:   query.Get("billing_period_end"),
+		PayerAccountID:     query.Get("payer_account_id"),
+		UsageAccountID:     query.Get("usage_account_id"),
+		ViewerRole:         query.Get("viewer_role"),
+		ViewerAccountID:    query.Get("viewer_account_id"),
+		LineItemStatus:     query.Get("line_item_status"),
+		Limit:              query.Get("limit"),
+		GenerateButton:     uiSubmitButton("Generate CUR Export"),
+	}
+	form.ViewerRoleField = exportsViewerRoleSelect(form.ViewerRole)
+	form.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", form.ViewerAccountID, false)
+	form.LineItemStatusField = exportReconciliationLineItemStatusSelect(form.LineItemStatus)
+	return form
 }
 
 func exportFileListRequestFromFilter(filter exportFileFilterView) (persistence.ExportFileListRequest, error) {
@@ -1217,6 +1328,30 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 					</label>
 					{{template "ui.submit-button" .Filters.ApplyButton}}
 					{{if .Filters.HasFilters}}<a class="button-link secondary" href="{{.Filters.ClearPath}}">Clear</a>{{end}}
+				</form>
+			</section>
+
+			<section class="filter-bar" aria-label="Generate CUR CSV export">
+				<form method="post" action="/exports/generate-cur" class="filter-form">
+					{{template "ui.select-field" .GenerateCURCSV.ViewerRoleField}}
+					{{template "ui.input-field" .GenerateCURCSV.ViewerAccountField}}
+					<label>Billing Period Start
+						<input name="billing_period_start" value="{{.GenerateCURCSV.BillingPeriodStart}}" placeholder="2026-02-01" required>
+					</label>
+					<label>Billing Period End
+						<input name="billing_period_end" value="{{.GenerateCURCSV.BillingPeriodEnd}}" placeholder="2026-03-01" required>
+					</label>
+					<label>Payer Account ID
+						<input name="payer_account_id" value="{{.GenerateCURCSV.PayerAccountID}}">
+					</label>
+					<label>Usage Account ID
+						<input name="usage_account_id" value="{{.GenerateCURCSV.UsageAccountID}}">
+					</label>
+					{{template "ui.select-field" .GenerateCURCSV.LineItemStatusField}}
+					<label>Limit
+						<input name="limit" value="{{.GenerateCURCSV.Limit}}" inputmode="numeric">
+					</label>
+					{{template "ui.submit-button" .GenerateCURCSV.GenerateButton}}
 				</form>
 			</section>
 

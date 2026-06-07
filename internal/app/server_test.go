@@ -2722,6 +2722,16 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		BillingPeriodEnd:   "2026-03-01",
 		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
 	})
+	exportRepo := persistence.NewExportFileRepository(db, workspacePath)
+	assertExportNotStored := func(filename string) {
+		t.Helper()
+		if _, err := exportRepo.GetByFilename(ctx, filename); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("GetByFilename(%s) after direct GET error = %v, want sql.ErrNoRows", filename, err)
+		}
+		if _, err := os.Stat(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), filename)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Stat(%s) after direct GET error = %v, want missing file", filename, err)
+		}
+	}
 	resp, err := client.Get(server.URL + "/exports/cur.csv?" + query.Encode())
 	if err != nil {
 		t.Fatalf("GET /exports/cur.csv error = %v", err)
@@ -2736,8 +2746,8 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, exportFilename) {
 		t.Fatalf("GET /exports/cur.csv content disposition = %q, want CUR filename", disposition)
 	}
-	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != exportFilename {
-		t.Fatalf("GET /exports/cur.csv stored filename header = %q, want %q", storedFilename, exportFilename)
+	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != "" {
+		t.Fatalf("GET /exports/cur.csv stored filename header = %q, want no persisted export header", storedFilename)
 	}
 
 	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
@@ -2751,19 +2761,34 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if got := strings.Join(records[0][:3], ","); got != "export_generated_at,source_bill_id,line_item_id" {
 		t.Fatalf("CUR CSV header prefix = %q, want metadata then line_item_id", got)
 	}
+	assertExportNotStored(exportFilename)
+	checksum := sha256.Sum256([]byte(body))
+	wantChecksum := hex.EncodeToString(checksum[:])
+	if got := resp.Header.Get("X-Simulator-Export-Checksum"); got != "" {
+		t.Fatalf("GET /exports/cur.csv checksum header = %q, want no persisted export checksum", got)
+	}
+	resp, err = client.PostForm(server.URL+"/exports/generate-cur", query)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-cur error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/generate-cur final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/exports" {
+		t.Fatalf("POST /exports/generate-cur final path = %q, want /exports", got)
+	}
+	if !strings.Contains(body, "Generated "+exportFilename+" from 2 source rows") {
+		t.Fatalf("POST /exports/generate-cur body missing flash: %s", body)
+	}
 	exportContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), exportFilename))
 	if err != nil {
 		t.Fatalf("read stored CUR CSV export: %v", err)
 	}
-	if string(exportContent) != body {
-		t.Fatalf("stored CUR CSV export differs from response:\nfile=%s\nbody=%s", exportContent, body)
+	if string(exportContent) != initialCSVBody {
+		t.Fatalf("stored CUR CSV export differs from direct response:\nfile=%s\nbody=%s", exportContent, initialCSVBody)
 	}
-	checksum := sha256.Sum256([]byte(body))
-	wantChecksum := hex.EncodeToString(checksum[:])
-	if got := resp.Header.Get("X-Simulator-Export-Checksum"); got != wantChecksum {
-		t.Fatalf("GET /exports/cur.csv checksum header = %q, want %q", got, wantChecksum)
-	}
-	exportRecord, err := persistence.NewExportFileRepository(db, workspacePath).GetByFilename(ctx, exportFilename)
+	exportRecord, err := exportRepo.GetByFilename(ctx, exportFilename)
 	if err != nil {
 		t.Fatalf("GetByFilename(CUR export) error = %v", err)
 	}
@@ -2772,7 +2797,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		exportRecord.BillingPeriodEnd != "2026-03-01" ||
 		exportRecord.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
 		exportRecord.UsageAccountID != "" ||
-		exportRecord.SizeBytes != int64(len(body)) ||
+		exportRecord.SizeBytes != int64(len(initialCSVBody)) ||
 		exportRecord.ChecksumSHA256 != wantChecksum ||
 		exportRecord.GenerationParameters["generated_at"] != "2026-03-02T09:30:00Z" ||
 		exportRecord.GenerationParameters["source_bill_id"] != closeResult.Bill.ID ||
@@ -2805,8 +2830,8 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		t.Fatalf("GET /exports/cur.csv filtered status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	filteredCSVBody := body
-	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != filteredExportFilename {
-		t.Fatalf("GET /exports/cur.csv filtered stored filename header = %q, want %q", storedFilename, filteredExportFilename)
+	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != "" {
+		t.Fatalf("GET /exports/cur.csv filtered stored filename header = %q, want no persisted export header", storedFilename)
 	}
 	if filteredExportFilename == exportFilename {
 		t.Fatalf("filtered export filename = base filename %q, want distinct request variants", filteredExportFilename)
@@ -2821,6 +2846,20 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if filteredCSVBody == initialCSVBody {
 		t.Fatalf("filtered CUR CSV body matched all-account body; filename variants should represent different content")
 	}
+	assertExportNotStored(filteredExportFilename)
+	filteredChecksum := sha256.Sum256([]byte(filteredCSVBody))
+	wantFilteredChecksum := hex.EncodeToString(filteredChecksum[:])
+	resp, err = client.PostForm(server.URL+"/exports/generate-cur", filteredQuery)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-cur filtered error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/generate-cur filtered final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated "+filteredExportFilename+" from 1 source rows") {
+		t.Fatalf("POST /exports/generate-cur filtered body missing flash: %s", body)
+	}
 	filteredExportContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), filteredExportFilename))
 	if err != nil {
 		t.Fatalf("read filtered stored CUR CSV export: %v", err)
@@ -2828,9 +2867,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if string(filteredExportContent) != filteredCSVBody {
 		t.Fatalf("filtered stored CUR CSV export differs from response:\nfile=%s\nbody=%s", filteredExportContent, filteredCSVBody)
 	}
-	filteredChecksum := sha256.Sum256([]byte(filteredCSVBody))
-	wantFilteredChecksum := hex.EncodeToString(filteredChecksum[:])
-	filteredExportRecord, err := persistence.NewExportFileRepository(db, workspacePath).GetByFilename(ctx, filteredExportFilename)
+	filteredExportRecord, err := exportRepo.GetByFilename(ctx, filteredExportFilename)
 	if err != nil {
 		t.Fatalf("GetByFilename(filtered CUR export) error = %v", err)
 	}
@@ -2847,7 +2884,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		filteredExportRecord.GenerationParameters["rows_written"] != "1" {
 		t.Fatalf("filtered CUR export metadata = %+v, want request-specific metadata", filteredExportRecord)
 	}
-	storedExports, err := persistence.NewExportFileRepository(db, workspacePath).List(ctx, persistence.ExportFileListRequest{
+	storedExports, err := exportRepo.List(ctx, persistence.ExportFileListRequest{
 		ExportType:         persistence.ExportFileTypeCURCSV,
 		BillingPeriodStart: "2026-02-01",
 		BillingPeriodEnd:   "2026-03-01",
@@ -2889,6 +2926,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Generated Exports",
+		"Generate CUR Export",
 		"2 files",
 		"recently updated first",
 		exportFilename,
@@ -3163,9 +3201,10 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /exports/cur.csv member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
-	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != memberExportFilename {
-		t.Fatalf("GET /exports/cur.csv member viewer stored filename = %q, want %q", storedFilename, memberExportFilename)
+	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != "" {
+		t.Fatalf("GET /exports/cur.csv member viewer stored filename = %q, want no persisted export header", storedFilename)
 	}
+	memberCSVBody := body
 	memberRecords, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil {
 		t.Fatalf("read member CUR CSV response: %v\n%s", err, body)
@@ -3180,7 +3219,30 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if strings.Contains(body, "AWSSupport") || strings.Contains(body, "999988887777,999988887777") {
 		t.Fatalf("member CUR CSV leaked payer-scoped support row: %s", body)
 	}
-	memberRecord, err := persistence.NewExportFileRepository(db, workspacePath).GetByFilename(ctx, memberExportFilename)
+	assertExportNotStored(memberExportFilename)
+	resp, err = client.PostForm(server.URL+"/exports/generate-cur", memberQuery)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-cur member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/generate-cur member viewer final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Query().Get("viewer_role"); got != "member-account" {
+		t.Fatalf("POST /exports/generate-cur member viewer final viewer_role = %q, want preserved member-account", got)
+	}
+	if !strings.Contains(body, "Generated "+memberExportFilename+" from 1 source rows") ||
+		strings.Contains(body, exportFilename) {
+		t.Fatalf("POST /exports/generate-cur member viewer body = %s, want scoped flash and no all-account export", body)
+	}
+	memberExportContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), memberExportFilename))
+	if err != nil {
+		t.Fatalf("read member stored CUR CSV export: %v", err)
+	}
+	if string(memberExportContent) != memberCSVBody {
+		t.Fatalf("member stored CUR CSV export differs from direct response:\nfile=%s\nbody=%s", memberExportContent, memberCSVBody)
+	}
+	memberRecord, err := exportRepo.GetByFilename(ctx, memberExportFilename)
 	if err != nil {
 		t.Fatalf("GetByFilename(member CUR export) error = %v", err)
 	}
@@ -3203,6 +3265,14 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	body = readResponseBody(t, resp)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("GET /exports/cur.csv member cross-account status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+	resp, err = client.PostForm(server.URL+"/exports/generate-cur", crossAccountMemberQuery)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-cur member cross-account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /exports/generate-cur member cross-account status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
 
 	memberListQuery := url.Values{

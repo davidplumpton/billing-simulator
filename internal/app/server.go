@@ -167,6 +167,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/exports", exports.handleExports)
 	mux.HandleFunc("/exports/files/", exports.handleExportFileDownload)
 	mux.HandleFunc("/exports/regenerate", exports.handleRegenerateExport)
+	mux.HandleFunc("/exports/generate-cur", exports.handleGenerateCURCSVExport)
 	mux.HandleFunc("/exports/cur.csv", exports.handleCURCSV)
 	mux.HandleFunc("/exports/reconciliation", exports.handleCURReconciliation)
 	mux.HandleFunc("/query-lab", queryLab.handleQueryLab)

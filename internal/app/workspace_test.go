@@ -222,8 +222,8 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 31 {
-		t.Fatalf("schema_migrations count = %d, want 31", count)
+	if count != 32 {
+		t.Fatalf("schema_migrations count = %d, want 32", count)
 	}
 }
 

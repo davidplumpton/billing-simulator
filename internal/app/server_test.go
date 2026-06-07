@@ -3,8 +3,10 @@ package app
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -134,8 +136,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 31 {
-		t.Fatalf("schema_migrations count = %d, want 31", count)
+	if count != 32 {
+		t.Fatalf("schema_migrations count = %d, want 32", count)
 	}
 
 	var catalogCount int
@@ -2530,7 +2532,8 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	workspacePath := t.TempDir()
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
 	if err != nil {
 		t.Fatalf("OpenWorkspace() error = %v", err)
 	}
@@ -2582,7 +2585,10 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		t.Fatalf("Set(clock export time) error = %v", err)
 	}
 
-	server := httptest.NewServer(newMux(db))
+	server := httptest.NewServer(newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}))
 	t.Cleanup(server.Close)
 	client := server.Client()
 
@@ -2605,6 +2611,10 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, "cur-2026-02-01-2026-03-01-999988887777.csv") {
 		t.Fatalf("GET /exports/cur.csv content disposition = %q, want CUR filename", disposition)
 	}
+	exportFilename := "cur-2026-02-01-2026-03-01-999988887777.csv"
+	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != exportFilename {
+		t.Fatalf("GET /exports/cur.csv stored filename header = %q, want %q", storedFilename, exportFilename)
+	}
 
 	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil {
@@ -2615,6 +2625,33 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	}
 	if got := strings.Join(records[0][:3], ","); got != "export_generated_at,source_bill_id,line_item_id" {
 		t.Fatalf("CUR CSV header prefix = %q, want metadata then line_item_id", got)
+	}
+	exportContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), exportFilename))
+	if err != nil {
+		t.Fatalf("read stored CUR CSV export: %v", err)
+	}
+	if string(exportContent) != body {
+		t.Fatalf("stored CUR CSV export differs from response:\nfile=%s\nbody=%s", exportContent, body)
+	}
+	checksum := sha256.Sum256([]byte(body))
+	wantChecksum := hex.EncodeToString(checksum[:])
+	if got := resp.Header.Get("X-Simulator-Export-Checksum"); got != wantChecksum {
+		t.Fatalf("GET /exports/cur.csv checksum header = %q, want %q", got, wantChecksum)
+	}
+	exportRecord, err := persistence.NewExportFileRepository(db, workspacePath).GetByFilename(ctx, exportFilename)
+	if err != nil {
+		t.Fatalf("GetByFilename(CUR export) error = %v", err)
+	}
+	if exportRecord.ExportType != persistence.ExportFileTypeCURCSV ||
+		exportRecord.BillingPeriodStart != "2026-02-01" ||
+		exportRecord.BillingPeriodEnd != "2026-03-01" ||
+		exportRecord.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		exportRecord.SizeBytes != int64(len(body)) ||
+		exportRecord.ChecksumSHA256 != wantChecksum ||
+		exportRecord.GenerationParameters["generated_at"] != "2026-03-02T09:30:00Z" ||
+		exportRecord.GenerationParameters["source_bill_id"] != closeResult.Bill.ID ||
+		exportRecord.GenerationParameters["rows_written"] != "2" {
+		t.Fatalf("stored CUR export metadata = %+v, want response metadata", exportRecord)
 	}
 
 	usage := requireCSVResponseRecord(t, records, "resource_id", "resource-cur-export-ui")

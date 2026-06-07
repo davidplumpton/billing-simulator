@@ -48,7 +48,7 @@ The current codebase already includes these working foundations:
 - Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Cost Explorer derived summary tables for daily cost, monthly account/service spend, tag coverage, and Cost Category value rollups after billing changes.
 - Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
-- CUR-like export schema mapping, payer-period CSV downloads, and export reconciliation reports over bill line items for payer and usage accounts, product code, usage, rates, costs, line-item type, resource IDs, tags, Cost Categories, legal/invoice entity fields, source bill metadata, deterministic generation time, and bill/invoice total comparisons.
+- CUR-like export schema mapping, payer-period CSV downloads, workspace-local export file metadata for generated downloads, and export reconciliation reports over bill line items for payer and usage accounts, product code, usage, rates, costs, line-item type, resource IDs, tags, Cost Categories, legal/invoice entity fields, source bill metadata, deterministic generation time, and bill/invoice total comparisons.
 - Monthly budget definitions scoped by linked account, service, tag, or Cost Category with actual and forecast threshold checks backed by persisted simple month-end forecasts from elapsed-day run rate and scheduled scenario usage, plus in-app alert notification history for breached thresholds.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
 - Payment setup persistence for seller-of-record profiles, payer bill-to profiles, card/ACH/invoice-remittance/Advance Pay method types, default method selection, and invoice seller/bill-to snapshotting.
@@ -61,7 +61,7 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 The broader MVP and later phases include:
 
 - Richer past-due payment remediation teaching workflows.
-- FOCUS-style exports, local export file management, and a query lab.
+- FOCUS-style exports, an exports file-management page, and a query lab.
 - Billing Conductor-style pro forma views and additional shared-cost lab workflows.
 - Richer instructor-authored scenarios and assessment review workflows.
 - More advanced billing fidelity such as credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized views.

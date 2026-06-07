@@ -13,8 +13,10 @@ import (
 )
 
 type exportsHandler struct {
-	db  *sql.DB
-	cur persistence.CURLineItemRepository
+	db            *sql.DB
+	workspacePath string
+	cur           persistence.CURLineItemRepository
+	exportFiles   persistence.ExportFileRepository
 }
 
 type exportReconciliationPageData struct {
@@ -77,9 +79,15 @@ type exportReconciliationTablesView struct {
 }
 
 func newExportsHandler(db *sql.DB) exportsHandler {
+	return newWorkspaceExportsHandler(db, "")
+}
+
+func newWorkspaceExportsHandler(db *sql.DB, workspacePath string) exportsHandler {
 	return exportsHandler{
-		db:  db,
-		cur: persistence.NewCURLineItemRepository(db),
+		db:            db,
+		workspacePath: strings.TrimSpace(workspacePath),
+		cur:           persistence.NewCURLineItemRepository(db),
+		exportFiles:   persistence.NewExportFileRepository(db, workspacePath),
 	}
 }
 
@@ -101,9 +109,28 @@ func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body bytes.Buffer
-	if _, err := h.cur.WriteCSVExport(r.Context(), &body, request); err != nil {
+	result, err := h.cur.WriteCSVExport(r.Context(), &body, request)
+	if err != nil {
 		http.Error(w, "export CUR CSV: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	if r.Method == http.MethodGet && h.workspacePath != "" {
+		record, err := h.exportFiles.Write(r.Context(), persistence.ExportFileWriteRequest{
+			Filename:             curCSVExportFilename(request),
+			ExportType:           persistence.ExportFileTypeCURCSV,
+			BillingPeriodStart:   request.BillingPeriodStart,
+			BillingPeriodEnd:     request.BillingPeriodEnd,
+			PayerAccountID:       request.PayerAccountID,
+			UsageAccountID:       request.UsageAccountID,
+			GenerationParameters: curCSVExportGenerationParameters(request, result),
+			Content:              body.Bytes(),
+		})
+		if err != nil {
+			http.Error(w, "store CUR CSV export: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("X-Simulator-Export-Filename", record.Filename)
+		w.Header().Set("X-Simulator-Export-Checksum", record.ChecksumSHA256)
 	}
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -276,6 +303,23 @@ func curCSVExportPath(request persistence.CURCSVExportRequest) string {
 		values.Set("limit", strconv.Itoa(request.Limit))
 	}
 	return "/exports/cur.csv?" + values.Encode()
+}
+
+func curCSVExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
+	parameters := map[string]string{
+		"billing_period_start": request.BillingPeriodStart,
+		"billing_period_end":   request.BillingPeriodEnd,
+		"payer_account_id":     request.PayerAccountID,
+		"usage_account_id":     request.UsageAccountID,
+		"line_item_status":     request.LineItemStatus,
+		"generated_at":         result.GeneratedAt,
+		"source_bill_id":       result.SourceBillID,
+		"rows_written":         strconv.Itoa(result.RowsWritten),
+	}
+	if request.Limit > 0 {
+		parameters["limit"] = strconv.Itoa(request.Limit)
+	}
+	return parameters
 }
 
 func curExportReconciliationPath(request persistence.CURExportReconciliationRequest) string {

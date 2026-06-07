@@ -16,12 +16,18 @@ import (
 const (
 	sqliteDriver         = "sqlite"
 	workspaceDBFile      = "simulator.db"
+	workspaceExportsDir  = "exports"
 	workspaceBusyTimeout = 5 * time.Second
 )
 
 // WorkspaceDBPath returns the SQLite database path inside a workspace.
 func WorkspaceDBPath(workspacePath string) string {
 	return filepath.Join(workspacePath, workspaceDBFile)
+}
+
+// WorkspaceExportsPath returns the directory used for generated export files.
+func WorkspaceExportsPath(workspacePath string) string {
+	return filepath.Join(workspacePath, workspaceExportsDir)
 }
 
 // OpenWorkspace creates the workspace database if needed and applies migrations.

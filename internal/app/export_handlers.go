@@ -653,11 +653,22 @@ func exportReconciliationLineItemStatusSelect(selected string) uiSelectFieldView
 }
 
 func curCSVExportFilename(request persistence.CURCSVExportRequest) string {
+	limitPart := "default"
+	if request.Limit > 0 {
+		limitPart = strconv.Itoa(request.Limit)
+	}
 	parts := []string{
 		"cur",
 		safeCSVFilenamePart(request.BillingPeriodStart, "period-start"),
 		safeCSVFilenamePart(request.BillingPeriodEnd, "period-end"),
+		"payer",
 		safeCSVFilenamePart(request.PayerAccountID, "payer"),
+		"usage",
+		safeCSVFilenamePart(request.UsageAccountID, "all-accounts"),
+		"status",
+		safeCSVFilenamePart(request.LineItemStatus, "all-statuses"),
+		"limit",
+		safeCSVFilenamePart(limitPart, "default"),
 	}
 	return strings.Join(parts, "-") + ".csv"
 }

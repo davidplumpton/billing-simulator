@@ -35,11 +35,12 @@ type scenarioArchiveBill struct {
 }
 
 type scenarioArchiveManifest struct {
-	ArchivedAt    string                `json:"archived_at"`
-	WorkspacePath string                `json:"workspace_path"`
-	DatabasePath  string                `json:"database_path"`
-	ScenarioRun   scenarioRunAudit      `json:"scenario_run"`
-	Bills         []scenarioArchiveBill `json:"bills"`
+	ArchivedAt         string                `json:"archived_at"`
+	WorkspacePath      string                `json:"workspace_path"`
+	DatabasePath       string                `json:"database_path"`
+	FeedbackReportPath string                `json:"feedback_report_path"`
+	ScenarioRun        scenarioRunAudit      `json:"scenario_run"`
+	Bills              []scenarioArchiveBill `json:"bills"`
 }
 
 // currentWorkspacePath returns the active workspace path when scenario actions have session context.
@@ -280,6 +281,10 @@ func (h scenarioHandler) archiveScenarioRun(ctx context.Context, runID string) (
 	if err := checkpointWorkspaceDB(ctx, h.db); err != nil {
 		return scenarioArchiveResult{}, err
 	}
+	feedbackReport, err := h.loadScenarioFeedbackReport(ctx, runID)
+	if err != nil {
+		return scenarioArchiveResult{}, fmt.Errorf("build feedback report: %w", err)
+	}
 
 	archivedAt := time.Now().UTC().Format(time.RFC3339)
 	archiveDir := filepath.Join(workspacePath, "review-archives")
@@ -358,12 +363,23 @@ func (h scenarioHandler) archiveScenarioRun(ctx context.Context, runID string) (
 		exportCount++
 	}
 
+	feedbackReportPath := "feedback-report.json"
+	feedbackReportJSON, err := json.MarshalIndent(feedbackReport, "", "  ")
+	if err != nil {
+		return scenarioArchiveResult{}, fmt.Errorf("encode feedback report: %w", err)
+	}
+	feedbackReportJSON = append(feedbackReportJSON, '\n')
+	if err = addBytesToZip(zipWriter, feedbackReportPath, feedbackReportJSON); err != nil {
+		return scenarioArchiveResult{}, err
+	}
+
 	manifest := scenarioArchiveManifest{
-		ArchivedAt:    archivedAt,
-		WorkspacePath: workspacePath,
-		DatabasePath:  "workspace/simulator.db",
-		ScenarioRun:   run,
-		Bills:         bills,
+		ArchivedAt:         archivedAt,
+		WorkspacePath:      workspacePath,
+		DatabasePath:       "workspace/simulator.db",
+		FeedbackReportPath: feedbackReportPath,
+		ScenarioRun:        run,
+		Bills:              bills,
 	}
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -406,7 +422,7 @@ func (h scenarioHandler) scenarioRunByID(ctx context.Context, runID string) (sce
 		 WHERE id = ?
 	`, runID).Scan)
 	if err == sql.ErrNoRows {
-		return scenarioRunAudit{}, fmt.Errorf("scenario run %q was not found", runID)
+		return scenarioRunAudit{}, fmt.Errorf("scenario run %q was not found: %w", runID, sql.ErrNoRows)
 	}
 	if err != nil {
 		return scenarioRunAudit{}, fmt.Errorf("read scenario run %q: %w", runID, err)

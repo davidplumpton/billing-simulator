@@ -1885,6 +1885,173 @@ events:
 	}
 }
 
+func TestScenarioFeedbackReportUsesPersistedLearnerEvidence(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "scenario-feedback-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	runID := "scenario-run-feedback"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO scenario_runs (
+			id,
+			definition_name,
+			organization_template,
+			random_seed,
+			status,
+			clock_start,
+			current_event_id,
+			events_total,
+			events_succeeded,
+			resources_created,
+			usage_events_created,
+			metering_records_created,
+			bill_line_items_created,
+			bills_issued,
+			started_at,
+			completed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID,
+		"Feedback Fixture",
+		persistence.AnyCompanyRetailTemplateKey,
+		7,
+		"succeeded",
+		"2026-03-01",
+		"meter-march",
+		2,
+		2,
+		1,
+		3,
+		3,
+		5,
+		1,
+		"2026-03-01T00:00:00Z",
+		"2026-04-01T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert scenario run: %v", err)
+	}
+	progressRepo := persistence.NewScenarioLearnerProgressRepository(db)
+	if _, err := progressRepo.StartRun(ctx, persistence.ScenarioLearnerProgressStartRequest{
+		ScenarioRunID:    runID,
+		DefinitionName:   "Feedback Fixture",
+		Objective:        "Investigate billing evidence",
+		CurrentObjective: "Run scenario actions",
+		ActionsTotal:     2,
+		ChecksTotal:      1,
+		StartedAt:        "2026-03-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	if _, err := progressRepo.RecordAction(ctx, persistence.ScenarioLearnerActionRecordRequest{
+		ScenarioRunID:  runID,
+		ActionID:       "meter-march",
+		ActionSequence: 1,
+		ActionType:     "run_daily_metering",
+		ActionStatus:   persistence.ScenarioLearnerActionStatusCompleted,
+		CompletedAt:    "2026-03-31T00:00:00Z",
+		Evidence:       "metering_records=3 bill_line_items=5",
+	}); err != nil {
+		t.Fatalf("RecordAction() error = %v", err)
+	}
+	if _, err := progressRepo.RecordAction(ctx, persistence.ScenarioLearnerActionRecordRequest{
+		ScenarioRunID:  runID,
+		ActionID:       "close-march",
+		ActionSequence: 2,
+		ActionType:     "close_billing_period",
+		ActionStatus:   persistence.ScenarioLearnerActionStatusCompleted,
+		CompletedAt:    "2026-04-01T00:00:00Z",
+		Evidence:       "bill=bill-feedback",
+	}); err != nil {
+		t.Fatalf("RecordAction(close) error = %v", err)
+	}
+	if _, err := progressRepo.CompleteRun(ctx, persistence.ScenarioLearnerRunCompleteRequest{
+		ScenarioRunID:         runID,
+		RunStatus:             "succeeded",
+		CurrentObjectiveState: persistence.ScenarioProgressStateInProgress,
+		CurrentObjective:      "Run scenario assessment checks",
+		CompletedAt:           "2026-04-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("CompleteRun() error = %v", err)
+	}
+	if _, err := progressRepo.RecordCheckResults(ctx, persistence.ScenarioLearnerCheckResultRecordRequest{
+		ScenarioRunID: runID,
+		EvaluatedAt:   "2026-04-01T01:00:00Z",
+		Results: []persistence.ScenarioLearnerCheckResult{{
+			CheckID:       "check-top-driver",
+			CheckSequence: 1,
+			CheckType:     "identifies_top_driver",
+			Status:        "passed",
+			Expected:      "Amazon EC2",
+			Actual:        "Amazon EC2 cost_micros=1230000",
+			Message:       "Amazon EC2 is the top cost driver",
+		}},
+	}); err != nil {
+		t.Fatalf("RecordCheckResults() error = %v", err)
+	}
+
+	client := http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(server.URL() + "/scenarios")
+	if err != nil {
+		t.Fatalf("GET /scenarios error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, scenarioFeedbackPath(runID)) {
+		t.Fatalf("GET /scenarios body missing feedback report link: %s", body)
+	}
+
+	resp, err = client.Get(server.URL() + scenarioFeedbackPath(runID))
+	if err != nil {
+		t.Fatalf("GET /scenarios/feedback error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios/feedback status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<title>Scenario Feedback - AWS Billing Simulator</title>`,
+		"Learner Feedback",
+		"Feedback Fixture",
+		"This run applied 2 of 2 scenario events",
+		"scenario_learner_actions",
+		"Run Daily Metering",
+		"Converted eligible usage events into metering records and estimated bill line items.",
+		"metering_records, bill_line_items",
+		"Estimated billing turns usage into metered and priced line items before month end.",
+		"Identifies Top Driver",
+		"Amazon EC2 cost_micros=1230000",
+		"Cost Explorer-style grouping identifies the dominant service or usage driver in bill line items.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /scenarios/feedback body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1973,6 +2140,8 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		"Reset to Seed",
 		"Clone Workspace",
 		"Archive Review Bundle",
+		"Feedback Report",
+		`/scenarios/feedback?scenario_run_id=`,
 		"Succeeded",
 		"Completed",
 		"8/8 actions",
@@ -2006,6 +2175,26 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 	if progressState != persistence.ScenarioProgressStateCompleted {
 		t.Fatalf("scenario learner progress state = %q, want completed", progressState)
+	}
+
+	resp, err = client.Get(server.URL() + scenarioFeedbackPath(runID))
+	if err != nil {
+		t.Fatalf("GET /scenarios/feedback packaged run error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /scenarios/feedback packaged run status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"First consolidated bill",
+		"This run applied 8 of 8 scenario events",
+		"Create Account",
+		"Close Billing Period",
+		"Final bills and invoices tie payer obligations back to immutable source line items.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /scenarios/feedback packaged run body missing %q: %s", want, body)
+		}
 	}
 
 	resp, err = client.PostForm(server.URL()+"/scenarios/archive", url.Values{
@@ -2047,8 +2236,8 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 			reconciliationCount++
 		}
 	}
-	if !archiveNames["manifest.json"] || !archiveNames["workspace/simulator.db"] || curExportCount != 1 || reconciliationCount != 1 {
-		t.Fatalf("archive entries = %+v, want manifest, database, one CUR CSV, and one reconciliation JSON", archiveNames)
+	if !archiveNames["manifest.json"] || !archiveNames["workspace/simulator.db"] || !archiveNames["feedback-report.json"] || curExportCount != 1 || reconciliationCount != 1 {
+		t.Fatalf("archive entries = %+v, want manifest, feedback report, database, one CUR CSV, and one reconciliation JSON", archiveNames)
 	}
 
 	resp, err = client.PostForm(server.URL()+"/scenarios/reset", url.Values{

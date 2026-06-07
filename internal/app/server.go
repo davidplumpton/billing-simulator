@@ -174,6 +174,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/payments", payments.handlePayments)
 	mux.HandleFunc("/payments/action", payments.handlePaymentAction)
 	mux.HandleFunc("/scenarios", scenarios.handleScenarios)
+	mux.HandleFunc("/scenarios/feedback", scenarios.handleScenarioFeedback)
 	mux.HandleFunc("/scenarios/editor", scenarios.handleScenarioEditor)
 	mux.HandleFunc("/scenarios/editor/validate", scenarios.handleValidateScenarioEditor)
 	mux.HandleFunc("/scenarios/launch", scenarios.handleLaunchScenario)

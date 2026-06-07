@@ -78,6 +78,7 @@ type scenarioCardView struct {
 	ResumeLabel       string
 	ResumePath        string
 	ClonePath         string
+	FeedbackPath      string
 	HasLastRun        bool
 	LastRun           scenarioRunView
 }
@@ -99,6 +100,7 @@ type scenarioRunView struct {
 	ProgressClass    string
 	ProgressSummary  string
 	CheckSummary     string
+	FeedbackPath     string
 	StartedAt        string
 	CompletedAt      string
 	ErrorMessage     string
@@ -234,7 +236,7 @@ func (h scenarioHandler) renderScenarios(w http.ResponseWriter, r *http.Request,
 		Error:                errorMessage,
 		WorkspaceEmptyState:  uiWorkspaceRequiredState(),
 		Tables: scenarioTablesView{
-			RecentRuns: uiTable(uiTableHeaders("Scenario", "Status", "Progress", "Events", "Resources", "Usage", "Bills", "Current Event", "Completed"), "No scenario runs"),
+			RecentRuns: uiTable(uiTableHeaders("Scenario", "Status", "Progress", "Events", "Resources", "Usage", "Bills", "Current Event", "Feedback", "Completed"), "No scenario runs"),
 		},
 	}
 	if h.db != nil {
@@ -324,6 +326,7 @@ func (h scenarioHandler) loadScenarioCatalog(ctx context.Context) ([]scenarioCar
 				return nil, err
 			}
 			card.LastRun = scenarioRunViewFromAudit(run, progress)
+			card.FeedbackPath = card.LastRun.FeedbackPath
 			card.StartLabel = "Start New Run"
 		}
 		cards = append(cards, card)
@@ -453,6 +456,7 @@ func scenarioRunViewFromAudit(run scenarioRunAudit, progress persistence.Scenari
 		MeteringRecords:  strconv.Itoa(run.MeteringRecordsCreated),
 		BillLineItems:    strconv.Itoa(run.BillLineItemsCreated),
 		BillsIssued:      strconv.Itoa(run.BillsIssued),
+		FeedbackPath:     scenarioFeedbackPath(run.ID),
 		StartedAt:        run.StartedAt,
 		CompletedAt:      run.CompletedAt,
 		ErrorMessage:     run.ErrorMessage,
@@ -870,6 +874,7 @@ var scenariosPageTemplate = newPageTemplate("scenarios-page", `<div class="page-
 									<button type="submit">{{.StartLabel}}</button>
 								</form>
 								{{if .HasLastRun}}<a class="button-link secondary" href="{{.ResumePath}}">{{.ResumeLabel}}</a>{{end}}
+								{{if .FeedbackPath}}<a class="button-link secondary" href="{{.FeedbackPath}}">Feedback Report</a>{{end}}
 							</div>
 							{{if and .HasLastRun $.WorkspaceActionReady}}
 								<div class="scenario-management-actions">
@@ -918,6 +923,7 @@ var scenariosPageTemplate = newPageTemplate("scenarios-page", `<div class="page-
 									<td>{{.UsageEvents}}</td>
 									<td>{{.BillsIssued}}</td>
 									<td>{{.CurrentEventID}}</td>
+									<td>{{if .FeedbackPath}}<a href="{{.FeedbackPath}}">Report</a>{{else}}-{{end}}</td>
 									<td>{{if .CompletedAt}}{{.CompletedAt}}{{else}}{{.StartedAt}}{{end}}{{if .ErrorMessage}}<small>{{.ErrorMessage}}</small>{{end}}</td>
 								</tr>
 							{{else}}

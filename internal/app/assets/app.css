@@ -920,6 +920,26 @@ code {
 	white-space: nowrap;
 }
 
+.scenario-feedback-state {
+	margin-top: 0;
+}
+
+.scenario-feedback-copy {
+	display: grid;
+	gap: 10px;
+	max-width: 980px;
+}
+
+.scenario-feedback-copy p {
+	margin: 0;
+}
+
+.scenario-feedback-table td {
+	min-width: 110px;
+	vertical-align: top;
+	overflow-wrap: anywhere;
+}
+
 .scenario-editor-layout {
 	display: grid;
 	grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);

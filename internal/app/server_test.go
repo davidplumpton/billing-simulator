@@ -3115,6 +3115,29 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		}
 	}
 
+	viewerOnlyReconciliationQuery := url.Values{
+		"viewer_role":       {"member-account"},
+		"viewer_account_id": {"111122223333"},
+	}
+	resp, err = client.Get(server.URL + "/exports/reconciliation?" + viewerOnlyReconciliationQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/reconciliation viewer-only filter error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET /exports/reconciliation viewer-only filter status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	for _, want := range []string{
+		`href="/exports/reconciliation">Clear</a>`,
+		`name="viewer_account_id" value="111122223333"`,
+		`value="member-account" selected`,
+		"CUR-like export reconciliation billing period start and end are required",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /exports/reconciliation viewer-only filter body missing %q: %s", want, body)
+		}
+	}
+
 	memberQuery := url.Values{
 		"billing_period_start": {"2026-02-01"},
 		"billing_period_end":   {"2026-03-01"},
@@ -3273,6 +3296,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		"visible-line-items",
 		"not-available",
 		"viewer_role=member-account",
+		`href="/exports/reconciliation">Clear</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /exports/reconciliation member viewer body missing %q: %s", want, body)

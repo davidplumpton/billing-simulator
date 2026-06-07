@@ -972,6 +972,8 @@ func exportReconciliationFilterFromRequest(r *http.Request) exportReconciliation
 		filter.BillingPeriodEnd != "" ||
 		filter.PayerAccountID != "" ||
 		filter.UsageAccountID != "" ||
+		filter.ViewerRole != "" ||
+		filter.ViewerAccountID != "" ||
 		filter.LineItemStatus != "" ||
 		filter.Limit != ""
 	return filter

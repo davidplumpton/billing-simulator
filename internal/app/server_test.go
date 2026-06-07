@@ -3153,6 +3153,29 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		}
 	}
 
+	limitedReconciliationQuery := url.Values{}
+	for key, values := range query {
+		limitedReconciliationQuery[key] = values
+	}
+	limitedReconciliationQuery.Set("limit", "1")
+	resp, err = client.Get(server.URL + "/exports/reconciliation?" + limitedReconciliationQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/reconciliation limited error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/reconciliation limited status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"excluded-lines",
+		`href="/exports/cur.csv?`,
+		"limit=1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /exports/reconciliation limited body missing %q: %s", want, body)
+		}
+	}
+
 	viewerOnlyReconciliationQuery := url.Values{
 		"viewer_role":       {"member-account"},
 		"viewer_account_id": {"111122223333"},

@@ -142,6 +142,7 @@ type CURExportReconciliationReport struct {
 	PayerAccountID     string
 	UsageAccountID     string
 	LineItemStatus     string
+	Limit              int
 	CurrencyCode       string
 	BillID             string
 	BillState          string
@@ -418,6 +419,7 @@ func (r CURLineItemRepository) GetReconciliationReport(ctx context.Context, requ
 		PayerAccountID:     request.PayerAccountID,
 		UsageAccountID:     request.UsageAccountID,
 		LineItemStatus:     request.LineItemStatus,
+		Limit:              request.Limit,
 		CurrencyCode:       defaultBillCurrencyCode,
 	}
 	applyCURExportTotals(&report, items)

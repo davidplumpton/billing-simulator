@@ -1236,6 +1236,7 @@ func exportReconciliationReportViewFromReport(report persistence.CURExportReconc
 			PayerAccountID:     report.PayerAccountID,
 			UsageAccountID:     report.UsageAccountID,
 			LineItemStatus:     report.LineItemStatus,
+			Limit:              report.Limit,
 		}, viewer),
 	}
 	view.DocumentRows = []exportReconciliationDocumentRowView{

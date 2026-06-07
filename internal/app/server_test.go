@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"context"
 	"database/sql"
 	"encoding/csv"
@@ -1670,6 +1671,40 @@ func TestScenariosUIRequiresWorkspace(t *testing.T) {
 	if !strings.Contains(body, "Open a workspace before launching scenarios.") {
 		t.Fatalf("POST /scenarios/launch without workspace missing workspace message: %s", body)
 	}
+
+	for _, action := range []struct {
+		path string
+		form url.Values
+		want string
+	}{
+		{
+			path: "/scenarios/reset",
+			form: url.Values{"scenario_key": {"first-consolidated-bill"}},
+			want: "Open a workspace before resetting scenarios.",
+		},
+		{
+			path: "/scenarios/clone",
+			form: url.Values{"clone_workspace_path": {filepath.Join(t.TempDir(), "clone")}},
+			want: "Open a workspace before cloning scenarios.",
+		},
+		{
+			path: "/scenarios/archive",
+			form: url.Values{"scenario_run_id": {"run_missing"}},
+			want: "Open a workspace before archiving scenarios.",
+		},
+	} {
+		resp, err = client.PostForm(server.URL+action.path, action.form)
+		if err != nil {
+			t.Fatalf("POST %s without workspace error = %v", action.path, err)
+		}
+		body = readResponseBody(t, resp)
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("POST %s without workspace status = %d, want %d; body=%s", action.path, resp.StatusCode, http.StatusServiceUnavailable, body)
+		}
+		if !strings.Contains(body, action.want) {
+			t.Fatalf("POST %s without workspace missing %q: %s", action.path, action.want, body)
+		}
+	}
 }
 
 func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
@@ -1754,6 +1789,12 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		"Launched First consolidated bill: 8/8 events succeeded, 1 bill issued",
 		"Start New Run",
 		"Resume in Bills",
+		`action="/scenarios/reset"`,
+		`action="/scenarios/clone"`,
+		`action="/scenarios/archive"`,
+		"Reset to Seed",
+		"Clone Workspace",
+		"Archive Review Bundle",
 		"Succeeded",
 		"8/8",
 		"Recent Runs",
@@ -1764,17 +1805,116 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		}
 	}
 
-	var status string
+	var runID, status string
 	var eventsSucceeded, billsIssued int
 	if err := db.QueryRowContext(ctx, `
-		SELECT status, events_succeeded, bills_issued
+		SELECT id, status, events_succeeded, bills_issued
 		FROM scenario_runs
 		WHERE definition_name = ?
-	`, "First consolidated bill").Scan(&status, &eventsSucceeded, &billsIssued); err != nil {
+	`, "First consolidated bill").Scan(&runID, &status, &eventsSucceeded, &billsIssued); err != nil {
 		t.Fatalf("read launched scenario run: %v", err)
 	}
 	if status != "succeeded" || eventsSucceeded != 8 || billsIssued != 1 {
 		t.Fatalf("scenario run audit = %q/%d/%d, want succeeded/8/1", status, eventsSucceeded, billsIssued)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/scenarios/archive", url.Values{
+		"scenario_run_id": {runID},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/archive error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/archive final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Archived review bundle to") || !strings.Contains(body, "with 2 export files") {
+		t.Fatalf("POST /scenarios/archive body missing archive confirmation: %s", body)
+	}
+	archiveDir := filepath.Join(cfg.WorkspacePath, "review-archives")
+	archiveEntries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatalf("read archive directory: %v", err)
+	}
+	if len(archiveEntries) != 1 {
+		t.Fatalf("archive entries = %d, want 1", len(archiveEntries))
+	}
+	archivePath := filepath.Join(archiveDir, archiveEntries[0].Name())
+	archiveReader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatalf("open review archive: %v", err)
+	}
+	defer archiveReader.Close()
+	archiveNames := map[string]bool{}
+	curExportCount := 0
+	reconciliationCount := 0
+	for _, file := range archiveReader.File {
+		archiveNames[file.Name] = true
+		if strings.HasSuffix(file.Name, "-cur.csv") {
+			curExportCount++
+		}
+		if strings.HasSuffix(file.Name, "-reconciliation.json") {
+			reconciliationCount++
+		}
+	}
+	if !archiveNames["manifest.json"] || !archiveNames["workspace/simulator.db"] || curExportCount != 1 || reconciliationCount != 1 {
+		t.Fatalf("archive entries = %+v, want manifest, database, one CUR CSV, and one reconciliation JSON", archiveNames)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/scenarios/reset", url.Values{
+		"scenario_key": {"first-consolidated-bill"},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/reset error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/reset final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Reset First consolidated bill to seed: 8/8 events succeeded, 1 bill issued") {
+		t.Fatalf("POST /scenarios/reset body missing reset confirmation: %s", body)
+	}
+	resetDB := server.workspace.DB()
+	if resetDB == nil {
+		t.Fatal("workspace database is nil after reset")
+	}
+	var runCount int
+	if err := resetDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_runs WHERE definition_name = ?`, "First consolidated bill").Scan(&runCount); err != nil {
+		t.Fatalf("count scenario reset runs: %v", err)
+	}
+	if runCount != 1 {
+		t.Fatalf("scenario run count after reset = %d, want 1", runCount)
+	}
+
+	clonePath := filepath.Join(root, "scenario-clone-workspace")
+	resp, err = client.PostForm(server.URL()+"/scenarios/clone", url.Values{
+		"clone_workspace_path": {clonePath},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/clone error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/clone final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Cloned workspace to "+clonePath) || !strings.Contains(body, "Recent Runs") {
+		t.Fatalf("POST /scenarios/clone body missing clone confirmation or scenario page: %s", body)
+	}
+	if got := server.workspace.CurrentPath(); got != clonePath {
+		t.Fatalf("current workspace path after clone = %q, want %q", got, clonePath)
+	}
+	if _, err := os.Stat(persistence.WorkspaceDBPath(clonePath)); err != nil {
+		t.Fatalf("cloned workspace database missing: %v", err)
+	}
+	clonedDB := server.workspace.DB()
+	if clonedDB == nil {
+		t.Fatal("workspace database is nil after clone")
+	}
+	if err := clonedDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_runs WHERE definition_name = ?`, "First consolidated bill").Scan(&runCount); err != nil {
+		t.Fatalf("count cloned scenario runs: %v", err)
+	}
+	if runCount != 1 {
+		t.Fatalf("cloned scenario run count = %d, want 1", runCount)
 	}
 }
 

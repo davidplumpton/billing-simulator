@@ -13,17 +13,19 @@ import (
 )
 
 type scenarioHandler struct {
-	db *sql.DB
+	db        *sql.DB
+	workspace *workspaceSession
 }
 
 type scenariosPageData struct {
-	WorkspaceReady      bool
-	Error               string
-	Notices             []uiNoticeView
-	WorkspaceEmptyState uiEmptyStateView
-	Scenarios           []scenarioCardView
-	RecentRuns          []scenarioRunView
-	Tables              scenarioTablesView
+	WorkspaceReady       bool
+	WorkspaceActionReady bool
+	Error                string
+	Notices              []uiNoticeView
+	WorkspaceEmptyState  uiEmptyStateView
+	Scenarios            []scenarioCardView
+	RecentRuns           []scenarioRunView
+	Tables               scenarioTablesView
 }
 
 type scenarioTablesView struct {
@@ -42,6 +44,7 @@ type scenarioCardView struct {
 	StartLabel        string
 	ResumeLabel       string
 	ResumePath        string
+	ClonePath         string
 	HasLastRun        bool
 	LastRun           scenarioRunView
 }
@@ -95,6 +98,14 @@ func newScenarioHandler(db *sql.DB) scenarioHandler {
 	return scenarioHandler{db: db}
 }
 
+// newWorkspaceScenarioHandler connects scenario actions to the current workspace session.
+func newWorkspaceScenarioHandler(workspace *workspaceSession) scenarioHandler {
+	if workspace == nil {
+		return scenarioHandler{}
+	}
+	return scenarioHandler{db: workspace.DB(), workspace: workspace}
+}
+
 // handleScenarios renders packaged scenario definitions and recent run attempts.
 func (h scenarioHandler) handleScenarios(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -144,9 +155,10 @@ func (h scenarioHandler) handleLaunchScenario(w http.ResponseWriter, r *http.Req
 // renderScenarios prepares page view data without mutating scenario state.
 func (h scenarioHandler) renderScenarios(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	data := scenariosPageData{
-		WorkspaceReady:      h.db != nil,
-		Error:               errorMessage,
-		WorkspaceEmptyState: uiWorkspaceRequiredState(),
+		WorkspaceReady:       h.db != nil,
+		WorkspaceActionReady: h.db != nil && h.currentWorkspacePath() != "",
+		Error:                errorMessage,
+		WorkspaceEmptyState:  uiWorkspaceRequiredState(),
 		Tables: scenarioTablesView{
 			RecentRuns: uiTable(uiTableHeaders("Scenario", "Status", "Events", "Resources", "Usage", "Bills", "Current Event", "Completed"), "No scenario runs"),
 		},
@@ -209,6 +221,7 @@ func (h scenarioHandler) loadScenarioCatalog(ctx context.Context) ([]scenarioCar
 			StartLabel:        "Start Lab",
 			ResumeLabel:       meta.ResumeLabel,
 			ResumePath:        meta.ResumePath,
+			ClonePath:         defaultScenarioClonePath(h.currentWorkspacePath(), key),
 		}
 		run, err := h.latestScenarioRun(ctx, definition.Name)
 		if err != nil {
@@ -502,6 +515,24 @@ var scenariosPageTemplate = newPageTemplate("scenarios-page", `<div class="page-
 								</form>
 								{{if .HasLastRun}}<a class="button-link secondary" href="{{.ResumePath}}">{{.ResumeLabel}}</a>{{end}}
 							</div>
+							{{if and .HasLastRun $.WorkspaceActionReady}}
+								<div class="scenario-management-actions">
+									<form method="post" action="/scenarios/reset">
+										<input type="hidden" name="scenario_key" value="{{.Key}}">
+										<button type="submit">Reset to Seed</button>
+									</form>
+									<form method="post" action="/scenarios/clone" class="scenario-clone-form">
+										<label class="form-row">Clone Workspace Path
+											<input name="clone_workspace_path" value="{{.ClonePath}}" required>
+										</label>
+										<button type="submit">Clone Workspace</button>
+									</form>
+									<form method="post" action="/scenarios/archive">
+										<input type="hidden" name="scenario_run_id" value="{{.LastRun.ID}}">
+										<button type="submit">Archive Review Bundle</button>
+									</form>
+								</div>
+							{{end}}
 						</article>
 					{{else}}
 						<section class="empty">

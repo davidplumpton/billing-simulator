@@ -175,6 +175,9 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/payments/action", payments.handlePaymentAction)
 	mux.HandleFunc("/scenarios", scenarios.handleScenarios)
 	mux.HandleFunc("/scenarios/launch", scenarios.handleLaunchScenario)
+	mux.HandleFunc("/scenarios/reset", scenarios.handleResetScenario)
+	mux.HandleFunc("/scenarios/clone", scenarios.handleCloneWorkspace)
+	mux.HandleFunc("/scenarios/archive", scenarios.handleArchiveScenario)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")

@@ -891,6 +891,35 @@ code {
 	margin-top: 0;
 }
 
+.scenario-management-actions {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 10px;
+	border-top: 1px solid var(--line);
+	padding-top: 12px;
+}
+
+.scenario-management-actions form {
+	margin: 0;
+}
+
+.scenario-management-actions button {
+	margin-top: 0;
+	width: 100%;
+}
+
+.scenario-clone-form {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: end;
+	gap: 10px;
+}
+
+.scenario-clone-form button {
+	width: auto;
+	white-space: nowrap;
+}
+
 .invoice-document {
 	background: var(--surface);
 	border: 1px solid var(--line);
@@ -996,9 +1025,14 @@ code {
 		.filter-form,
 		.saved-report-picker,
 		.clock-form,
+		.scenario-clone-form,
 		.invoice-meta-grid,
 	.invoice-total-grid {
 		grid-template-columns: 1fr;
+	}
+
+	.scenario-clone-form button {
+		width: 100%;
 	}
 
 	.invoice-title-row > div:last-child {

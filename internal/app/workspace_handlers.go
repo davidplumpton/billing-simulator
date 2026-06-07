@@ -218,10 +218,19 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 		newPaymentsHandler(workspace.DB()).handlePaymentAction(w, r)
 	})
 	mux.HandleFunc("/scenarios", func(w http.ResponseWriter, r *http.Request) {
-		newScenarioHandler(workspace.DB()).handleScenarios(w, r)
+		newWorkspaceScenarioHandler(workspace).handleScenarios(w, r)
 	})
 	mux.HandleFunc("/scenarios/launch", func(w http.ResponseWriter, r *http.Request) {
-		newScenarioHandler(workspace.DB()).handleLaunchScenario(w, r)
+		newWorkspaceScenarioHandler(workspace).handleLaunchScenario(w, r)
+	})
+	mux.HandleFunc("/scenarios/reset", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceScenarioHandler(workspace).handleResetScenario(w, r)
+	})
+	mux.HandleFunc("/scenarios/clone", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceScenarioHandler(workspace).handleCloneWorkspace(w, r)
+	})
+	mux.HandleFunc("/scenarios/archive", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceScenarioHandler(workspace).handleArchiveScenario(w, r)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

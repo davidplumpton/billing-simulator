@@ -282,6 +282,10 @@ func scenarioActionWhatChanged(actionType string) string {
 		return "Created a simulated payer payment method."
 	case "schedule_payment", "process_payment", "fail_payment", "mark_payment_due":
 		return "Moved the latest invoice obligation through the simulated payment lifecycle."
+	case "mark_payment_past_due":
+		return "Moved the latest invoice obligation into past-due remediation."
+	case "collect_payment":
+		return "Applied simulated funds to the latest invoice obligation and updated remaining balance."
 	default:
 		return "Recorded a scenario action outcome."
 	}

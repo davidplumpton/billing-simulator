@@ -27,32 +27,7 @@ func TestScenarioFeedbackDataSourceLabelsReferenceSchemaObjects(t *testing.T) {
 	defer db.Close()
 
 	schemaObjects := scenarioFeedbackSchemaObjectNames(t, ctx, db)
-	actionTypes := []scenario.EventAction{
-		scenario.EventActionCreateAccount,
-		scenario.EventActionCreateResource,
-		scenario.EventActionAddUsage,
-		scenario.EventActionGenerateUsage,
-		scenario.EventActionAdvanceClock,
-		scenario.EventActionRunDailyMetering,
-		scenario.EventActionCloseBillingPeriod,
-		scenario.EventActionIssueBill,
-		scenario.EventActionRefreshCostAllocationTags,
-		scenario.EventActionActivateCostAllocationTag,
-		scenario.EventActionCreateCostCategory,
-		scenario.EventActionCreateCostCategoryRule,
-		scenario.EventActionCreateCostCategorySplitRule,
-		scenario.EventActionCreatePaymentMethod,
-		scenario.EventActionSchedulePayment,
-		scenario.EventActionProcessPayment,
-		scenario.EventActionFailPayment,
-		scenario.EventActionMarkPaymentDue,
-		scenario.EventActionMarkPaymentPastDue,
-		scenario.EventActionCollectPayment,
-		scenario.EventActionCreateBudget,
-		scenario.EventActionRefreshBudgetForecasts,
-		scenario.EventActionCreateSavedReport,
-	}
-	for _, actionType := range actionTypes {
+	for _, actionType := range supportedScenarioFeedbackActionTypes() {
 		assertScenarioFeedbackDataSourceExists(t, schemaObjects, "action "+string(actionType), scenarioActionDataSource(string(actionType)))
 	}
 	assertScenarioFeedbackDataSourceExists(t, schemaObjects, "action fallback", scenarioActionDataSource("unsupported_action"))
@@ -69,6 +44,22 @@ func TestScenarioFeedbackDataSourceLabelsReferenceSchemaObjects(t *testing.T) {
 		assertScenarioFeedbackDataSourceExists(t, schemaObjects, "check "+string(checkType), scenarioCheckDataSource(string(checkType)))
 	}
 	assertScenarioFeedbackDataSourceExists(t, schemaObjects, "check fallback", scenarioCheckDataSource("unsupported_check"))
+}
+
+func TestScenarioFeedbackSupportedActionsHaveSpecificLearnerCopy(t *testing.T) {
+	t.Parallel()
+
+	genericWhatChanged := scenarioActionWhatChanged("unsupported_action")
+	genericBillingConcept := scenarioActionBillingConcept("unsupported_action")
+	for _, actionType := range supportedScenarioFeedbackActionTypes() {
+		action := string(actionType)
+		if got := scenarioActionWhatChanged(action); got == "" || got == genericWhatChanged {
+			t.Errorf("scenarioActionWhatChanged(%q) = %q, want supported-action copy", action, got)
+		}
+		if got := scenarioActionBillingConcept(action); got == "" || got == genericBillingConcept {
+			t.Errorf("scenarioActionBillingConcept(%q) = %q, want supported-action concept copy", action, got)
+		}
+	}
 }
 
 func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
@@ -190,6 +181,35 @@ func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// supportedScenarioFeedbackActionTypes mirrors the parser's executable action set for mapper regression checks.
+func supportedScenarioFeedbackActionTypes() []scenario.EventAction {
+	return []scenario.EventAction{
+		scenario.EventActionCreateAccount,
+		scenario.EventActionCreateResource,
+		scenario.EventActionAddUsage,
+		scenario.EventActionGenerateUsage,
+		scenario.EventActionAdvanceClock,
+		scenario.EventActionRunDailyMetering,
+		scenario.EventActionCloseBillingPeriod,
+		scenario.EventActionIssueBill,
+		scenario.EventActionRefreshCostAllocationTags,
+		scenario.EventActionActivateCostAllocationTag,
+		scenario.EventActionCreateCostCategory,
+		scenario.EventActionCreateCostCategoryRule,
+		scenario.EventActionCreateCostCategorySplitRule,
+		scenario.EventActionCreatePaymentMethod,
+		scenario.EventActionSchedulePayment,
+		scenario.EventActionProcessPayment,
+		scenario.EventActionFailPayment,
+		scenario.EventActionMarkPaymentDue,
+		scenario.EventActionMarkPaymentPastDue,
+		scenario.EventActionCollectPayment,
+		scenario.EventActionCreateBudget,
+		scenario.EventActionRefreshBudgetForecasts,
+		scenario.EventActionCreateSavedReport,
 	}
 }
 

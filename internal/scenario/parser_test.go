@@ -276,6 +276,82 @@ func TestParseDefinitionValidatesCostCategoryEvents(t *testing.T) {
 	assertErrorContains(t, err, "events[2].targets fixed_share_micros sum to 900000, want 1000000")
 }
 
+func TestParseDefinitionValidatesBudgetAndReportEvents(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken budget fixture",
+		"clock": {
+			"start": "2026-02-01"
+		},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "bad-window",
+				"day": 1,
+				"action": "add_usage",
+				"account": "Storefront Prod",
+				"service": "Amazon EC2",
+				"amount_hours": 1,
+				"usage_start_at": "2026-02-10T00:00:00Z",
+				"usage_end_at": "2026-02-09T00:00:00Z"
+			},
+			{
+				"id": "bad-budget",
+				"day": 2,
+				"action": "create_budget",
+				"budget_amount_micros": -1,
+				"scope_type": "bad-scope",
+				"thresholds": [
+					{"type": "forecast", "basis_points": 0},
+					{"type": "forecast", "basis_points": 0}
+				]
+			},
+			{
+				"id": "bad-report",
+				"day": 3,
+				"action": "create_saved_report",
+				"owner_account": "Ghost Account",
+				"date_range_start": "2026-03-01",
+				"date_range_end": "2026-02-01",
+				"granularity": "weekly",
+				"chart_type": "pie",
+				"filters": {
+					"service": ["Amazon EC2", "Amazon EC2"]
+				},
+				"groupings": [
+					{"type": "dimension", "key": "service"},
+					{"type": "dimension", "key": "service"},
+					{"type": "bad", "key": ""}
+				],
+				"metrics": ["bogus"]
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want budget/report validation errors")
+	}
+	assertErrorContains(t, err, "events[0].usage_start_at must be before usage_end_at")
+	assertErrorContains(t, err, "events[1].budget_name is required for create_budget")
+	assertErrorContains(t, err, "events[1].billing_period_start and events[1].billing_period_end are required for create_budget")
+	assertErrorContains(t, err, "events[1].budget_amount_micros must be greater than zero for create_budget")
+	assertErrorContains(t, err, `events[1].scope_type "bad-scope" is not supported for create_budget`)
+	assertErrorContains(t, err, "events[1].scope_value is required for create_budget")
+	assertErrorContains(t, err, "events[1].thresholds[0].basis_points must be greater than zero")
+	assertErrorContains(t, err, `events[1].thresholds[1] duplicates threshold "forecast:0"`)
+	assertErrorContains(t, err, "events[2].report_name is required for create_saved_report")
+	assertErrorContains(t, err, "events[2].date_range_start must be before date_range_end")
+	assertErrorContains(t, err, `events[2].granularity "weekly" is not supported for create_saved_report`)
+	assertErrorContains(t, err, `events[2].chart_type "pie" is not supported for create_saved_report`)
+	assertErrorContains(t, err, `events[2].filters.service[1] "Amazon EC2" is duplicated`)
+	assertErrorContains(t, err, "events[2].groupings supports at most two values")
+	assertErrorContains(t, err, `events[2].groupings[1] duplicates grouping "dimension:service"`)
+	assertErrorContains(t, err, `events[2].groupings[2].type "bad" is not supported`)
+	assertErrorContains(t, err, "events[2].groupings[2].key is required")
+	assertErrorContains(t, err, `events[2].metrics[0] "bogus" is not supported`)
+	assertErrorContains(t, err, `events[2].owner_account "Ghost Account" is not in organization_template "anycompany-retail"`)
+}
+
 func TestParseDefinitionReportsActionableScenarioErrors(t *testing.T) {
 	raw := []byte(`{
 		"name": "Broken authoring fixture",

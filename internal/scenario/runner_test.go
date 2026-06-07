@@ -48,6 +48,9 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, PaymentFailureSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, PaymentFailureSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, ForecastBudgetAlertSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, ForecastBudgetAlertSeedKey)
+	}
 	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition() error = %v", err)
@@ -96,6 +99,19 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 		definition.Events[7].Action != EventActionFailPayment ||
 		definition.Events[8].Action != EventActionMarkPaymentDue {
 		t.Fatalf("payment failure definition = %+v, want failed-payment lab fixture", definition)
+	}
+	definition, err = LoadSeedDefinition(ForecastBudgetAlertSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", ForecastBudgetAlertSeedKey, err)
+	}
+	if definition.Name != "Forecast and Budget Alert" ||
+		len(definition.Events) != 7 ||
+		len(definition.Checks) != 2 ||
+		definition.Events[3].UsageStartAt != "2026-02-20T00:00:00Z" ||
+		definition.Events[4].Action != EventActionCreateBudget ||
+		definition.Events[5].Action != EventActionRefreshBudgetForecasts ||
+		definition.Events[6].Action != EventActionCreateSavedReport {
+		t.Fatalf("forecast budget alert definition = %+v, want budget forecast lab fixture", definition)
 	}
 }
 
@@ -640,6 +656,132 @@ func TestRunnerAppliesPaymentFailureSeed(t *testing.T) {
 	}
 	if !strings.Contains(transitionReasons["due"], "learner retry") {
 		t.Fatalf("due payment reason = %q, want retry guidance", transitionReasons["due"])
+	}
+}
+
+func TestRunnerAppliesForecastBudgetAlertSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(ForecastBudgetAlertSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", ForecastBudgetAlertSeedKey, err)
+	}
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(forecast budget alert) error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded ||
+		result.Run.EventsSucceeded != 7 ||
+		result.ResourcesCreated != 1 ||
+		result.UsageEventsCreated != 2 ||
+		result.MeteringRecordsCreated != 1 ||
+		result.BillLineItemsCreated != 2 ||
+		result.BillsIssued != 0 {
+		t.Fatalf("Run() result = %+v, want successful forecast budget alert lab counts", result)
+	}
+
+	budgetRepo := persistence.NewBudgetRepository(db)
+	budget, err := budgetRepo.GetBudget(ctx, "budget-scn-storefront-forecast-alert")
+	if err != nil {
+		t.Fatalf("GetBudget(forecast alert) error = %v", err)
+	}
+	if budget.Name != "Storefront February forecast guardrail" ||
+		budget.BillingPeriodStart != "2026-02-01" ||
+		budget.BillingPeriodEnd != "2026-03-01" ||
+		budget.BudgetAmountMicros != 3_000_000 ||
+		budget.ScopeType != persistence.BudgetScopeAccount ||
+		budget.ScopeValue != "111122223333" ||
+		len(budget.Thresholds) != 2 {
+		t.Fatalf("budget = %+v, want Storefront account forecast guardrail", budget)
+	}
+
+	summaries, err := budgetRepo.ListForecastSummaries(ctx, persistence.BudgetForecastSummaryListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListForecastSummaries() error = %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("forecast summaries = %+v, want one Storefront summary", summaries)
+	}
+	summary := summaries[0]
+	if summary.BudgetID != budget.ID ||
+		summary.CurrentTime != "2026-02-11T00:00:00Z" ||
+		summary.ElapsedDays != 10 ||
+		summary.PeriodDays != 28 ||
+		summary.ActualCostMicros != 998_400 ||
+		summary.RunRateForecastMicros != 2_795_520 ||
+		summary.ScheduledEventCostMicros != 499_200 ||
+		summary.ForecastCostMicros != 3_294_720 ||
+		summary.LineItemCount != 1 ||
+		summary.ScheduledUsageEventCount != 1 {
+		t.Fatalf("forecast summary = %+v, want actual run-rate plus scheduled future EC2 usage", summary)
+	}
+
+	evaluations, err := budgetRepo.EvaluateBudgets(ctx, persistence.BudgetEvaluationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("EvaluateBudgets() error = %v", err)
+	}
+	if len(evaluations) != 1 {
+		t.Fatalf("budget evaluations = %+v, want one Storefront budget", evaluations)
+	}
+	checks := evaluations[0].ThresholdChecks
+	if len(checks) != 2 ||
+		checks[0].ThresholdType != persistence.BudgetThresholdTypeActual ||
+		checks[0].Breached ||
+		checks[1].ThresholdType != persistence.BudgetThresholdTypeForecast ||
+		!checks[1].Breached ||
+		checks[1].SpendMicros != 3_294_720 {
+		t.Fatalf("threshold checks = %+v, want actual OK and forecast breached", checks)
+	}
+
+	alerts, err := budgetRepo.ListAlertNotifications(ctx, persistence.BudgetAlertNotificationListRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListAlertNotifications() error = %v", err)
+	}
+	if len(alerts) != 1 ||
+		alerts[0].BudgetID != budget.ID ||
+		alerts[0].ThresholdType != persistence.BudgetThresholdTypeForecast ||
+		alerts[0].SpendMicros != 3_294_720 ||
+		!strings.Contains(alerts[0].Message, "forecast threshold crossed") {
+		t.Fatalf("alert notifications = %+v, want one forecast breach alert", alerts)
+	}
+
+	report, err := persistence.NewSavedReportRepository(db).Get(ctx, "saved-report-scn-storefront-forecast-drilldown")
+	if err != nil {
+		t.Fatalf("Get(saved report) error = %v", err)
+	}
+	if report.Name != "Storefront forecast spike drilldown" ||
+		report.OwnerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		report.OwnerRole != "management-account" ||
+		report.DateRangeStart != "2026-02-01" ||
+		report.DateRangeEnd != "2026-03-01" ||
+		strings.Join(report.Filters["linked_account"], ",") != "111122223333" ||
+		len(report.Groupings) != 2 ||
+		report.Groupings[0].Key != "service" ||
+		report.Groupings[1].Key != "usage_type" {
+		t.Fatalf("saved report = %+v, want Storefront service/usage-type drilldown", report)
+	}
+
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM usage_events u
+		LEFT JOIN bill_line_items b ON b.usage_event_id = u.id
+		WHERE u.scenario_event_id = ?
+		  AND u.usage_start_time = ?
+		  AND b.id IS NULL`,
+		"scheduled-storefront-scale-up",
+		"2026-02-20T00:00:00Z"); got != 1 {
+		t.Fatalf("unmetered scheduled forecast usage rows = %d, want 1", got)
 	}
 }
 

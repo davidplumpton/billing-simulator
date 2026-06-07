@@ -22,6 +22,9 @@ const (
 	// PaymentFailureSeedKey identifies the packaged failed-payment remediation lab.
 	PaymentFailureSeedKey = "payment-failure"
 
+	// ForecastBudgetAlertSeedKey identifies the packaged budget forecast alert lab.
+	ForecastBudgetAlertSeedKey = "forecast-budget-alert"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

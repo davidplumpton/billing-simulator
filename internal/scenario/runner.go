@@ -31,6 +31,8 @@ type Runner struct {
 	tags         persistence.CostAllocationTagRepository
 	categories   persistence.CostCategoryRepository
 	splitCharges persistence.CostCategorySplitChargeRepository
+	budgets      persistence.BudgetRepository
+	reports      persistence.SavedReportRepository
 	profiles     persistence.PaymentProfileRepository
 	payments     persistence.PaymentLifecycleRepository
 	daily        persistence.DailyMeteringJobRepository
@@ -47,6 +49,8 @@ func NewRunner(db *sql.DB) Runner {
 		tags:         persistence.NewCostAllocationTagRepository(db),
 		categories:   persistence.NewCostCategoryRepository(db),
 		splitCharges: persistence.NewCostCategorySplitChargeRepository(db),
+		budgets:      persistence.NewBudgetRepository(db),
+		reports:      persistence.NewSavedReportRepository(db),
 		profiles:     persistence.NewPaymentProfileRepository(db),
 		payments:     persistence.NewPaymentLifecycleRepository(db),
 		daily:        persistence.NewDailyMeteringJobRepository(db),
@@ -326,11 +330,198 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		if _, err := r.applyPaymentLifecycleEvent(ctx, state, event, scheduledAt); err != nil {
 			return failScenarioRunEvent(audit, err)
 		}
+	case EventActionCreateBudget:
+		if _, err := r.createBudget(ctx, state, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionRefreshBudgetForecasts:
+		if err := r.refreshBudgetForecasts(ctx, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionCreateSavedReport:
+		if _, err := r.createSavedReport(ctx, state, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
 	default:
 		err := fmt.Errorf("scenario event action %q is not executable", event.Action)
 		return failScenarioRunEvent(audit, err)
 	}
 	return audit, nil
+}
+
+// createBudget prepares a budget lab guardrail and reuses matching rows so scenario reruns stay executable.
+func (r Runner) createBudget(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.Budget, error) {
+	if existing, ok, err := r.existingScenarioBudget(ctx, event); err != nil {
+		return persistence.Budget{}, err
+	} else if ok {
+		return existing, nil
+	}
+
+	scopeValue := event.ScopeValue
+	if event.ScopeType == persistence.BudgetScopeAccount {
+		scopeValue = state.resolveAccountID("", event.ScopeValue)
+	}
+	thresholds := make([]persistence.BudgetThresholdCreateRequest, 0, len(event.Thresholds))
+	for i, threshold := range event.Thresholds {
+		thresholdID := threshold.ID
+		if thresholdID == "" {
+			thresholdID = stableScenarioID("budt_scn", state.runID, event.ID, threshold.Type, strconv.Itoa(threshold.BasisPoints), strconv.Itoa(i))
+		}
+		thresholds = append(thresholds, persistence.BudgetThresholdCreateRequest{
+			ID:                   thresholdID,
+			ThresholdType:        threshold.Type,
+			ThresholdBasisPoints: threshold.BasisPoints,
+		})
+	}
+	budgetID := event.BudgetID
+	if budgetID == "" {
+		budgetID = stableScenarioID("bud_scn", state.runID, event.ID, event.BudgetName)
+	}
+	return r.budgets.CreateBudget(ctx, persistence.BudgetCreateRequest{
+		ID:                 budgetID,
+		Name:               event.BudgetName,
+		Description:        event.Description,
+		BillingPeriodStart: event.BillingPeriodStart,
+		BillingPeriodEnd:   event.BillingPeriodEnd,
+		BudgetAmountMicros: event.BudgetAmountMicros,
+		CurrencyCode:       event.CurrencyCode,
+		ScopeType:          event.ScopeType,
+		ScopeKey:           event.ScopeKey,
+		ScopeValue:         scopeValue,
+		Status:             event.Status,
+		Thresholds:         thresholds,
+	})
+}
+
+// refreshBudgetForecasts mirrors the browser refresh action for packaged budget labs.
+func (r Runner) refreshBudgetForecasts(ctx context.Context, event Event) error {
+	forecast, err := r.budgets.RefreshForecastSummaries(ctx, persistence.BudgetForecastRefreshRequest{
+		BillingPeriodStart: event.BillingPeriodStart,
+		BillingPeriodEnd:   event.BillingPeriodEnd,
+	})
+	if err != nil {
+		return err
+	}
+	evaluations, err := r.budgets.EvaluateBudgets(ctx, persistence.BudgetEvaluationRequest{
+		BillingPeriodStart: forecast.BillingPeriodStart,
+		BillingPeriodEnd:   forecast.BillingPeriodEnd,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = r.budgets.RecordAlertNotifications(ctx, evaluations)
+	return err
+}
+
+// createSavedReport seeds a Cost Explorer drilldown report and updates it on rerun.
+func (r Runner) createSavedReport(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.SavedReport, error) {
+	request := persistence.SavedReportCreateRequest{
+		ID:             event.ReportID,
+		Name:           event.ReportName,
+		Description:    event.Description,
+		OwnerAccountID: state.resolveAccountID(event.OwnerAccountID, event.OwnerAccount),
+		OwnerRole:      event.OwnerRole,
+		DateRangeStart: event.DateRangeStart,
+		DateRangeEnd:   event.DateRangeEnd,
+		Granularity:    event.Granularity,
+		Filters:        event.Filters,
+		Groupings:      scenarioReportGroupings(event.Groupings),
+		Metrics:        append([]string(nil), event.Metrics...),
+		ChartType:      event.ChartType,
+	}
+	if existing, ok, err := r.existingScenarioSavedReport(ctx, request); err != nil {
+		return persistence.SavedReport{}, err
+	} else if ok {
+		return r.rewriteScenarioSavedReport(ctx, existing.ID, request)
+	}
+	if request.ID == "" {
+		request.ID = stableScenarioID("sr_scn", state.runID, event.ID, event.ReportName)
+	}
+	return r.reports.Create(ctx, request)
+}
+
+func (r Runner) existingScenarioBudget(ctx context.Context, event Event) (persistence.Budget, bool, error) {
+	var id string
+	var err error
+	if event.BudgetID != "" {
+		err = r.db.QueryRowContext(ctx, `SELECT id FROM budgets WHERE id = ?`, event.BudgetID).Scan(&id)
+	} else {
+		err = r.db.QueryRowContext(ctx, `SELECT id
+			FROM budgets
+			WHERE billing_period_start = ?
+			  AND billing_period_end = ?
+			  AND lower(name) = lower(?)`,
+			event.BillingPeriodStart,
+			event.BillingPeriodEnd,
+			event.BudgetName,
+		).Scan(&id)
+	}
+	if err == sql.ErrNoRows {
+		return persistence.Budget{}, false, nil
+	}
+	if err != nil {
+		return persistence.Budget{}, false, fmt.Errorf("check existing scenario budget %q: %w", event.BudgetName, err)
+	}
+	budget, err := r.budgets.GetBudget(ctx, id)
+	if err != nil {
+		return persistence.Budget{}, false, err
+	}
+	return budget, true, nil
+}
+
+func (r Runner) existingScenarioSavedReport(ctx context.Context, request persistence.SavedReportCreateRequest) (persistence.SavedReport, bool, error) {
+	var id string
+	var err error
+	if request.ID != "" {
+		err = r.db.QueryRowContext(ctx, `SELECT id FROM saved_reports WHERE id = ?`, request.ID).Scan(&id)
+	} else {
+		err = r.db.QueryRowContext(ctx, `SELECT id
+			FROM saved_reports
+			WHERE owner_account_id = ?
+			  AND lower(name) = lower(?)`,
+			request.OwnerAccountID,
+			request.Name,
+		).Scan(&id)
+	}
+	if err == sql.ErrNoRows {
+		return persistence.SavedReport{}, false, nil
+	}
+	if err != nil {
+		return persistence.SavedReport{}, false, fmt.Errorf("check existing scenario saved report %q: %w", request.Name, err)
+	}
+	report, err := r.reports.Get(ctx, id)
+	if err != nil {
+		return persistence.SavedReport{}, false, err
+	}
+	return report, true, nil
+}
+
+func (r Runner) rewriteScenarioSavedReport(ctx context.Context, id string, request persistence.SavedReportCreateRequest) (persistence.SavedReport, error) {
+	return r.reports.Update(ctx, persistence.SavedReportUpdateRequest{
+		ID:             id,
+		Name:           request.Name,
+		Description:    request.Description,
+		OwnerAccountID: request.OwnerAccountID,
+		OwnerRole:      request.OwnerRole,
+		DateRangeStart: request.DateRangeStart,
+		DateRangeEnd:   request.DateRangeEnd,
+		Granularity:    request.Granularity,
+		Filters:        request.Filters,
+		Groupings:      request.Groupings,
+		Metrics:        request.Metrics,
+		ChartType:      request.ChartType,
+	})
+}
+
+func scenarioReportGroupings(groupings []ReportGrouping) []persistence.SavedReportGrouping {
+	converted := make([]persistence.SavedReportGrouping, 0, len(groupings))
+	for _, grouping := range groupings {
+		converted = append(converted, persistence.SavedReportGrouping{
+			Type: grouping.Type,
+			Key:  grouping.Key,
+		})
+	}
+	return converted
 }
 
 // createPaymentMethod prepares the payer method state a payment remediation lab should start from.
@@ -649,8 +840,10 @@ func (r Runner) addUsage(ctx context.Context, state *scenarioExecutionState, eve
 	if err != nil {
 		return persistence.UsageEvent{}, false, err
 	}
-	usageStart := scheduledAt.UTC().Format(time.RFC3339)
-	usageEnd := scenarioUsageEndTime(scheduledAt, event).Format(time.RFC3339)
+	usageStart, usageEnd, err := scenarioUsageWindow(scheduledAt, event)
+	if err != nil {
+		return persistence.UsageEvent{}, created, err
+	}
 	attributes := copyScenarioStringMap(event.Attributes)
 	attributes["scenario_event_id"] = event.ID
 
@@ -935,6 +1128,24 @@ func scenarioUsageEndTime(scheduledAt time.Time, event Event) time.Time {
 		}
 	}
 	return scheduledAt.AddDate(0, 0, 1)
+}
+
+func scenarioUsageWindow(scheduledAt time.Time, event Event) (string, string, error) {
+	if event.UsageStartAt == "" && event.UsageEndAt == "" {
+		return scheduledAt.UTC().Format(time.RFC3339), scenarioUsageEndTime(scheduledAt, event).Format(time.RFC3339), nil
+	}
+	start, err := parseScenarioEventTime(event.UsageStartAt)
+	if err != nil {
+		return "", "", fmt.Errorf("scenario usage_start_at: %w", err)
+	}
+	end, err := parseScenarioEventTime(event.UsageEndAt)
+	if err != nil {
+		return "", "", fmt.Errorf("scenario usage_end_at: %w", err)
+	}
+	if !start.Before(end) {
+		return "", "", fmt.Errorf("scenario usage_start_at must be before usage_end_at")
+	}
+	return start.Format(time.RFC3339), end.Format(time.RFC3339), nil
 }
 
 func scenarioUsageQuantity(event Event, service scenarioServiceDefaults) (int64, string, error) {

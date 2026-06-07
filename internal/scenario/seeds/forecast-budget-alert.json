@@ -1,0 +1,135 @@
+{
+  "name": "Forecast and Budget Alert",
+  "clock": {
+    "start": "2026-02-01"
+  },
+  "organization_template": "anycompany-retail",
+  "random_seed": 91,
+  "events": [
+    {
+      "id": "create-storefront-batch-worker",
+      "day": 1,
+      "action": "create_resource",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-batch-worker",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "app": "storefront",
+        "env": "prod",
+        "owner": "storefront-team"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "storefront-batch-spike",
+      "day": 2,
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-batch-worker",
+      "amount_hours": 24
+    },
+    {
+      "id": "meter-storefront-spike",
+      "day": 11,
+      "action": "run_daily_metering",
+      "payer_account": "Management"
+    },
+    {
+      "id": "scheduled-storefront-scale-up",
+      "day": 11,
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-batch-worker",
+      "usage_start_at": "2026-02-20T00:00:00Z",
+      "usage_end_at": "2026-02-20T12:00:00Z",
+      "amount_hours": 12
+    },
+    {
+      "id": "create-storefront-budget",
+      "day": 11,
+      "action": "create_budget",
+      "budget_id": "budget-scn-storefront-forecast-alert",
+      "budget_name": "Storefront February forecast guardrail",
+      "description": "Forecast lab budget for deciding whether the Storefront team owns the projected EC2 overage.",
+      "billing_period_start": "2026-02-01",
+      "billing_period_end": "2026-03-01",
+      "budget_amount_micros": 3000000,
+      "currency_code": "USD",
+      "scope_type": "account",
+      "scope_value": "Storefront Prod",
+      "thresholds": [
+        {
+          "id": "budget-threshold-scn-storefront-actual-80",
+          "type": "actual",
+          "basis_points": 8000
+        },
+        {
+          "id": "budget-threshold-scn-storefront-forecast-100",
+          "type": "forecast",
+          "basis_points": 10000
+        }
+      ]
+    },
+    {
+      "id": "refresh-storefront-budget-forecast",
+      "day": 11,
+      "action": "refresh_budget_forecasts",
+      "billing_period_start": "2026-02-01",
+      "billing_period_end": "2026-03-01"
+    },
+    {
+      "id": "create-storefront-drilldown-report",
+      "day": 11,
+      "action": "create_saved_report",
+      "report_id": "saved-report-scn-storefront-forecast-drilldown",
+      "report_name": "Storefront forecast spike drilldown",
+      "description": "Starter report for tracing the Storefront forecast breach by service and usage type.",
+      "owner_account": "Management",
+      "owner_role": "management-account",
+      "date_range_start": "2026-02-01",
+      "date_range_end": "2026-03-01",
+      "granularity": "monthly",
+      "filters": {
+        "linked_account": [
+          "111122223333"
+        ]
+      },
+      "groupings": [
+        {
+          "type": "dimension",
+          "key": "service"
+        },
+        {
+          "type": "dimension",
+          "key": "usage_type"
+        }
+      ],
+      "metrics": [
+        "unblended_cost"
+      ],
+      "chart_type": "table"
+    }
+  ],
+  "checks": [
+    {
+      "id": "check-storefront-drilldown-report",
+      "type": "saved_report_exists",
+      "report_name": "Storefront forecast spike drilldown"
+    },
+    {
+      "id": "check-ec2-forecast-driver",
+      "type": "identifies_top_driver",
+      "expected_service": "Amazon EC2",
+      "account": "Storefront Prod",
+      "tags": {
+        "owner": "storefront-team"
+      }
+    }
+  ]
+}

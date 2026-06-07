@@ -414,6 +414,13 @@ func scenarioCatalog() map[string]scenarioCatalogMetadata {
 			ResumeLabel:       "Resume in Payments",
 			ResumePath:        "/payments",
 		},
+		scenario.ForecastBudgetAlertSeedKey: {
+			Phase:             "Phase 2",
+			Objective:         "Investigate a Storefront forecast breach, trace the EC2 driver, and decide ownership from the budget alert.",
+			EstimatedDuration: "25 min",
+			ResumeLabel:       "Resume in Cost Explorer",
+			ResumePath:        "/cost-explorer?saved_report_id=saved-report-scn-storefront-forecast-drilldown",
+		},
 		scenario.UntaggedDataTransferSpikeSeedKey: {
 			Phase:             "Phase 2",
 			Objective:         "Find an untagged data-transfer spike and trace the cost through billed line items.",

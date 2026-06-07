@@ -94,6 +94,15 @@ const (
 
 	// EventActionCollectPayment applies simulated funds to the latest or named invoice obligation.
 	EventActionCollectPayment EventAction = "collect_payment"
+
+	// EventActionCreateBudget creates or reuses a monthly budget definition for budget labs.
+	EventActionCreateBudget EventAction = "create_budget"
+
+	// EventActionRefreshBudgetForecasts refreshes budget forecast summaries and alert notifications.
+	EventActionRefreshBudgetForecasts EventAction = "refresh_budget_forecasts"
+
+	// EventActionCreateSavedReport creates or updates a Cost Explorer saved report starter definition.
+	EventActionCreateSavedReport EventAction = "create_saved_report"
 )
 
 // Event describes one ordered resource, usage, clock, or billing operation.
@@ -122,6 +131,8 @@ type Event struct {
 	Attributes              map[string]string   `json:"attributes,omitempty"`
 	UsageType               string              `json:"usage_type,omitempty"`
 	Operation               string              `json:"operation,omitempty"`
+	UsageStartAt            string              `json:"usage_start_at,omitempty"`
+	UsageEndAt              string              `json:"usage_end_at,omitempty"`
 	Amount                  int                 `json:"amount,omitempty"`
 	AmountGB                *json.Number        `json:"amount_gb,omitempty"`
 	AmountHours             *json.Number        `json:"amount_hours,omitempty"`
@@ -164,12 +175,44 @@ type Event struct {
 	FailureReason           string              `json:"failure_reason,omitempty"`
 	Reason                  string              `json:"reason,omitempty"`
 	AmountMicros            int64               `json:"amount_micros,omitempty"`
+	BudgetID                string              `json:"budget_id,omitempty"`
+	BudgetName              string              `json:"budget_name,omitempty"`
+	BudgetAmountMicros      int64               `json:"budget_amount_micros,omitempty"`
+	ScopeType               string              `json:"scope_type,omitempty"`
+	ScopeKey                string              `json:"scope_key,omitempty"`
+	ScopeValue              string              `json:"scope_value,omitempty"`
+	Thresholds              []BudgetThreshold   `json:"thresholds,omitempty"`
+	ReportID                string              `json:"report_id,omitempty"`
+	ReportName              string              `json:"report_name,omitempty"`
+	OwnerAccount            string              `json:"owner_account,omitempty"`
+	OwnerAccountID          string              `json:"owner_account_id,omitempty"`
+	OwnerRole               string              `json:"owner_role,omitempty"`
+	DateRangeStart          string              `json:"date_range_start,omitempty"`
+	DateRangeEnd            string              `json:"date_range_end,omitempty"`
+	Granularity             string              `json:"granularity,omitempty"`
+	Filters                 map[string][]string `json:"filters,omitempty"`
+	Groupings               []ReportGrouping    `json:"groupings,omitempty"`
+	Metrics                 []string            `json:"metrics,omitempty"`
+	ChartType               string              `json:"chart_type,omitempty"`
 }
 
 // SplitChargeTarget describes one scenario-authored split-charge allocation target.
 type SplitChargeTarget struct {
 	Value            string `json:"value"`
 	FixedShareMicros int    `json:"fixed_share_micros,omitempty"`
+}
+
+// BudgetThreshold describes one scenario-authored budget threshold.
+type BudgetThreshold struct {
+	ID          string `json:"id,omitempty"`
+	Type        string `json:"type"`
+	BasisPoints int    `json:"basis_points"`
+}
+
+// ReportGrouping describes one scenario-authored saved report grouping.
+type ReportGrouping struct {
+	Type string `json:"type"`
+	Key  string `json:"key"`
 }
 
 // CheckType identifies an expected learner outcome.
@@ -329,6 +372,8 @@ func normalizeEvent(event Event, index int) Event {
 	event.TagKey = strings.TrimSpace(event.TagKey)
 	event.UsageType = strings.TrimSpace(event.UsageType)
 	event.Operation = strings.TrimSpace(event.Operation)
+	event.UsageStartAt = strings.TrimSpace(event.UsageStartAt)
+	event.UsageEndAt = strings.TrimSpace(event.UsageEndAt)
 	event.Unit = strings.TrimSpace(event.Unit)
 	event.Pattern = strings.TrimSpace(event.Pattern)
 	event.BillingPeriodStart = strings.TrimSpace(event.BillingPeriodStart)
@@ -357,14 +402,38 @@ func normalizeEvent(event Event, index int) Event {
 	event.RemittanceDestination = strings.TrimSpace(event.RemittanceDestination)
 	event.FailureReason = strings.TrimSpace(event.FailureReason)
 	event.Reason = strings.TrimSpace(event.Reason)
+	event.BudgetID = strings.TrimSpace(event.BudgetID)
+	event.BudgetName = strings.TrimSpace(event.BudgetName)
+	event.ScopeType = strings.TrimSpace(event.ScopeType)
+	event.ScopeKey = strings.TrimSpace(event.ScopeKey)
+	event.ScopeValue = strings.TrimSpace(event.ScopeValue)
+	event.ReportID = strings.TrimSpace(event.ReportID)
+	event.ReportName = strings.TrimSpace(event.ReportName)
+	event.OwnerAccount = strings.TrimSpace(event.OwnerAccount)
+	event.OwnerAccountID = strings.TrimSpace(event.OwnerAccountID)
+	event.OwnerRole = strings.TrimSpace(event.OwnerRole)
+	event.DateRangeStart = strings.TrimSpace(event.DateRangeStart)
+	event.DateRangeEnd = strings.TrimSpace(event.DateRangeEnd)
+	event.Granularity = strings.TrimSpace(event.Granularity)
+	event.ChartType = strings.TrimSpace(event.ChartType)
 	event.Tags = normalizeStringMap(event.Tags)
 	event.Attributes = normalizeStringMap(event.Attributes)
+	event.Filters = normalizeStringListMap(event.Filters)
 	for i := range event.Values {
 		event.Values[i] = strings.TrimSpace(event.Values[i])
 	}
 	for i := range event.Targets {
 		event.Targets[i].Value = strings.TrimSpace(event.Targets[i].Value)
 	}
+	for i := range event.Thresholds {
+		event.Thresholds[i].ID = strings.TrimSpace(event.Thresholds[i].ID)
+		event.Thresholds[i].Type = strings.TrimSpace(event.Thresholds[i].Type)
+	}
+	for i := range event.Groupings {
+		event.Groupings[i].Type = strings.TrimSpace(event.Groupings[i].Type)
+		event.Groupings[i].Key = strings.TrimSpace(event.Groupings[i].Key)
+	}
+	event.Metrics = normalizeStringList(event.Metrics)
 	return event
 }
 
@@ -392,12 +461,23 @@ func validateEvent(event Event, index int, problems *validationProblems) {
 	validateStringMap(path+".attributes", event.Attributes, problems)
 	validateOptionalDate(path+".billing_period_start", event.BillingPeriodStart, problems)
 	validateOptionalDate(path+".billing_period_end", event.BillingPeriodEnd, problems)
+	validateOptionalDate(path+".date_range_start", event.DateRangeStart, problems)
+	validateOptionalDate(path+".date_range_end", event.DateRangeEnd, problems)
+	validateOptionalTimestamp(path+".usage_start_at", event.UsageStartAt, problems)
+	validateOptionalTimestamp(path+".usage_end_at", event.UsageEndAt, problems)
 	if event.BillingPeriodStart != "" && event.BillingPeriodEnd == "" {
 		problems.add("%s.billing_period_end is required when billing_period_start is set", path)
 	}
 	if event.BillingPeriodEnd != "" && event.BillingPeriodStart == "" {
 		problems.add("%s.billing_period_start is required when billing_period_end is set", path)
 	}
+	if event.DateRangeStart != "" && event.DateRangeEnd == "" {
+		problems.add("%s.date_range_end is required when date_range_start is set", path)
+	}
+	if event.DateRangeEnd != "" && event.DateRangeStart == "" {
+		problems.add("%s.date_range_start is required when date_range_end is set", path)
+	}
+	validateScenarioUsageWindow(path, event, problems)
 
 	switch event.Action {
 	case "":
@@ -433,6 +513,12 @@ func validateEvent(event Event, index int, problems *validationProblems) {
 		EventActionMarkPaymentPastDue,
 		EventActionCollectPayment:
 		validatePaymentLifecycleEvent(path, event, problems)
+	case EventActionCreateBudget:
+		validateCreateBudgetEvent(path, event, problems)
+	case EventActionRefreshBudgetForecasts:
+		// Optional billing_period_start/end narrow the refresh; otherwise the simulator clock drives it.
+	case EventActionCreateSavedReport:
+		validateCreateSavedReportEvent(path, event, problems)
 	default:
 		problems.add("%s.action %q is not supported", path, event.Action)
 	}
@@ -709,6 +795,114 @@ func validatePaymentLifecycleEvent(path string, event Event, problems *validatio
 	}
 }
 
+// validateCreateBudgetEvent checks the budget fields used by forecast and alert labs.
+func validateCreateBudgetEvent(path string, event Event, problems *validationProblems) {
+	if event.BudgetName == "" {
+		problems.add("%s.budget_name is required for create_budget", path)
+	}
+	if event.BillingPeriodStart == "" || event.BillingPeriodEnd == "" {
+		problems.add("%s.billing_period_start and %s.billing_period_end are required for create_budget", path, path)
+	}
+	if event.BudgetAmountMicros <= 0 {
+		problems.add("%s.budget_amount_micros must be greater than zero for create_budget", path)
+	}
+	switch event.ScopeType {
+	case persistence.BudgetScopeAccount, persistence.BudgetScopeService:
+		if event.ScopeKey != "" {
+			problems.add("%s.scope_key is only supported for tag and Cost Category budgets", path)
+		}
+	case persistence.BudgetScopeTag, persistence.BudgetScopeCostCategory:
+		if event.ScopeKey == "" {
+			problems.add("%s.scope_key is required for %s budgets", path, event.ScopeType)
+		}
+	default:
+		problems.add("%s.scope_type %q is not supported for create_budget", path, event.ScopeType)
+	}
+	if event.ScopeValue == "" {
+		problems.add("%s.scope_value is required for create_budget", path)
+	}
+	if len(event.Thresholds) == 0 {
+		problems.add("%s.thresholds needs at least one threshold for create_budget", path)
+	}
+	seen := map[string]bool{}
+	for i, threshold := range event.Thresholds {
+		thresholdPath := fmt.Sprintf("%s.thresholds[%d]", path, i)
+		switch threshold.Type {
+		case persistence.BudgetThresholdTypeActual, persistence.BudgetThresholdTypeForecast:
+		default:
+			problems.add("%s.type %q is not supported", thresholdPath, threshold.Type)
+		}
+		if threshold.BasisPoints <= 0 {
+			problems.add("%s.basis_points must be greater than zero", thresholdPath)
+		}
+		if threshold.BasisPoints > 100000 {
+			problems.add("%s.basis_points must be 100000 or fewer", thresholdPath)
+		}
+		key := threshold.Type + ":" + strconv.Itoa(threshold.BasisPoints)
+		if seen[key] {
+			problems.add("%s duplicates threshold %q", thresholdPath, key)
+		}
+		seen[key] = true
+	}
+}
+
+// validateCreateSavedReportEvent checks the saved report starter fields used by scenario labs.
+func validateCreateSavedReportEvent(path string, event Event, problems *validationProblems) {
+	if event.ReportName == "" {
+		problems.add("%s.report_name is required for create_saved_report", path)
+	}
+	if event.OwnerAccount == "" && event.OwnerAccountID == "" {
+		problems.add("%s.owner_account or %s.owner_account_id is required for create_saved_report", path, path)
+	}
+	if event.DateRangeStart == "" || event.DateRangeEnd == "" {
+		problems.add("%s.date_range_start and %s.date_range_end are required for create_saved_report", path, path)
+	}
+	if event.DateRangeStart != "" && event.DateRangeEnd != "" {
+		start, startOK := parseScenarioDateOnly(event.DateRangeStart)
+		end, endOK := parseScenarioDateOnly(event.DateRangeEnd)
+		if startOK && endOK && !start.Before(end) {
+			problems.add("%s.date_range_start must be before date_range_end", path)
+		}
+	}
+	switch event.OwnerRole {
+	case "", "management-account", "member-account", "finance", "instructor":
+	default:
+		problems.add("%s.owner_role %q is not supported for create_saved_report", path, event.OwnerRole)
+	}
+	switch event.Granularity {
+	case "", "hourly", "daily", "monthly":
+	default:
+		problems.add("%s.granularity %q is not supported for create_saved_report", path, event.Granularity)
+	}
+	switch event.ChartType {
+	case "", "table", "line", "bar", "stacked_bar":
+	default:
+		problems.add("%s.chart_type %q is not supported for create_saved_report", path, event.ChartType)
+	}
+	validateScenarioStringListMap(path+".filters", event.Filters, problems)
+	if len(event.Groupings) > 2 {
+		problems.add("%s.groupings supports at most two values", path)
+	}
+	seenGroupings := map[string]bool{}
+	for i, grouping := range event.Groupings {
+		groupPath := fmt.Sprintf("%s.groupings[%d]", path, i)
+		switch grouping.Type {
+		case "dimension", "tag", "cost_category":
+		default:
+			problems.add("%s.type %q is not supported", groupPath, grouping.Type)
+		}
+		if grouping.Key == "" {
+			problems.add("%s.key is required", groupPath)
+		}
+		key := grouping.Type + ":" + grouping.Key
+		if seenGroupings[key] {
+			problems.add("%s duplicates grouping %q", groupPath, key)
+		}
+		seenGroupings[key] = true
+	}
+	validateSavedReportMetrics(path+".metrics", event.Metrics, problems)
+}
+
 func validateCheck(check Check, index int, problems *validationProblems) {
 	path := fmt.Sprintf("checks[%d]", index)
 	validateScenarioTagMap(path+".tags", check.Tags, problems)
@@ -760,6 +954,8 @@ func validateScenarioEventAccountReferences(path, organizationTemplate string, e
 		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, createdAccounts, problems)
 	case EventActionRunDailyMetering, EventActionCloseBillingPeriod, EventActionIssueBill:
 		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
+	case EventActionCreateSavedReport:
+		validateScenarioAccountReference(path+".owner_account", organizationTemplate, event.OwnerAccountID, event.OwnerAccount, createdAccounts, problems)
 	default:
 		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, createdAccounts, problems)
 		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
@@ -888,6 +1084,32 @@ func validateOptionalDate(path, value string, problems *validationProblems) {
 	}
 }
 
+func validateOptionalTimestamp(path, value string, problems *validationProblems) {
+	if value == "" {
+		return
+	}
+	validateScenarioTimestamp(path, value, problems)
+}
+
+func validateScenarioUsageWindow(path string, event Event, problems *validationProblems) {
+	if event.UsageStartAt == "" && event.UsageEndAt == "" {
+		return
+	}
+	if event.Action != EventActionAddUsage {
+		problems.add("%s.usage_start_at and %s.usage_end_at are only supported for add_usage", path, path)
+		return
+	}
+	if event.UsageStartAt == "" || event.UsageEndAt == "" {
+		problems.add("%s.usage_start_at and %s.usage_end_at must be set together", path, path)
+		return
+	}
+	start, startErr := parseScenarioEventTime(event.UsageStartAt)
+	end, endErr := parseScenarioEventTime(event.UsageEndAt)
+	if startErr == nil && endErr == nil && !start.Before(end) {
+		problems.add("%s.usage_start_at must be before usage_end_at", path)
+	}
+}
+
 func validatePositiveNumber(path string, number *json.Number, problems *validationProblems) bool {
 	if number == nil {
 		return false
@@ -915,6 +1137,37 @@ func validateScenarioStringList(path string, values []string, problems *validati
 		if value == "" {
 			problems.add("%s[%d] is required", path, i)
 			continue
+		}
+		if seen[value] {
+			problems.add("%s[%d] %q is duplicated", path, i, value)
+		}
+		seen[value] = true
+	}
+}
+
+func validateScenarioStringListMap(path string, values map[string][]string, problems *validationProblems) {
+	for key, list := range values {
+		if strings.TrimSpace(key) == "" {
+			problems.add("%s key is required", path)
+		}
+		if len(list) == 0 {
+			problems.add("%s.%s needs at least one value", path, key)
+		}
+		validateScenarioStringList(path+"."+key, list, problems)
+	}
+}
+
+func validateSavedReportMetrics(path string, values []string, problems *validationProblems) {
+	seen := map[string]bool{}
+	for i, value := range values {
+		if value == "" {
+			problems.add("%s[%d] is required", path, i)
+			continue
+		}
+		switch value {
+		case "unblended_cost", "blended_cost", "amortized_cost", "usage_quantity", "net_cost":
+		default:
+			problems.add("%s[%d] %q is not supported", path, i, value)
 		}
 		if seen[value] {
 			problems.add("%s[%d] %q is duplicated", path, i, value)
@@ -975,6 +1228,28 @@ func normalizeStringMap(values map[string]string) map[string]string {
 	normalized := make(map[string]string, len(values))
 	for key, value := range values {
 		normalized[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return normalized
+}
+
+func normalizeStringListMap(values map[string][]string) map[string][]string {
+	if len(values) == 0 {
+		return map[string][]string{}
+	}
+	normalized := make(map[string][]string, len(values))
+	for key, list := range values {
+		normalized[strings.TrimSpace(key)] = normalizeStringList(list)
+	}
+	return normalized
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized = append(normalized, strings.TrimSpace(value))
 	}
 	return normalized
 }

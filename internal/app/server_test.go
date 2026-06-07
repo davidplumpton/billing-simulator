@@ -2620,6 +2620,7 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read CUR CSV response: %v\n%s", err, body)
 	}
+	initialCSVBody := body
 	if len(records) != 3 {
 		t.Fatalf("CUR CSV response records = %d (%+v), want header plus usage and support rows", len(records), records)
 	}
@@ -2652,6 +2653,86 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		exportRecord.GenerationParameters["source_bill_id"] != closeResult.Bill.ID ||
 		exportRecord.GenerationParameters["rows_written"] != "2" {
 		t.Fatalf("stored CUR export metadata = %+v, want response metadata", exportRecord)
+	}
+
+	resp, err = client.Get(server.URL + "/exports")
+	if err != nil {
+		t.Fatalf("GET /exports error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Generated Exports",
+		exportFilename,
+		"Download",
+		"Regenerate",
+		"Reconcile",
+		closeResult.Bill.ID,
+		"2 rows",
+		shortChecksum(wantChecksum),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /exports body missing %q: %s", want, body)
+		}
+	}
+
+	downloadPath := exportFileDownloadPath(exportFilename)
+	resp, err = client.Get(server.URL + downloadPath)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", downloadPath, err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d; body=%s", downloadPath, resp.StatusCode, http.StatusOK, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+		t.Fatalf("GET %s content type = %q, want text/csv", downloadPath, contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, exportFilename) {
+		t.Fatalf("GET %s content disposition = %q, want stored filename", downloadPath, disposition)
+	}
+	if got := resp.Header.Get("X-Simulator-Export-Checksum"); got != wantChecksum {
+		t.Fatalf("GET %s checksum header = %q, want %q", downloadPath, got, wantChecksum)
+	}
+	if body != initialCSVBody {
+		t.Fatalf("GET %s body differs from generated CSV:\ndownload=%s\ninitial=%s", downloadPath, body, initialCSVBody)
+	}
+
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-02T10:15:00Z"); err != nil {
+		t.Fatalf("Set(clock regeneration time) error = %v", err)
+	}
+	resp, err = client.PostForm(server.URL+"/exports/regenerate", url.Values{
+		"filename": {exportFilename},
+	})
+	if err != nil {
+		t.Fatalf("POST /exports/regenerate error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/regenerate final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/exports" {
+		t.Fatalf("POST /exports/regenerate final path = %q, want /exports", got)
+	}
+	if !strings.Contains(body, "Regenerated "+exportFilename+" from 2 source rows") {
+		t.Fatalf("POST /exports/regenerate body missing flash: %s", body)
+	}
+	exportRecord, err = persistence.NewExportFileRepository(db, workspacePath).GetByFilename(ctx, exportFilename)
+	if err != nil {
+		t.Fatalf("GetByFilename(regenerated CUR export) error = %v", err)
+	}
+	if exportRecord.GenerationParameters["generated_at"] != "2026-03-02T10:15:00Z" ||
+		exportRecord.GenerationParameters["rows_written"] != "2" {
+		t.Fatalf("regenerated CUR export metadata = %+v, want refreshed generation parameters", exportRecord)
+	}
+	regeneratedContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), exportFilename))
+	if err != nil {
+		t.Fatalf("read regenerated CUR CSV export: %v", err)
+	}
+	if !strings.Contains(string(regeneratedContent), "2026-03-02T10:15:00Z") {
+		t.Fatalf("regenerated CUR CSV missing refreshed generated_at: %s", regeneratedContent)
 	}
 
 	usage := requireCSVResponseRecord(t, records, "resource_id", "resource-cur-export-ui")

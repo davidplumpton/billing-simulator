@@ -194,6 +194,31 @@ func (r ExportFileRepository) GetByFilename(ctx context.Context, filename string
 	return scanExportFile(row)
 }
 
+// Read returns stored export bytes after verifying the workspace file matches metadata.
+func (r ExportFileRepository) Read(ctx context.Context, filename string) (ExportFile, []byte, error) {
+	if strings.TrimSpace(r.workspacePath) == "" {
+		return ExportFile{}, nil, fmt.Errorf("workspace path is required")
+	}
+	record, err := r.GetByFilename(ctx, filename)
+	if err != nil {
+		return ExportFile{}, nil, err
+	}
+
+	content, err := os.ReadFile(filepath.Join(WorkspaceExportsPath(r.workspacePath), record.Filename))
+	if err != nil {
+		return ExportFile{}, nil, fmt.Errorf("read export file %q: %w", record.Filename, err)
+	}
+	if record.SizeBytes != int64(len(content)) {
+		return ExportFile{}, nil, fmt.Errorf("export file %q size mismatch: metadata has %d bytes, file has %d bytes", record.Filename, record.SizeBytes, len(content))
+	}
+	checksum := sha256.Sum256(content)
+	checksumHex := hex.EncodeToString(checksum[:])
+	if record.ChecksumSHA256 != checksumHex {
+		return ExportFile{}, nil, fmt.Errorf("export file %q checksum mismatch", record.Filename)
+	}
+	return record, content, nil
+}
+
 // List returns generated export metadata rows ordered with the newest row first.
 func (r ExportFileRepository) List(ctx context.Context, request ExportFileListRequest) ([]ExportFile, error) {
 	if r.db == nil {

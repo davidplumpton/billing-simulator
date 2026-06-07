@@ -73,6 +73,13 @@ func TestExportFileRepositoryWritesFileAndMetadata(t *testing.T) {
 	if string(storedContent) != string(content) {
 		t.Fatalf("stored export content = %q, want %q", storedContent, content)
 	}
+	readRecord, readContent, err := repo.Read(ctx, record.Filename)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if readRecord.ID != record.ID || string(readContent) != string(content) {
+		t.Fatalf("Read() = %+v/%q, want stored record and content", readRecord, readContent)
+	}
 
 	listed, err := repo.List(ctx, ExportFileListRequest{
 		ExportType:         ExportFileTypeCURCSV,
@@ -132,6 +139,9 @@ func TestExportFileRepositoryValidatesRequests(t *testing.T) {
 	}
 	if _, err := NewExportFileRepository(db, "").Write(ctx, ExportFileWriteRequest{}); err == nil {
 		t.Fatal("Write(blank workspace) error = nil, want workspace validation error")
+	}
+	if _, _, err := NewExportFileRepository(db, "").Read(ctx, "cur.csv"); err == nil {
+		t.Fatal("Read(blank workspace) error = nil, want workspace validation error")
 	}
 	if _, err := repo.Write(ctx, ExportFileWriteRequest{
 		Filename:   "../cur.csv",

@@ -183,6 +183,56 @@ checks:
 	}
 }
 
+func TestParseDefinitionParsesAssessmentCheckFields(t *testing.T) {
+	raw := []byte(`{
+		"name": "Assessment check fields",
+		"clock": {
+			"start": "2026-03-01"
+		},
+		"organization_template": "anycompany-retail",
+		"checks": [
+			{
+				"id": "tag-active",
+				"type": "cost_allocation_tag_activated",
+				"tag_key": " owner ",
+				"status": " active "
+			},
+			{
+				"id": "bill-balanced",
+				"type": "bill_reconciled",
+				"payer_account": " Management ",
+				"billing_period_start": "2026-03-01",
+				"billing_period_end": "2026-04-01"
+			},
+			{
+				"id": "payment-due",
+				"type": "payment_status",
+				"payer_account_id": " 000011112222 ",
+				"status": " due "
+			}
+		]
+	}`)
+
+	definition, err := ParseDefinitionBytes(raw)
+	if err != nil {
+		t.Fatalf("ParseDefinitionBytes returned error: %v", err)
+	}
+	if len(definition.Checks) != 3 {
+		t.Fatalf("check count = %d", len(definition.Checks))
+	}
+	if definition.Checks[0].TagKey != "owner" || definition.Checks[0].Status != "active" {
+		t.Fatalf("tag check = %+v, want trimmed tag key and normalized status", definition.Checks[0])
+	}
+	if definition.Checks[1].PayerAccount != "Management" ||
+		definition.Checks[1].BillingPeriodStart != "2026-03-01" ||
+		definition.Checks[1].BillingPeriodEnd != "2026-04-01" {
+		t.Fatalf("bill check = %+v, want payer and period fields", definition.Checks[1])
+	}
+	if definition.Checks[2].PayerAccountID != "000011112222" || definition.Checks[2].Status != "due" {
+		t.Fatalf("payment check = %+v, want payer account ID and status", definition.Checks[2])
+	}
+}
+
 func TestParseDefinitionRejectsInvalidScenario(t *testing.T) {
 	raw := []byte(`{
 		"name": " ",
@@ -244,6 +294,38 @@ func TestParseDefinitionRejectsInvalidScenario(t *testing.T) {
 	assertErrorContains(t, err, "events[2].action \"unsupported_action\" is not supported")
 	assertErrorContains(t, err, "checks[0].report_name is required for saved_report_exists")
 	assertErrorContains(t, err, "checks[1].type \"unknown_check\" is not supported")
+}
+
+func TestParseDefinitionRejectsInvalidAssessmentChecks(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken assessment checks",
+		"clock": {
+			"start": "2026-03-01"
+		},
+		"organization_template": "anycompany-retail",
+		"checks": [
+			{
+				"type": "cost_allocation_tag_activated"
+			},
+			{
+				"type": "bill_reconciled",
+				"billing_period_start": "2026-03-01",
+				"status": "unknown"
+			},
+			{
+				"type": "payment_status"
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want validation error")
+	}
+	assertErrorContains(t, err, "checks[0].tag_key is required for cost_allocation_tag_activated")
+	assertErrorContains(t, err, "checks[1].billing_period_end is required when billing_period_start is set")
+	assertErrorContains(t, err, `checks[1].status "unknown" is not supported for bill_reconciled`)
+	assertErrorContains(t, err, "checks[2].status is required for payment_status")
 }
 
 func TestParseDefinitionRejectsInvalidScenarioYAML(t *testing.T) {

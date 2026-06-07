@@ -225,23 +225,39 @@ const (
 	// CheckTypeIdentifiesTopDriver expects the learner to name the dominant cost driver.
 	CheckTypeIdentifiesTopDriver CheckType = "identifies_top_driver"
 
+	// CheckTypeCostAllocationTagActivated expects a cost allocation tag key to be active.
+	CheckTypeCostAllocationTagActivated CheckType = "cost_allocation_tag_activated"
+
 	// CheckTypeCostCategoryRuleCreated expects a named cost category rule.
 	CheckTypeCostCategoryRuleCreated CheckType = "cost_category_rule_created"
+
+	// CheckTypeBillReconciled expects issued bill totals to match their final source line items.
+	CheckTypeBillReconciled CheckType = "bill_reconciled"
+
+	// CheckTypePaymentStatus expects an issued invoice obligation to be in a lifecycle state.
+	CheckTypePaymentStatus CheckType = "payment_status"
 )
 
 // Check describes one expected learner outcome in a scenario definition.
 type Check struct {
-	ID              string            `json:"id,omitempty"`
-	Sequence        int               `json:"-"`
-	Type            CheckType         `json:"type"`
-	ReportName      string            `json:"report_name,omitempty"`
-	ExpectedService string            `json:"expected_service,omitempty"`
-	Category        string            `json:"category,omitempty"`
-	Account         string            `json:"account,omitempty"`
-	Service         string            `json:"service,omitempty"`
-	Status          string            `json:"status,omitempty"`
-	ExpectedValue   *json.Number      `json:"expected_value,omitempty"`
-	Tags            map[string]string `json:"tags,omitempty"`
+	ID                 string            `json:"id,omitempty"`
+	Sequence           int               `json:"-"`
+	Type               CheckType         `json:"type"`
+	ReportName         string            `json:"report_name,omitempty"`
+	ExpectedService    string            `json:"expected_service,omitempty"`
+	Category           string            `json:"category,omitempty"`
+	Account            string            `json:"account,omitempty"`
+	AccountID          string            `json:"account_id,omitempty"`
+	PayerAccount       string            `json:"payer_account,omitempty"`
+	PayerAccountID     string            `json:"payer_account_id,omitempty"`
+	Service            string            `json:"service,omitempty"`
+	TagKey             string            `json:"tag_key,omitempty"`
+	BillingPeriodStart string            `json:"billing_period_start,omitempty"`
+	BillingPeriodEnd   string            `json:"billing_period_end,omitempty"`
+	Value              string            `json:"value,omitempty"`
+	Status             string            `json:"status,omitempty"`
+	ExpectedValue      *json.Number      `json:"expected_value,omitempty"`
+	Tags               map[string]string `json:"tags,omitempty"`
 }
 
 // ValidationError reports all schema and semantic problems found in a definition.
@@ -459,8 +475,15 @@ func normalizeCheck(check Check, index int) Check {
 	check.ExpectedService = strings.TrimSpace(check.ExpectedService)
 	check.Category = strings.TrimSpace(check.Category)
 	check.Account = strings.TrimSpace(check.Account)
+	check.AccountID = strings.TrimSpace(check.AccountID)
+	check.PayerAccount = strings.TrimSpace(check.PayerAccount)
+	check.PayerAccountID = strings.TrimSpace(check.PayerAccountID)
 	check.Service = strings.TrimSpace(check.Service)
-	check.Status = strings.TrimSpace(check.Status)
+	check.TagKey = strings.TrimSpace(check.TagKey)
+	check.BillingPeriodStart = strings.TrimSpace(check.BillingPeriodStart)
+	check.BillingPeriodEnd = strings.TrimSpace(check.BillingPeriodEnd)
+	check.Value = strings.TrimSpace(check.Value)
+	check.Status = strings.ToLower(strings.TrimSpace(check.Status))
 	check.Tags = normalizeStringMap(check.Tags)
 	return check
 }
@@ -918,6 +941,14 @@ func validateCheck(check Check, index int, problems *validationProblems) {
 	path := fmt.Sprintf("checks[%d]", index)
 	validateScenarioTagMap(path+".tags", check.Tags, problems)
 	validatePositiveNumber(path+".expected_value", check.ExpectedValue, problems)
+	validateOptionalDate(path+".billing_period_start", check.BillingPeriodStart, problems)
+	validateOptionalDate(path+".billing_period_end", check.BillingPeriodEnd, problems)
+	if check.BillingPeriodStart != "" && check.BillingPeriodEnd == "" {
+		problems.add("%s.billing_period_end is required when billing_period_start is set", path)
+	}
+	if check.BillingPeriodEnd != "" && check.BillingPeriodStart == "" {
+		problems.add("%s.billing_period_start is required when billing_period_end is set", path)
+	}
 
 	switch check.Type {
 	case "":
@@ -930,9 +961,23 @@ func validateCheck(check Check, index int, problems *validationProblems) {
 		if check.ExpectedService == "" {
 			problems.add("%s.expected_service is required for identifies_top_driver", path)
 		}
+	case CheckTypeCostAllocationTagActivated:
+		if check.TagKey == "" {
+			problems.add("%s.tag_key is required for cost_allocation_tag_activated", path)
+		} else {
+			validateScenarioTagKey(path+".tag_key", check.TagKey, problems)
+		}
 	case CheckTypeCostCategoryRuleCreated:
 		if check.Category == "" {
 			problems.add("%s.category is required for cost_category_rule_created", path)
+		}
+	case CheckTypeBillReconciled:
+		if check.Status != "" && check.Status != "balanced" && check.Status != "residual" {
+			problems.add("%s.status %q is not supported for bill_reconciled", path, check.Status)
+		}
+	case CheckTypePaymentStatus:
+		if check.Status == "" {
+			problems.add("%s.status is required for payment_status", path)
 		}
 	default:
 		problems.add("%s.type %q is not supported", path, check.Type)
@@ -953,7 +998,8 @@ func validateScenarioSemantics(definition Definition, problems *validationProble
 
 	for i, check := range definition.Checks {
 		path := fmt.Sprintf("checks[%d]", i)
-		validateScenarioAccountReference(path+".account", definition.OrganizationTemplate, "", check.Account, createdAccounts, problems)
+		validateScenarioAccountReference(path+".account", definition.OrganizationTemplate, check.AccountID, check.Account, createdAccounts, problems)
+		validateScenarioAccountReference(path+".payer_account", definition.OrganizationTemplate, check.PayerAccountID, check.PayerAccount, createdAccounts, problems)
 		validateScenarioCheckService(path+".expected_service", check.ExpectedService, problems)
 		validateScenarioCheckService(path+".service", check.Service, problems)
 	}

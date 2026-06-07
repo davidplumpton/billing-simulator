@@ -41,6 +41,7 @@ The current codebase already includes these working foundations:
 - Billing pipeline persistence for usage events, metering records, priced bill line items, billing-period service summaries, support charges, month-end closes, issued bills, invoice obligations, and invoice documents.
 - Bills UI with bill state summaries, charge breakdowns, resource-level charge rows, reconciliation data, printable invoice pages, and invoice line-item CSV export.
 - Scenario JSON/YAML parsing and execution for deterministic lab setup, including a Scenarios UI that lists and launches packaged "First consolidated bill", "Missing Tags", "Shared Networking allocation", "Payment Failure", "Forecast and Budget Alert", and "Find the untagged data-transfer spike" labs with recent run audit state, reset-to-seed actions, workspace cloning, local review archive bundles containing the workspace database plus CUR-like export evidence, and a local scenario editor with validation preview.
+- Scenario assessment check evaluation for saved Cost Explorer reports, top cost drivers, cost allocation tag activation, Cost Category rules, bill reconciliation, and payment lifecycle status.
 - Cost allocation tag manager UI with discovered key/value coverage, spend and resource coverage by tag key/account/service, untagged and case-mismatched spend, activation, deactivation, 24-hour pending visibility timing, and usage-window tag snapshots.
 - Cost Category rule persistence, preview UI, and line-item assignment snapshots for ordered account, service, region, usage-type, line-item-type, tag, and existing-category matches, including unmatched spend, rule-order effects, open-period refreshes, and finalized-period history.
 - Cost Category split-charge rule persistence and allocation comparison UI for even, fixed-share, and proportional allocation methods, with deterministic rounding, source-line audit rows, raw/category/split/total cost views, unallocated residuals, open-period refreshes, and finalized-period protection.
@@ -62,7 +63,7 @@ The broader MVP and later phases include:
 - Richer past-due payment remediation teaching workflows.
 - FOCUS-style exports, local export file management, and a query lab.
 - Billing Conductor-style pro forma views and additional shared-cost lab workflows.
-- Richer instructor-authored scenarios, grading checks, and assessment review workflows.
+- Richer instructor-authored scenarios, persisted learner progress, feedback reports, and assessment review workflows.
 - More advanced billing fidelity such as credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized views.
 
 ## Architecture

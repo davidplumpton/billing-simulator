@@ -185,7 +185,7 @@
     {
       "id": "check-networking-driver",
       "type": "identifies_top_driver",
-      "expected_service": "NAT Gateway"
+      "expected_service": "AWS Data Transfer"
     }
   ]
 }

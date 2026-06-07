@@ -38,6 +38,7 @@ type Runner struct {
 	daily        persistence.DailyMeteringJobRepository
 	monthEnd     persistence.MonthEndCloseRepository
 	organization persistence.OrganizationRepository
+	progress     persistence.ScenarioLearnerProgressRepository
 }
 
 // NewRunner creates a scenario runner backed by the workspace database.
@@ -56,6 +57,7 @@ func NewRunner(db *sql.DB) Runner {
 		daily:        persistence.NewDailyMeteringJobRepository(db),
 		monthEnd:     persistence.NewMonthEndCloseRepository(db),
 		organization: persistence.NewOrganizationRepository(db),
+		progress:     persistence.NewScenarioLearnerProgressRepository(db),
 	}
 }
 
@@ -83,6 +85,16 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 	}
 	run, err = r.createScenarioRun(ctx, run, definition)
 	if err != nil {
+		return RunResult{}, err
+	}
+	if _, err := r.progress.StartRun(ctx, persistence.ScenarioLearnerProgressStartRequest{
+		ScenarioRunID:    run.ID,
+		DefinitionName:   definition.Name,
+		Objective:        definition.Name,
+		CurrentObjective: initialScenarioProgressObjective(definition),
+		ActionsTotal:     len(definition.Events),
+		ChecksTotal:      len(definition.Checks),
+	}); err != nil {
 		return RunResult{}, err
 	}
 
@@ -120,10 +132,16 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 			if insertErr := r.insertScenarioRunEvent(ctx, eventAudit); insertErr != nil {
 				err = fmt.Errorf("%w; record failed scenario event: %v", err, insertErr)
 			}
+			if progressErr := r.recordLearnerProgressAction(ctx, eventAudit); progressErr != nil {
+				err = fmt.Errorf("%w; record failed learner action: %v", err, progressErr)
+			}
 			return r.failRun(ctx, result, event.ID, err)
 		}
 		if err := r.insertScenarioRunEvent(ctx, eventAudit); err != nil {
 			return r.failRun(ctx, result, event.ID, fmt.Errorf("record scenario event %q: %w", event.ID, err))
+		}
+		if err := r.recordLearnerProgressAction(ctx, eventAudit); err != nil {
+			return r.failRun(ctx, result, event.ID, fmt.Errorf("record scenario learner action %q: %w", event.ID, err))
 		}
 		result.Run.EventsSucceeded++
 	}
@@ -135,6 +153,9 @@ func (r Runner) Run(ctx context.Context, definition Definition) (RunResult, erro
 	result.Run.BillLineItemsCreated = result.BillLineItemsCreated
 	result.Run.BillsIssued = result.BillsIssued
 	if err := r.completeScenarioRun(ctx, result.Run); err != nil {
+		return result, err
+	}
+	if err := r.completeLearnerProgress(ctx, result.Run, definition); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -1046,6 +1067,42 @@ func (r Runner) completeScenarioRun(ctx context.Context, run ScenarioRun) error 
 	return nil
 }
 
+func (r Runner) recordLearnerProgressAction(ctx context.Context, event ScenarioRunEvent) error {
+	status := persistence.ScenarioLearnerActionStatusCompleted
+	if event.Status == scenarioRunStatusFailed {
+		status = persistence.ScenarioLearnerActionStatusFailed
+	}
+	_, err := r.progress.RecordAction(ctx, persistence.ScenarioLearnerActionRecordRequest{
+		ScenarioRunID:  event.ScenarioRunID,
+		ActionID:       event.ScenarioEventID,
+		ActionSequence: event.ScenarioEventSequence,
+		ActionType:     string(event.Action),
+		ActionStatus:   status,
+		CompletedAt:    event.ScheduledAt,
+		Evidence:       scenarioLearnerActionEvidence(event),
+		ErrorMessage:   event.ErrorMessage,
+	})
+	return err
+}
+
+func (r Runner) completeLearnerProgress(ctx context.Context, run ScenarioRun, definition Definition) error {
+	state := persistence.ScenarioProgressStateCompleted
+	currentObjective := "Scenario setup complete"
+	if len(definition.Checks) > 0 {
+		state = persistence.ScenarioProgressStateInProgress
+		currentObjective = "Run scenario assessment checks"
+	}
+	if _, err := r.progress.CompleteRun(ctx, persistence.ScenarioLearnerRunCompleteRequest{
+		ScenarioRunID:         run.ID,
+		RunStatus:             run.Status,
+		CurrentObjectiveState: state,
+		CurrentObjective:      currentObjective,
+	}); err != nil {
+		return fmt.Errorf("complete scenario learner progress %q: %w", run.ID, err)
+	}
+	return nil
+}
+
 func (r Runner) failRun(ctx context.Context, result RunResult, currentEventID string, runErr error) (RunResult, error) {
 	result.Run.Status = scenarioRunStatusFailed
 	result.Run.CurrentEventID = currentEventID
@@ -1057,6 +1114,14 @@ func (r Runner) failRun(ctx context.Context, result RunResult, currentEventID st
 	result.Run.ErrorMessage = runErr.Error()
 	if err := r.completeScenarioRun(ctx, result.Run); err != nil {
 		return result, fmt.Errorf("%w; complete failed scenario run: %v", runErr, err)
+	}
+	if _, err := r.progress.CompleteRun(ctx, persistence.ScenarioLearnerRunCompleteRequest{
+		ScenarioRunID:         result.Run.ID,
+		RunStatus:             result.Run.Status,
+		CurrentObjectiveState: persistence.ScenarioProgressStateFailed,
+		CurrentObjective:      "Resolve scenario setup failure",
+	}); err != nil {
+		return result, fmt.Errorf("%w; complete failed learner progress: %v", runErr, err)
 	}
 	return result, runErr
 }
@@ -1078,6 +1143,42 @@ func failScenarioRunEvent(event ScenarioRunEvent, err error) (ScenarioRunEvent, 
 	event.Status = scenarioRunStatusFailed
 	event.ErrorMessage = err.Error()
 	return event, err
+}
+
+func initialScenarioProgressObjective(definition Definition) string {
+	if len(definition.Events) > 0 {
+		return "Complete scenario action " + definition.Events[0].ID
+	}
+	if len(definition.Checks) > 0 {
+		return "Run scenario assessment checks"
+	}
+	return definition.Name
+}
+
+func scenarioLearnerActionEvidence(event ScenarioRunEvent) string {
+	parts := []string{}
+	if event.ResourceID != "" {
+		parts = append(parts, "resource="+event.ResourceID)
+	}
+	if event.UsageEventID != "" {
+		parts = append(parts, "usage_event="+event.UsageEventID)
+	}
+	if event.GeneratedUsageEventCount > 0 {
+		parts = append(parts, "generated_usage_events="+strconv.Itoa(event.GeneratedUsageEventCount))
+	}
+	if event.MeteringRecordsCreated > 0 {
+		parts = append(parts, "metering_records="+strconv.Itoa(event.MeteringRecordsCreated))
+	}
+	if event.BillLineItemsCreated > 0 {
+		parts = append(parts, "bill_line_items="+strconv.Itoa(event.BillLineItemsCreated))
+	}
+	if event.BillID != "" {
+		parts = append(parts, "bill="+event.BillID)
+	}
+	if len(parts) == 0 {
+		return string(event.Action)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func scenarioStartTime(startDate string) (time.Time, error) {

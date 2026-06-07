@@ -3,6 +3,8 @@ package scenario
 import (
 	"context"
 	"testing"
+
+	"aws-billing-simulator/internal/persistence"
 )
 
 func TestEvaluatorEvaluatesPackagedScenarioChecks(t *testing.T) {
@@ -131,6 +133,47 @@ func TestEvaluatorReportsFailedCheckEvidence(t *testing.T) {
 		result.Results[0].Actual == "" ||
 		result.Results[0].Message == "" {
 		t.Fatalf("failed check evidence = %+v, want expected/actual/message", result.Results[0])
+	}
+}
+
+func TestEvaluatorEvaluateRunRecordsCheckProgress(t *testing.T) {
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(ForecastBudgetAlertSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", ForecastBudgetAlertSeedKey, err)
+	}
+	run, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(%q) error = %v", ForecastBudgetAlertSeedKey, err)
+	}
+
+	result, err := NewEvaluator(db).EvaluateRun(ctx, run.Run.ID, definition)
+	if err != nil {
+		t.Fatalf("EvaluateRun(%q) error = %v", ForecastBudgetAlertSeedKey, err)
+	}
+	requireAllScenarioChecksPassed(t, result)
+
+	progressRepo := persistence.NewScenarioLearnerProgressRepository(db)
+	progress, err := progressRepo.Get(ctx, run.Run.ID)
+	if err != nil {
+		t.Fatalf("Get(progress) error = %v", err)
+	}
+	if progress.CurrentObjectiveState != persistence.ScenarioProgressStateCompleted ||
+		progress.ChecksPassed != len(definition.Checks) ||
+		progress.ChecksFailed != 0 ||
+		progress.CompletedAt == "" {
+		t.Fatalf("progress after EvaluateRun = %+v, want completed passed checks", progress)
+	}
+	checks, err := progressRepo.ListCheckResults(ctx, run.Run.ID)
+	if err != nil {
+		t.Fatalf("ListCheckResults() error = %v", err)
+	}
+	if len(checks) != len(definition.Checks) ||
+		checks[0].CheckID != definition.Checks[0].ID ||
+		checks[0].Status != CheckStatusPassed ||
+		checks[0].Actual == "" {
+		t.Fatalf("persisted checks = %+v, want passed check evidence", checks)
 	}
 }
 

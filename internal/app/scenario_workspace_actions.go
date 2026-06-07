@@ -155,6 +155,9 @@ func (h scenarioHandler) runPackagedScenario(ctx context.Context, key string) (s
 	if err != nil {
 		return scenario.Definition{}, scenario.RunResult{}, err
 	}
+	if _, err := scenario.NewEvaluator(h.db).EvaluateRun(ctx, result.Run.ID, definition); err != nil {
+		return scenario.Definition{}, scenario.RunResult{}, fmt.Errorf("evaluate scenario checks: %w", err)
+	}
 	return definition, result, nil
 }
 
@@ -166,6 +169,9 @@ func (h scenarioHandler) resetPackagedScenario(ctx context.Context, definition s
 	result, err := scenario.NewRunner(h.db).Run(ctx, definition)
 	if err != nil {
 		return scenario.RunResult{}, err
+	}
+	if _, err := scenario.NewEvaluator(h.db).EvaluateRun(ctx, result.Run.ID, definition); err != nil {
+		return scenario.RunResult{}, fmt.Errorf("evaluate scenario checks: %w", err)
 	}
 	return result, nil
 }
@@ -245,6 +251,9 @@ func (s *workspaceSession) ResetToScenarioSeed(ctx context.Context, definition s
 	result, err := scenario.NewRunner(db).Run(ctx, definition)
 	if err != nil {
 		return result, err
+	}
+	if _, err := scenario.NewEvaluator(db).EvaluateRun(ctx, result.Run.ID, definition); err != nil {
+		return result, fmt.Errorf("evaluate scenario checks: %w", err)
 	}
 	return result, nil
 }

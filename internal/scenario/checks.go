@@ -46,6 +46,7 @@ type Evaluator struct {
 	categories persistence.CostCategoryRepository
 	bills      persistence.BillsRepository
 	monthEnd   persistence.MonthEndCloseRepository
+	progress   persistence.ScenarioLearnerProgressRepository
 }
 
 // NewEvaluator creates a scenario check evaluator backed by the workspace database.
@@ -56,6 +57,7 @@ func NewEvaluator(db *sql.DB) Evaluator {
 		categories: persistence.NewCostCategoryRepository(db),
 		bills:      persistence.NewBillsRepository(db),
 		monthEnd:   persistence.NewMonthEndCloseRepository(db),
+		progress:   persistence.NewScenarioLearnerProgressRepository(db),
 	}
 }
 
@@ -84,6 +86,25 @@ func (e Evaluator) Evaluate(ctx context.Context, definition Definition) (CheckEv
 			result.ChecksFailed++
 		}
 		result.Results = append(result.Results, evaluation)
+	}
+	return result, nil
+}
+
+// EvaluateRun evaluates checks and persists their latest evidence for one scenario run.
+func (e Evaluator) EvaluateRun(ctx context.Context, scenarioRunID string, definition Definition) (CheckEvaluationResult, error) {
+	scenarioRunID = strings.TrimSpace(scenarioRunID)
+	if scenarioRunID == "" {
+		return CheckEvaluationResult{}, fmt.Errorf("scenario run ID is required")
+	}
+	result, err := e.Evaluate(ctx, definition)
+	if err != nil {
+		return CheckEvaluationResult{}, err
+	}
+	if _, err := e.progress.RecordCheckResults(ctx, persistence.ScenarioLearnerCheckResultRecordRequest{
+		ScenarioRunID: scenarioRunID,
+		Results:       scenarioLearnerCheckResults(result.Results),
+	}); err != nil {
+		return CheckEvaluationResult{}, err
 	}
 	return result, nil
 }
@@ -371,6 +392,22 @@ func baseCheckEvaluation(check Check, expected string) CheckEvaluation {
 		Type:     check.Type,
 		Expected: expected,
 	}
+}
+
+func scenarioLearnerCheckResults(evaluations []CheckEvaluation) []persistence.ScenarioLearnerCheckResult {
+	results := make([]persistence.ScenarioLearnerCheckResult, 0, len(evaluations))
+	for _, evaluation := range evaluations {
+		results = append(results, persistence.ScenarioLearnerCheckResult{
+			CheckID:       evaluation.ID,
+			CheckSequence: evaluation.Sequence,
+			CheckType:     string(evaluation.Type),
+			Status:        evaluation.Status,
+			Expected:      evaluation.Expected,
+			Actual:        evaluation.Actual,
+			Message:       evaluation.Message,
+		})
+	}
+	return results
 }
 
 func finishCheckEvaluation(evaluation CheckEvaluation, passed bool) CheckEvaluation {

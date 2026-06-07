@@ -830,6 +830,26 @@ func TestRunnerRecordsFailedExecutionEventAndRun(t *testing.T) {
 	if eventStatus != scenarioRunStatusFailed || !strings.Contains(errorMessage, "was not created before generate_usage") {
 		t.Fatalf("persisted failed event = %q/%q, want failed missing-resource message", eventStatus, errorMessage)
 	}
+	progressRepo := persistence.NewScenarioLearnerProgressRepository(db)
+	progress, err := progressRepo.Get(ctx, result.Run.ID)
+	if err != nil {
+		t.Fatalf("Get(failed progress) error = %v", err)
+	}
+	if progress.CurrentObjectiveState != persistence.ScenarioProgressStateFailed ||
+		progress.ActionsCompleted != 0 ||
+		progress.CurrentObjective != "Resolve scenario setup failure" {
+		t.Fatalf("failed progress = %+v, want failed objective state", progress)
+	}
+	actions, err := progressRepo.ListActions(ctx, result.Run.ID)
+	if err != nil {
+		t.Fatalf("ListActions(failed) error = %v", err)
+	}
+	if len(actions) != 1 ||
+		actions[0].ActionID != "generate-missing" ||
+		actions[0].ActionStatus != persistence.ScenarioLearnerActionStatusFailed ||
+		!strings.Contains(actions[0].ErrorMessage, "was not created before generate_usage") {
+		t.Fatalf("failed progress actions = %+v, want failed generate-missing action", actions)
+	}
 }
 
 func TestRunnerResetsOrganizationTemplateBeforeEvents(t *testing.T) {
@@ -957,6 +977,31 @@ func runScenarioFixture(t *testing.T) scenarioFixtureResult {
 	}
 	if runStatus != scenarioRunStatusSucceeded || eventsSucceeded != 5 || resourcesCreated != 2 || usageEventsCreated != 3 || billsIssued != 1 {
 		t.Fatalf("scenario run audit = %q/%d/%d/%d/%d, want succeeded/5/2/3/1", runStatus, eventsSucceeded, resourcesCreated, usageEventsCreated, billsIssued)
+	}
+
+	progressRepo := persistence.NewScenarioLearnerProgressRepository(db)
+	progress, err := progressRepo.Get(ctx, result.Run.ID)
+	if err != nil {
+		t.Fatalf("Get(progress) error = %v", err)
+	}
+	wantProgressState := persistence.ScenarioProgressStateCompleted
+	if len(definition.Checks) > 0 {
+		wantProgressState = persistence.ScenarioProgressStateInProgress
+	}
+	if progress.CurrentObjectiveState != wantProgressState ||
+		progress.ActionsTotal != len(definition.Events) ||
+		progress.ActionsCompleted != len(definition.Events) ||
+		progress.ChecksTotal != len(definition.Checks) {
+		t.Fatalf("scenario progress = %+v, want completed actions and state %q", progress, wantProgressState)
+	}
+	progressActions, err := progressRepo.ListActions(ctx, result.Run.ID)
+	if err != nil {
+		t.Fatalf("ListActions(progress) error = %v", err)
+	}
+	if len(progressActions) != len(definition.Events) ||
+		progressActions[0].ActionID != "create-assets" ||
+		!strings.Contains(progressActions[len(progressActions)-1].Evidence, "bill=") {
+		t.Fatalf("scenario progress actions = %+v, want action evidence in scenario order", progressActions)
 	}
 
 	var succeededEvents int

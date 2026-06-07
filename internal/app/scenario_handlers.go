@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"aws-billing-simulator/internal/persistence"
 	"aws-billing-simulator/internal/scenario"
 )
 
@@ -94,6 +95,10 @@ type scenarioRunView struct {
 	MeteringRecords  string
 	BillLineItems    string
 	BillsIssued      string
+	ProgressState    string
+	ProgressClass    string
+	ProgressSummary  string
+	CheckSummary     string
 	StartedAt        string
 	CompletedAt      string
 	ErrorMessage     string
@@ -206,6 +211,10 @@ func (h scenarioHandler) handleLaunchScenario(w http.ResponseWriter, r *http.Req
 		h.renderScenarios(w, r, http.StatusBadRequest, "launch scenario: "+err.Error(), "")
 		return
 	}
+	if _, err := scenario.NewEvaluator(h.db).EvaluateRun(r.Context(), result.Run.ID, definition); err != nil {
+		h.renderScenarios(w, r, http.StatusBadRequest, "launch scenario checks: "+err.Error(), "")
+		return
+	}
 
 	flash := fmt.Sprintf(
 		"Launched %s: %d/%d events succeeded, %s",
@@ -225,7 +234,7 @@ func (h scenarioHandler) renderScenarios(w http.ResponseWriter, r *http.Request,
 		Error:                errorMessage,
 		WorkspaceEmptyState:  uiWorkspaceRequiredState(),
 		Tables: scenarioTablesView{
-			RecentRuns: uiTable(uiTableHeaders("Scenario", "Status", "Events", "Resources", "Usage", "Bills", "Current Event", "Completed"), "No scenario runs"),
+			RecentRuns: uiTable(uiTableHeaders("Scenario", "Status", "Progress", "Events", "Resources", "Usage", "Bills", "Current Event", "Completed"), "No scenario runs"),
 		},
 	}
 	if h.db != nil {
@@ -278,6 +287,7 @@ func (h scenarioHandler) loadScenarioCatalog(ctx context.Context) ([]scenarioCar
 	}
 
 	metadata := scenarioCatalog()
+	progressRepo := persistence.NewScenarioLearnerProgressRepository(h.db)
 	cards := make([]scenarioCardView, 0, len(keys))
 	for _, key := range keys {
 		definition, err := scenario.LoadSeedDefinition(key)
@@ -309,7 +319,11 @@ func (h scenarioHandler) loadScenarioCatalog(ctx context.Context) ([]scenarioCar
 		}
 		if run.ID != "" {
 			card.HasLastRun = true
-			card.LastRun = scenarioRunViewFromAudit(run)
+			progress, err := progressRepo.Get(ctx, run.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			card.LastRun = scenarioRunViewFromAudit(run, progress)
 			card.StartLabel = "Start New Run"
 		}
 		cards = append(cards, card)
@@ -376,13 +390,18 @@ func (h scenarioHandler) loadRecentScenarioRuns(ctx context.Context, limit int) 
 	}
 	defer rows.Close()
 
+	progressRepo := persistence.NewScenarioLearnerProgressRepository(h.db)
 	runs := []scenarioRunView{}
 	for rows.Next() {
 		run, err := scanScenarioRun(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, scenarioRunViewFromAudit(run))
+		progress, err := progressRepo.Get(ctx, run.ID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		runs = append(runs, scenarioRunViewFromAudit(run, progress))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -420,8 +439,8 @@ func scanScenarioRun(scan func(dest ...any) error) (scenarioRunAudit, error) {
 }
 
 // scenarioRunViewFromAudit formats one scenario run for dense browser tables.
-func scenarioRunViewFromAudit(run scenarioRunAudit) scenarioRunView {
-	return scenarioRunView{
+func scenarioRunViewFromAudit(run scenarioRunAudit, progress persistence.ScenarioLearnerProgress) scenarioRunView {
+	view := scenarioRunView{
 		ID:               run.ID,
 		DefinitionName:   run.DefinitionName,
 		Status:           titleLabel(run.Status),
@@ -438,6 +457,15 @@ func scenarioRunViewFromAudit(run scenarioRunAudit) scenarioRunView {
 		CompletedAt:      run.CompletedAt,
 		ErrorMessage:     run.ErrorMessage,
 	}
+	if progress.ScenarioRunID != "" {
+		view.ProgressState = titleLabel(progress.CurrentObjectiveState)
+		view.ProgressClass = scenarioProgressStatusClass(progress.CurrentObjectiveState)
+		view.ProgressSummary = fmt.Sprintf("%d/%d actions", progress.ActionsCompleted, progress.ActionsTotal)
+		if progress.ChecksTotal > 0 {
+			view.CheckSummary = fmt.Sprintf("%d/%d checks", progress.ChecksPassed, progress.ChecksTotal)
+		}
+	}
+	return view
 }
 
 // scenarioStatusClass maps scenario run states to shared status pill classes.
@@ -448,6 +476,19 @@ func scenarioStatusClass(status string) string {
 	case "failed":
 		return "status-failed"
 	case "running":
+		return "status-running"
+	default:
+		return ""
+	}
+}
+
+func scenarioProgressStatusClass(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case persistence.ScenarioProgressStateCompleted:
+		return "status-succeeded"
+	case persistence.ScenarioProgressStateFailed:
+		return "status-failed"
+	case persistence.ScenarioProgressStateInProgress, persistence.ScenarioProgressStateNeedsReview:
 		return "status-running"
 	default:
 		return ""
@@ -819,6 +860,7 @@ var scenariosPageTemplate = newPageTemplate("scenarios-page", `<div class="page-
 									<span>Last Run</span>
 									<strong><span class="status {{.LastRun.StatusClass}}">{{.LastRun.Status}}</span> {{.LastRun.Events}} events</strong>
 									<small>{{.LastRun.ID}}</small>
+									{{if .LastRun.ProgressState}}<small><span class="status {{.LastRun.ProgressClass}}">{{.LastRun.ProgressState}}</span> {{.LastRun.ProgressSummary}}{{if .LastRun.CheckSummary}}, {{.LastRun.CheckSummary}}{{end}}</small>{{end}}
 									{{if .LastRun.ErrorMessage}}<small>{{.LastRun.ErrorMessage}}</small>{{end}}
 								</div>
 							{{end}}
@@ -870,6 +912,7 @@ var scenariosPageTemplate = newPageTemplate("scenarios-page", `<div class="page-
 								<tr>
 									<td><strong>{{.DefinitionName}}</strong><small>{{.ID}}</small></td>
 									<td><span class="status {{.StatusClass}}">{{.Status}}</span></td>
+									<td>{{if .ProgressState}}<span class="status {{.ProgressClass}}">{{.ProgressState}}</span><small>{{.ProgressSummary}}{{if .CheckSummary}}, {{.CheckSummary}}{{end}}</small>{{else}}-{{end}}</td>
 									<td>{{.Events}}</td>
 									<td>{{.ResourcesCreated}}</td>
 									<td>{{.UsageEvents}}</td>

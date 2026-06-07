@@ -134,8 +134,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 30 {
-		t.Fatalf("schema_migrations count = %d, want 30", count)
+	if count != 31 {
+		t.Fatalf("schema_migrations count = %d, want 31", count)
 	}
 
 	var catalogCount int
@@ -1974,6 +1974,8 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		"Clone Workspace",
 		"Archive Review Bundle",
 		"Succeeded",
+		"Completed",
+		"8/8 actions",
 		"8/8",
 		"Recent Runs",
 		"close-march",
@@ -1983,7 +1985,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		}
 	}
 
-	var runID, status string
+	var runID, status, progressState string
 	var eventsSucceeded, billsIssued int
 	if err := db.QueryRowContext(ctx, `
 		SELECT id, status, events_succeeded, bills_issued
@@ -1994,6 +1996,16 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 	if status != "succeeded" || eventsSucceeded != 8 || billsIssued != 1 {
 		t.Fatalf("scenario run audit = %q/%d/%d, want succeeded/8/1", status, eventsSucceeded, billsIssued)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT current_objective_state
+		FROM scenario_learner_progress
+		WHERE scenario_run_id = ?
+	`, runID).Scan(&progressState); err != nil {
+		t.Fatalf("read launched scenario learner progress: %v", err)
+	}
+	if progressState != persistence.ScenarioProgressStateCompleted {
+		t.Fatalf("scenario learner progress state = %q, want completed", progressState)
 	}
 
 	resp, err = client.PostForm(server.URL()+"/scenarios/archive", url.Values{
@@ -2063,6 +2075,12 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	if runCount != 1 {
 		t.Fatalf("scenario run count after reset = %d, want 1", runCount)
 	}
+	if err := resetDB.QueryRowContext(ctx, `SELECT current_objective_state FROM scenario_learner_progress WHERE definition_name = ?`, "First consolidated bill").Scan(&progressState); err != nil {
+		t.Fatalf("read scenario reset learner progress: %v", err)
+	}
+	if progressState != persistence.ScenarioProgressStateCompleted {
+		t.Fatalf("scenario reset learner progress state = %q, want completed", progressState)
+	}
 
 	clonePath := filepath.Join(root, "scenario-clone-workspace")
 	resp, err = client.PostForm(server.URL()+"/scenarios/clone", url.Values{
@@ -2093,6 +2111,12 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 	if runCount != 1 {
 		t.Fatalf("cloned scenario run count = %d, want 1", runCount)
+	}
+	if err := clonedDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM scenario_learner_progress WHERE definition_name = ?`, "First consolidated bill").Scan(&runCount); err != nil {
+		t.Fatalf("count cloned scenario learner progress: %v", err)
+	}
+	if runCount != 1 {
+		t.Fatalf("cloned scenario learner progress count = %d, want 1", runCount)
 	}
 }
 

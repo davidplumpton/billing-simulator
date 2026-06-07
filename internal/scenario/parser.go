@@ -73,59 +73,97 @@ const (
 
 	// EventActionCreateCostCategorySplitRule creates or reuses one Cost Category split-charge rule.
 	EventActionCreateCostCategorySplitRule EventAction = "create_cost_category_split_rule"
+
+	// EventActionCreatePaymentMethod creates a simulated payment method for a payer profile.
+	EventActionCreatePaymentMethod EventAction = "create_payment_method"
+
+	// EventActionSchedulePayment moves the latest or named invoice obligation into scheduled collection.
+	EventActionSchedulePayment EventAction = "schedule_payment"
+
+	// EventActionProcessPayment moves the latest or named invoice obligation into processing.
+	EventActionProcessPayment EventAction = "process_payment"
+
+	// EventActionFailPayment records a failed collection attempt for the latest or named invoice obligation.
+	EventActionFailPayment EventAction = "fail_payment"
+
+	// EventActionMarkPaymentDue returns the latest or named invoice obligation to due state.
+	EventActionMarkPaymentDue EventAction = "mark_payment_due"
+
+	// EventActionMarkPaymentPastDue moves the latest or named invoice obligation past due.
+	EventActionMarkPaymentPastDue EventAction = "mark_payment_past_due"
+
+	// EventActionCollectPayment applies simulated funds to the latest or named invoice obligation.
+	EventActionCollectPayment EventAction = "collect_payment"
 )
 
 // Event describes one ordered resource, usage, clock, or billing operation.
 type Event struct {
-	ID                   string              `json:"id,omitempty"`
-	Sequence             int                 `json:"-"`
-	Day                  int                 `json:"day,omitempty"`
-	At                   string              `json:"at,omitempty"`
-	Action               EventAction         `json:"action"`
-	Account              string              `json:"account,omitempty"`
-	AccountID            string              `json:"account_id,omitempty"`
-	AccountEmail         string              `json:"account_email,omitempty"`
-	OrganizationID       string              `json:"organization_id,omitempty"`
-	ParentUnitID         string              `json:"parent_unit_id,omitempty"`
-	PayerAccount         string              `json:"payer_account,omitempty"`
-	PayerAccountID       string              `json:"payer_account_id,omitempty"`
-	Service              string              `json:"service,omitempty"`
-	ServiceCode          string              `json:"service_code,omitempty"`
-	Resource             string              `json:"resource,omitempty"`
-	ResourceID           string              `json:"resource_id,omitempty"`
-	ResourceType         string              `json:"resource_type,omitempty"`
-	Region               string              `json:"region,omitempty"`
-	Status               string              `json:"status,omitempty"`
-	TagKey               string              `json:"tag_key,omitempty"`
-	Tags                 map[string]string   `json:"tags,omitempty"`
-	Attributes           map[string]string   `json:"attributes,omitempty"`
-	UsageType            string              `json:"usage_type,omitempty"`
-	Operation            string              `json:"operation,omitempty"`
-	Amount               int                 `json:"amount,omitempty"`
-	AmountGB             *json.Number        `json:"amount_gb,omitempty"`
-	AmountHours          *json.Number        `json:"amount_hours,omitempty"`
-	Quantity             *json.Number        `json:"quantity,omitempty"`
-	QuantityMicros       int64               `json:"quantity_micros,omitempty"`
-	Unit                 string              `json:"unit,omitempty"`
-	Pattern              string              `json:"pattern,omitempty"`
-	Days                 int                 `json:"days,omitempty"`
-	BillingPeriodStart   string              `json:"billing_period_start,omitempty"`
-	BillingPeriodEnd     string              `json:"billing_period_end,omitempty"`
-	Category             string              `json:"category,omitempty"`
-	CategoryID           string              `json:"category_id,omitempty"`
-	DefaultValue         string              `json:"default_value,omitempty"`
-	Description          string              `json:"description,omitempty"`
-	RuleOrder            int                 `json:"rule_order,omitempty"`
-	Value                string              `json:"value,omitempty"`
-	MatchType            string              `json:"match_type,omitempty"`
-	Dimension            string              `json:"dimension,omitempty"`
-	Operator             string              `json:"operator,omitempty"`
-	Values               []string            `json:"values,omitempty"`
-	ReferencedCategory   string              `json:"referenced_category,omitempty"`
-	ReferencedCategoryID string              `json:"referenced_category_id,omitempty"`
-	SourceValue          string              `json:"source_value,omitempty"`
-	Method               string              `json:"method,omitempty"`
-	Targets              []SplitChargeTarget `json:"targets,omitempty"`
+	ID                      string              `json:"id,omitempty"`
+	Sequence                int                 `json:"-"`
+	Day                     int                 `json:"day,omitempty"`
+	At                      string              `json:"at,omitempty"`
+	Action                  EventAction         `json:"action"`
+	Account                 string              `json:"account,omitempty"`
+	AccountID               string              `json:"account_id,omitempty"`
+	AccountEmail            string              `json:"account_email,omitempty"`
+	OrganizationID          string              `json:"organization_id,omitempty"`
+	ParentUnitID            string              `json:"parent_unit_id,omitempty"`
+	PayerAccount            string              `json:"payer_account,omitempty"`
+	PayerAccountID          string              `json:"payer_account_id,omitempty"`
+	Service                 string              `json:"service,omitempty"`
+	ServiceCode             string              `json:"service_code,omitempty"`
+	Resource                string              `json:"resource,omitempty"`
+	ResourceID              string              `json:"resource_id,omitempty"`
+	ResourceType            string              `json:"resource_type,omitempty"`
+	Region                  string              `json:"region,omitempty"`
+	Status                  string              `json:"status,omitempty"`
+	TagKey                  string              `json:"tag_key,omitempty"`
+	Tags                    map[string]string   `json:"tags,omitempty"`
+	Attributes              map[string]string   `json:"attributes,omitempty"`
+	UsageType               string              `json:"usage_type,omitempty"`
+	Operation               string              `json:"operation,omitempty"`
+	Amount                  int                 `json:"amount,omitempty"`
+	AmountGB                *json.Number        `json:"amount_gb,omitempty"`
+	AmountHours             *json.Number        `json:"amount_hours,omitempty"`
+	Quantity                *json.Number        `json:"quantity,omitempty"`
+	QuantityMicros          int64               `json:"quantity_micros,omitempty"`
+	Unit                    string              `json:"unit,omitempty"`
+	Pattern                 string              `json:"pattern,omitempty"`
+	Days                    int                 `json:"days,omitempty"`
+	BillingPeriodStart      string              `json:"billing_period_start,omitempty"`
+	BillingPeriodEnd        string              `json:"billing_period_end,omitempty"`
+	Category                string              `json:"category,omitempty"`
+	CategoryID              string              `json:"category_id,omitempty"`
+	DefaultValue            string              `json:"default_value,omitempty"`
+	Description             string              `json:"description,omitempty"`
+	RuleOrder               int                 `json:"rule_order,omitempty"`
+	Value                   string              `json:"value,omitempty"`
+	MatchType               string              `json:"match_type,omitempty"`
+	Dimension               string              `json:"dimension,omitempty"`
+	Operator                string              `json:"operator,omitempty"`
+	Values                  []string            `json:"values,omitempty"`
+	ReferencedCategory      string              `json:"referenced_category,omitempty"`
+	ReferencedCategoryID    string              `json:"referenced_category_id,omitempty"`
+	SourceValue             string              `json:"source_value,omitempty"`
+	Method                  string              `json:"method,omitempty"`
+	Targets                 []SplitChargeTarget `json:"targets,omitempty"`
+	InvoiceObligationID     string              `json:"invoice_obligation_id,omitempty"`
+	PaymentProfileID        string              `json:"payment_profile_id,omitempty"`
+	PaymentMethodID         string              `json:"payment_method_id,omitempty"`
+	MethodType              string              `json:"method_type,omitempty"`
+	DisplayName             string              `json:"display_name,omitempty"`
+	CurrencyCode            string              `json:"currency_code,omitempty"`
+	IsDefault               bool                `json:"is_default,omitempty"`
+	CardBrand               string              `json:"card_brand,omitempty"`
+	AccountLast4            string              `json:"account_last4,omitempty"`
+	ExpirationMonth         int                 `json:"expiration_month,omitempty"`
+	ExpirationYear          int                 `json:"expiration_year,omitempty"`
+	BankName                string              `json:"bank_name,omitempty"`
+	RemittanceDestination   string              `json:"remittance_destination,omitempty"`
+	AdvancePayBalanceMicros int64               `json:"advance_pay_balance_micros,omitempty"`
+	FailureReason           string              `json:"failure_reason,omitempty"`
+	Reason                  string              `json:"reason,omitempty"`
+	AmountMicros            int64               `json:"amount_micros,omitempty"`
 }
 
 // SplitChargeTarget describes one scenario-authored split-charge allocation target.
@@ -307,6 +345,18 @@ func normalizeEvent(event Event, index int) Event {
 	event.ReferencedCategoryID = strings.TrimSpace(event.ReferencedCategoryID)
 	event.SourceValue = strings.TrimSpace(event.SourceValue)
 	event.Method = strings.TrimSpace(event.Method)
+	event.InvoiceObligationID = strings.TrimSpace(event.InvoiceObligationID)
+	event.PaymentProfileID = strings.TrimSpace(event.PaymentProfileID)
+	event.PaymentMethodID = strings.TrimSpace(event.PaymentMethodID)
+	event.MethodType = strings.TrimSpace(event.MethodType)
+	event.DisplayName = strings.TrimSpace(event.DisplayName)
+	event.CurrencyCode = strings.ToUpper(strings.TrimSpace(event.CurrencyCode))
+	event.CardBrand = strings.TrimSpace(event.CardBrand)
+	event.AccountLast4 = strings.TrimSpace(event.AccountLast4)
+	event.BankName = strings.TrimSpace(event.BankName)
+	event.RemittanceDestination = strings.TrimSpace(event.RemittanceDestination)
+	event.FailureReason = strings.TrimSpace(event.FailureReason)
+	event.Reason = strings.TrimSpace(event.Reason)
 	event.Tags = normalizeStringMap(event.Tags)
 	event.Attributes = normalizeStringMap(event.Attributes)
 	for i := range event.Values {
@@ -374,6 +424,15 @@ func validateEvent(event Event, index int, problems *validationProblems) {
 		validateCreateCostCategoryRuleEvent(path, event, problems)
 	case EventActionCreateCostCategorySplitRule:
 		validateCreateCostCategorySplitRuleEvent(path, event, problems)
+	case EventActionCreatePaymentMethod:
+		validateCreatePaymentMethodEvent(path, event, problems)
+	case EventActionSchedulePayment,
+		EventActionProcessPayment,
+		EventActionFailPayment,
+		EventActionMarkPaymentDue,
+		EventActionMarkPaymentPastDue,
+		EventActionCollectPayment:
+		validatePaymentLifecycleEvent(path, event, problems)
 	default:
 		problems.add("%s.action %q is not supported", path, event.Action)
 	}
@@ -592,6 +651,61 @@ func validateCreateCostCategorySplitRuleEvent(path string, event Event, problems
 	}
 	if event.Method == persistence.CostCategorySplitMethodFixed && fixedShareSum != 1_000_000 {
 		problems.add("%s.targets fixed_share_micros sum to %d, want 1000000", path, fixedShareSum)
+	}
+}
+
+// validateCreatePaymentMethodEvent checks payment-method fields used by payment remediation labs.
+func validateCreatePaymentMethodEvent(path string, event Event, problems *validationProblems) {
+	if event.PaymentProfileID == "" && event.PayerAccount == "" && event.PayerAccountID == "" {
+		problems.add("%s.payment_profile_id or %s.payer_account is required for create_payment_method", path, path)
+	}
+	if event.MethodType == "" {
+		problems.add("%s.method_type is required for create_payment_method", path)
+	}
+	if event.DisplayName == "" {
+		problems.add("%s.display_name is required for create_payment_method", path)
+	}
+	if event.CurrencyCode != "" && len(event.CurrencyCode) != 3 {
+		problems.add("%s.currency_code must be three characters", path)
+	}
+	if event.AdvancePayBalanceMicros < 0 {
+		problems.add("%s.advance_pay_balance_micros must be zero or greater", path)
+	}
+	switch event.MethodType {
+	case "card":
+		if event.CardBrand == "" {
+			problems.add("%s.card_brand is required for card payment methods", path)
+		}
+		if event.AccountLast4 == "" {
+			problems.add("%s.account_last4 is required for card payment methods", path)
+		}
+		if event.ExpirationMonth < 1 || event.ExpirationMonth > 12 || event.ExpirationYear < 2000 {
+			problems.add("%s.expiration_month and %s.expiration_year are required for card payment methods", path, path)
+		}
+	case "ach":
+		if event.BankName == "" {
+			problems.add("%s.bank_name is required for ACH payment methods", path)
+		}
+		if event.AccountLast4 == "" {
+			problems.add("%s.account_last4 is required for ACH payment methods", path)
+		}
+	case "invoice_remittance":
+		if event.RemittanceDestination == "" {
+			problems.add("%s.remittance_destination is required for invoice remittance methods", path)
+		}
+	case "advance_pay_balance":
+	default:
+		problems.add("%s.method_type %q is not supported for create_payment_method", path, event.MethodType)
+	}
+}
+
+// validatePaymentLifecycleEvent keeps payment transition fixtures explicit about collected amounts.
+func validatePaymentLifecycleEvent(path string, event Event, problems *validationProblems) {
+	if event.AmountMicros < 0 {
+		problems.add("%s.amount_micros must be zero or greater", path)
+	}
+	if event.Action == EventActionCollectPayment && event.AmountMicros <= 0 {
+		problems.add("%s.amount_micros must be greater than zero for collect_payment", path)
 	}
 }
 

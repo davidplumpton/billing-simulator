@@ -19,6 +19,9 @@ const (
 	// SharedNetworkingAllocationSeedKey identifies the packaged shared networking allocation lab.
 	SharedNetworkingAllocationSeedKey = "shared-networking-allocation"
 
+	// PaymentFailureSeedKey identifies the packaged failed-payment remediation lab.
+	PaymentFailureSeedKey = "payment-failure"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

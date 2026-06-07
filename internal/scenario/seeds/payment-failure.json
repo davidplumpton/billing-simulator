@@ -1,0 +1,88 @@
+{
+  "name": "Payment Failure",
+  "clock": {
+    "start": "2026-03-01"
+  },
+  "organization_template": "anycompany-retail",
+  "random_seed": 83,
+  "events": [
+    {
+      "id": "create-default-corporate-card",
+      "day": 1,
+      "action": "create_payment_method",
+      "payer_account": "Management",
+      "method_type": "card",
+      "display_name": "Default corporate card",
+      "is_default": true,
+      "card_brand": "Visa",
+      "account_last4": "4242",
+      "expiration_month": 4,
+      "expiration_year": 2026
+    },
+    {
+      "id": "create-payments-checkout-api",
+      "day": 2,
+      "action": "create_resource",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-checkout-api",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "tags": {
+        "app": "payments",
+        "env": "prod",
+        "owner": "payments-team"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "payments-checkout-api-hours",
+      "day": 3,
+      "action": "add_usage",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-checkout-api",
+      "amount_hours": 240
+    },
+    {
+      "id": "meter-payment-failure-month",
+      "day": 32,
+      "action": "run_daily_metering",
+      "payer_account": "Management"
+    },
+    {
+      "id": "close-payment-failure-month",
+      "day": 33,
+      "action": "close_billing_period",
+      "payer_account": "Management",
+      "billing_period_start": "2026-03-01",
+      "billing_period_end": "2026-04-01"
+    },
+    {
+      "id": "schedule-default-card-collection",
+      "at": "2026-04-03T09:00:00Z",
+      "action": "schedule_payment",
+      "reason": "Automatic collection scheduled against the default corporate card."
+    },
+    {
+      "id": "process-default-card-collection",
+      "at": "2026-04-03T09:05:00Z",
+      "action": "process_payment",
+      "reason": "Collection submitted to the default corporate card."
+    },
+    {
+      "id": "fail-default-card-collection",
+      "at": "2026-04-03T09:06:00Z",
+      "action": "fail_payment",
+      "reason": "Default corporate card 4242 was declined by the issuer."
+    },
+    {
+      "id": "return-invoice-to-due",
+      "at": "2026-04-04T08:00:00Z",
+      "action": "mark_payment_due",
+      "reason": "Invoice returned to due state for learner retry after fixing the payment method."
+    }
+  ]
+}

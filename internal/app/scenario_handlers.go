@@ -407,6 +407,13 @@ func scenarioCatalog() map[string]scenarioCatalogMetadata {
 			ResumeLabel:       "Resume in Cost Categories",
 			ResumePath:        "/cost-categories",
 		},
+		scenario.PaymentFailureSeedKey: {
+			Phase:             "Phase 2",
+			Objective:         "Review an issued invoice after the default card fails and retry collection from the due state.",
+			EstimatedDuration: "20 min",
+			ResumeLabel:       "Resume in Payments",
+			ResumePath:        "/payments",
+		},
 		scenario.UntaggedDataTransferSpikeSeedKey: {
 			Phase:             "Phase 2",
 			Objective:         "Find an untagged data-transfer spike and trace the cost through billed line items.",

@@ -156,6 +156,7 @@ func (r PaymentLifecycleRepository) SchedulePayment(ctx context.Context, request
 			AmountDueMicros:  current.AmountDueMicros,
 			AmountPaidMicros: current.AmountPaidMicros,
 			TransitionKind:   paymentTransitionScheduled,
+			Reason:           strings.TrimSpace(request.Reason),
 			OccurredAt:       request.OccurredAt,
 		}, nil
 	})
@@ -172,6 +173,7 @@ func (r PaymentLifecycleRepository) MarkDue(ctx context.Context, request Payment
 			AmountDueMicros:  current.AmountDueMicros,
 			AmountPaidMicros: current.AmountPaidMicros,
 			TransitionKind:   paymentTransitionDue,
+			Reason:           strings.TrimSpace(request.Reason),
 			OccurredAt:       request.OccurredAt,
 		}, nil
 	})
@@ -188,6 +190,7 @@ func (r PaymentLifecycleRepository) StartProcessing(ctx context.Context, request
 			AmountDueMicros:  current.AmountDueMicros,
 			AmountPaidMicros: current.AmountPaidMicros,
 			TransitionKind:   paymentTransitionProcessing,
+			Reason:           strings.TrimSpace(request.Reason),
 			OccurredAt:       request.OccurredAt,
 		}, nil
 	})
@@ -228,6 +231,7 @@ func (r PaymentLifecycleRepository) MarkPastDue(ctx context.Context, request Pay
 			AmountDueMicros:  current.AmountDueMicros,
 			AmountPaidMicros: current.AmountPaidMicros,
 			TransitionKind:   paymentTransitionPastDue,
+			Reason:           strings.TrimSpace(request.Reason),
 			OccurredAt:       request.OccurredAt,
 		}, nil
 	})

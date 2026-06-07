@@ -31,6 +31,8 @@ type Runner struct {
 	tags         persistence.CostAllocationTagRepository
 	categories   persistence.CostCategoryRepository
 	splitCharges persistence.CostCategorySplitChargeRepository
+	profiles     persistence.PaymentProfileRepository
+	payments     persistence.PaymentLifecycleRepository
 	daily        persistence.DailyMeteringJobRepository
 	monthEnd     persistence.MonthEndCloseRepository
 	organization persistence.OrganizationRepository
@@ -45,6 +47,8 @@ func NewRunner(db *sql.DB) Runner {
 		tags:         persistence.NewCostAllocationTagRepository(db),
 		categories:   persistence.NewCostCategoryRepository(db),
 		splitCharges: persistence.NewCostCategorySplitChargeRepository(db),
+		profiles:     persistence.NewPaymentProfileRepository(db),
+		payments:     persistence.NewPaymentLifecycleRepository(db),
 		daily:        persistence.NewDailyMeteringJobRepository(db),
 		monthEnd:     persistence.NewMonthEndCloseRepository(db),
 		organization: persistence.NewOrganizationRepository(db),
@@ -184,12 +188,13 @@ type ScenarioRunEvent struct {
 }
 
 type scenarioExecutionState struct {
-	runID                string
-	definition           Definition
-	startTime            time.Time
-	accountAliasesByKey  map[string]string
-	resourceAliasesByKey map[string]string
-	categoryAliasesByKey map[string]string
+	runID                   string
+	definition              Definition
+	startTime               time.Time
+	accountAliasesByKey     map[string]string
+	resourceAliasesByKey    map[string]string
+	categoryAliasesByKey    map[string]string
+	lastInvoiceObligationID string
 }
 
 type scenarioServiceDefaults struct {
@@ -287,6 +292,7 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		audit.BillLineItemsCreated = closed.BillLineItemsCreated
 		audit.BillID = closed.Bill.ID
 		audit.BillsIssued = boolToInt(closed.Bill.ID != "")
+		state.lastInvoiceObligationID = closed.InvoiceObligation.ID
 	case EventActionRefreshCostAllocationTags:
 		if _, err := r.refreshCostAllocationTags(ctx, scheduledAt); err != nil {
 			return failScenarioRunEvent(audit, err)
@@ -307,11 +313,102 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		if _, err := r.createCostCategorySplitRule(ctx, state, event); err != nil {
 			return failScenarioRunEvent(audit, err)
 		}
+	case EventActionCreatePaymentMethod:
+		if _, err := r.createPaymentMethod(ctx, state, event); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionSchedulePayment,
+		EventActionProcessPayment,
+		EventActionFailPayment,
+		EventActionMarkPaymentDue,
+		EventActionMarkPaymentPastDue,
+		EventActionCollectPayment:
+		if _, err := r.applyPaymentLifecycleEvent(ctx, state, event, scheduledAt); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
 	default:
 		err := fmt.Errorf("scenario event action %q is not executable", event.Action)
 		return failScenarioRunEvent(audit, err)
 	}
 	return audit, nil
+}
+
+// createPaymentMethod prepares the payer method state a payment remediation lab should start from.
+func (r Runner) createPaymentMethod(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.PaymentMethod, error) {
+	profileID, err := r.resolvePaymentProfileID(ctx, state, event)
+	if err != nil {
+		return persistence.PaymentMethod{}, err
+	}
+	methodID := event.PaymentMethodID
+	if methodID == "" {
+		methodID = stableScenarioID("paymeth_scn", state.runID, event.ID, event.DisplayName)
+	}
+	return r.profiles.CreatePaymentMethod(ctx, persistence.PaymentMethodCreateRequest{
+		ID:                      methodID,
+		PaymentProfileID:        profileID,
+		MethodType:              event.MethodType,
+		DisplayName:             event.DisplayName,
+		Status:                  event.Status,
+		IsDefault:               event.IsDefault,
+		CurrencyCode:            event.CurrencyCode,
+		CardBrand:               event.CardBrand,
+		AccountLast4:            event.AccountLast4,
+		ExpirationMonth:         event.ExpirationMonth,
+		ExpirationYear:          event.ExpirationYear,
+		BankName:                event.BankName,
+		RemittanceDestination:   event.RemittanceDestination,
+		AdvancePayBalanceMicros: event.AdvancePayBalanceMicros,
+		FailureReason:           event.FailureReason,
+	})
+}
+
+// applyPaymentLifecycleEvent moves the current scenario invoice through the same state machine as the UI.
+func (r Runner) applyPaymentLifecycleEvent(ctx context.Context, state *scenarioExecutionState, event Event, scheduledAt time.Time) (persistence.PaymentLifecycleResult, error) {
+	obligationID := chooseFirst(event.InvoiceObligationID, state.lastInvoiceObligationID)
+	if obligationID == "" {
+		return persistence.PaymentLifecycleResult{}, fmt.Errorf("scenario payment event %q requires invoice_obligation_id or a prior close_billing_period event", event.ID)
+	}
+	request := persistence.PaymentLifecycleTransitionRequest{
+		InvoiceObligationID: obligationID,
+		AmountMicros:        event.AmountMicros,
+		Reason:              event.Reason,
+		OccurredAt:          scheduledAt.UTC().Format(time.RFC3339),
+	}
+	switch event.Action {
+	case EventActionSchedulePayment:
+		return r.payments.SchedulePayment(ctx, request)
+	case EventActionProcessPayment:
+		return r.payments.StartProcessing(ctx, request)
+	case EventActionFailPayment:
+		return r.payments.FailPayment(ctx, request)
+	case EventActionMarkPaymentDue:
+		return r.payments.MarkDue(ctx, request)
+	case EventActionMarkPaymentPastDue:
+		return r.payments.MarkPastDue(ctx, request)
+	case EventActionCollectPayment:
+		return r.payments.ApplyPayment(ctx, request)
+	default:
+		return persistence.PaymentLifecycleResult{}, fmt.Errorf("scenario event action %q is not a payment lifecycle action", event.Action)
+	}
+}
+
+// resolvePaymentProfileID finds the profile named directly or through a payer account reference.
+func (r Runner) resolvePaymentProfileID(ctx context.Context, state *scenarioExecutionState, event Event) (string, error) {
+	if event.PaymentProfileID != "" {
+		return event.PaymentProfileID, nil
+	}
+	payerID := state.resolveAccountID(event.PayerAccountID, event.PayerAccount)
+	if payerID == "" {
+		return "", fmt.Errorf("scenario payment method %q requires payment_profile_id or payer_account", event.ID)
+	}
+	details, found, err := r.profiles.GetDefaultPaymentProfileForPayer(ctx, payerID, chooseFirst(event.CurrencyCode, "USD"))
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("default payment profile for payer %q is not available", payerID)
+	}
+	return details.Profile.ID, nil
 }
 
 // refreshCostAllocationTags records the scenario's current resource tag inventory for billing workflows.

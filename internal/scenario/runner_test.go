@@ -45,6 +45,9 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, SharedNetworkingAllocationSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, SharedNetworkingAllocationSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, PaymentFailureSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, PaymentFailureSeedKey)
+	}
 	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition() error = %v", err)
@@ -81,6 +84,18 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 		definition.Events[9].Action != EventActionCreateCostCategoryRule ||
 		definition.Events[12].Action != EventActionCreateCostCategorySplitRule {
 		t.Fatalf("shared networking allocation definition = %+v, want Cost Category split lab fixture", definition)
+	}
+	definition, err = LoadSeedDefinition(PaymentFailureSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", PaymentFailureSeedKey, err)
+	}
+	if definition.Name != "Payment Failure" ||
+		len(definition.Events) != 9 ||
+		definition.Events[0].Action != EventActionCreatePaymentMethod ||
+		definition.Events[5].Action != EventActionSchedulePayment ||
+		definition.Events[7].Action != EventActionFailPayment ||
+		definition.Events[8].Action != EventActionMarkPaymentDue {
+		t.Fatalf("payment failure definition = %+v, want failed-payment lab fixture", definition)
 	}
 }
 
@@ -537,6 +552,94 @@ func TestRunnerAppliesSharedNetworkingAllocationSeed(t *testing.T) {
 		shared.SplitOutCostMicros != sourceCostMicros ||
 		shared.TotalAllocatedCostMicros != 0 {
 		t.Fatalf("split rows = storefront %+v payments %+v shared %+v, want 60/40 target allocation and zero shared total", storefront, payments, shared)
+	}
+}
+
+func TestRunnerAppliesPaymentFailureSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(PaymentFailureSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", PaymentFailureSeedKey, err)
+	}
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(payment failure) error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded ||
+		result.Run.EventsSucceeded != 9 ||
+		result.ResourcesCreated != 1 ||
+		result.UsageEventsCreated != 1 ||
+		result.MeteringRecordsCreated != 1 ||
+		result.BillLineItemsCreated != 2 ||
+		result.BillsIssued != 1 {
+		t.Fatalf("Run() result = %+v, want successful payment failure lab counts", result)
+	}
+
+	var paymentMethodStatus string
+	var paymentMethodDefault int
+	if err := db.QueryRowContext(ctx, `SELECT status, is_default
+		FROM payment_methods
+		WHERE display_name = ?
+		  AND account_last4 = ?`,
+		"Default corporate card",
+		"4242",
+	).Scan(&paymentMethodStatus, &paymentMethodDefault); err != nil {
+		t.Fatalf("read scenario default payment method: %v", err)
+	}
+	if paymentMethodStatus != "active" || paymentMethodDefault != 1 {
+		t.Fatalf("scenario payment method = %q/%d, want active default", paymentMethodStatus, paymentMethodDefault)
+	}
+
+	var billID, billState, obligationID, invoiceID, paymentStatus string
+	var amountDueMicros int64
+	if err := db.QueryRowContext(ctx, `SELECT
+			b.id,
+			b.bill_state,
+			o.id,
+			o.invoice_id,
+			ps.status,
+			ps.amount_due_micros
+		FROM bills b
+		JOIN invoice_obligations o ON o.bill_id = b.id
+		JOIN invoice_payment_states ps ON ps.invoice_obligation_id = o.id
+		WHERE b.billing_period_start = ?
+		  AND b.billing_period_end = ?
+		  AND b.payer_account_id = ?`,
+		"2026-03-01",
+		"2026-04-01",
+		persistence.AnyCompanyRetailManagementAccountID,
+	).Scan(&billID, &billState, &obligationID, &invoiceID, &paymentStatus, &amountDueMicros); err != nil {
+		t.Fatalf("read payment failure invoice state: %v", err)
+	}
+	if billID == "" || obligationID == "" || invoiceID == "" ||
+		billState != "issued" ||
+		paymentStatus != "due" ||
+		amountDueMicros <= 0 {
+		t.Fatalf("invoice state = bill %q/%q obligation %q invoice %q payment %q due %d, want issued bill with due payment after failed retry setup", billID, billState, obligationID, invoiceID, paymentStatus, amountDueMicros)
+	}
+
+	events, err := persistence.NewPaymentLifecycleRepository(db).ListEvents(ctx, obligationID, 10)
+	if err != nil {
+		t.Fatalf("ListEvents(%q) error = %v", obligationID, err)
+	}
+	transitionReasons := map[string]string{}
+	for _, event := range events {
+		transitionReasons[event.TransitionKind] = event.Reason
+	}
+	for _, transition := range []string{"created", "scheduled", "processing", "failed", "due"} {
+		if _, ok := transitionReasons[transition]; !ok {
+			t.Fatalf("payment history transitions = %+v, want %q", transitionReasons, transition)
+		}
+	}
+	if !strings.Contains(transitionReasons["failed"], "Default corporate card 4242 was declined") {
+		t.Fatalf("failed payment reason = %q, want default-card decline detail", transitionReasons["failed"])
+	}
+	if !strings.Contains(transitionReasons["due"], "learner retry") {
+		t.Fatalf("due payment reason = %q, want retry guidance", transitionReasons["due"])
 	}
 }
 

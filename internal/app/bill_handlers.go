@@ -46,28 +46,30 @@ type billStateCardView struct {
 }
 
 type billSummaryView struct {
-	ID               string
-	Period           string
-	PayerAccountID   string
-	State            string
-	LineItemCount    int
-	Charges          string
-	Credits          string
-	Refunds          string
-	Tax              string
-	Total            string
-	InvoiceID        string
-	InvoicePath      string
-	InvoiceCSVPath   string
-	InvoicePDFPath   string
-	CURCSVPath       string
-	CURReconcilePath string
-	InvoiceStatus    string
-	InvoiceAmountDue string
-	InvoicePaid      string
-	InvoiceDate      string
-	InvoiceDueDate   string
-	UpdatedAt        string
+	ID                string
+	Period            string
+	PayerAccountID    string
+	State             string
+	LineItemCount     int
+	Charges           string
+	Credits           string
+	Refunds           string
+	Tax               string
+	Total             string
+	InvoiceID         string
+	InvoicePath       string
+	InvoiceCSVPath    string
+	InvoicePDFPath    string
+	CanViewInvoice    bool
+	InvoiceRestricted bool
+	CURCSVPath        string
+	CURReconcilePath  string
+	InvoiceStatus     string
+	InvoiceAmountDue  string
+	InvoicePaid       string
+	InvoiceDate       string
+	InvoiceDueDate    string
+	UpdatedAt         string
 }
 
 type billChargeBreakdownView struct {
@@ -520,6 +522,10 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	if err != nil {
 		return err
 	}
+	canViewInvoice, err := h.invoiceAccessPredicate(ctx, data.Filters)
+	if err != nil {
+		return err
+	}
 	summaries, err := h.bills.ListBillStateSummaries(ctx, persistence.BillStateSummaryRequest{
 		Limit:                 50,
 		DefaultPayerAccountID: defaultPayerAccountID,
@@ -531,7 +537,7 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	summaries = filterBillStateSummaries(summaries, data.Filters)
 	data.StateCards = billStateCards(summaries)
 	for _, summary := range summaries {
-		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary, data.Filters))
+		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary, data.Filters, canViewInvoice(summary.PayerAccountID)))
 	}
 
 	reconciliations, err := h.bills.ListBillReconciliations(ctx, persistence.BillReconciliationRequest{
@@ -617,6 +623,20 @@ func (h billsHandler) billingPolicyFromFilter(ctx context.Context, filter billsF
 	return policy, true, nil
 }
 
+// invoiceAccessPredicate separates bill-row visibility from financial document access.
+func (h billsHandler) invoiceAccessPredicate(ctx context.Context, filter billsFilterView) (func(string) bool, error) {
+	policy, scoped, err := h.billingPolicyFromFilter(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	if !scoped {
+		return func(string) bool { return true }, nil
+	}
+	return func(payerAccountID string) bool {
+		return policy.AllowsView(billingvisibility.ViewInvoices) && policy.AllowsPayerAccount(strings.TrimSpace(payerAccountID))
+	}, nil
+}
+
 // ensureInvoiceViewerAccess enforces financial-document access when a simulated viewer is selected.
 func (h billsHandler) ensureInvoiceViewerAccess(ctx context.Context, r *http.Request, payerAccountID string) error {
 	policy, scoped, err := h.billingPolicyFromFilter(ctx, billsFilterFromRequest(r))
@@ -676,21 +696,25 @@ func filterBillResourceChargeSummaries(rows []persistence.BillResourceChargeSumm
 	return filtered
 }
 
-func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter billsFilterView) billSummaryView {
+func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter billsFilterView, canViewInvoice bool) billSummaryView {
 	invoicePath := ""
 	invoiceCSVPath := ""
 	invoicePDFPath := ""
 	curCSVPath := ""
 	curReconcilePath := ""
-	if strings.TrimSpace(summary.InvoiceID) != "" {
+	invoiceID := strings.TrimSpace(summary.InvoiceID)
+	hasIssuedBill := invoiceID != "" || billStateHasInvoiceDocument(summary.BillState)
+	if hasIssuedBill {
 		viewer := exportViewerFieldsFromBillsFilter(filter)
 		usageAccountID := strings.TrimSpace(filter.UsageAccountID)
 		if viewer.Role == billingvisibility.RoleMemberAccount.String() && viewer.AccountID != "" {
 			usageAccountID = viewer.AccountID
 		}
-		invoicePath = invoicePathForIDWithViewer(summary.InvoiceID, viewer)
-		invoiceCSVPath = invoiceCSVPathForIDWithViewer(summary.InvoiceID, viewer)
-		invoicePDFPath = invoicePDFPathForIDWithViewer(summary.InvoiceID, viewer)
+		if invoiceID != "" && canViewInvoice {
+			invoicePath = invoicePathForIDWithViewer(summary.InvoiceID, viewer)
+			invoiceCSVPath = invoiceCSVPathForIDWithViewer(summary.InvoiceID, viewer)
+			invoicePDFPath = invoicePDFPathForIDWithViewer(summary.InvoiceID, viewer)
+		}
 		curCSVPath = curCSVExportPathWithViewer(persistence.CURCSVExportRequest{
 			BillingPeriodStart: summary.BillingPeriodStart,
 			BillingPeriodEnd:   summary.BillingPeriodEnd,
@@ -707,28 +731,30 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter bil
 		}, viewer)
 	}
 	return billSummaryView{
-		ID:               summary.ID,
-		Period:           summary.BillingPeriodStart + " to " + summary.BillingPeriodEnd,
-		PayerAccountID:   summary.PayerAccountID,
-		State:            displayBillState(summary.BillState),
-		LineItemCount:    summary.LineItemCount,
-		Charges:          formatUSDMicros(summary.UsageChargeMicros),
-		Credits:          formatUSDMicros(summary.CreditMicros),
-		Refunds:          formatUSDMicros(summary.RefundMicros),
-		Tax:              formatUSDMicros(summary.TaxMicros),
-		Total:            formatUSDMicros(summary.TotalMicros),
-		InvoiceID:        summary.InvoiceID,
-		InvoicePath:      invoicePath,
-		InvoiceCSVPath:   invoiceCSVPath,
-		InvoicePDFPath:   invoicePDFPath,
-		CURCSVPath:       curCSVPath,
-		CURReconcilePath: curReconcilePath,
-		InvoiceStatus:    displayBillState(summary.InvoiceStatus),
-		InvoiceAmountDue: formatUSDMicros(summary.InvoiceAmountDueMicros),
-		InvoicePaid:      formatUSDMicros(summary.InvoiceAmountPaidMicros),
-		InvoiceDate:      summary.InvoiceDate,
-		InvoiceDueDate:   summary.InvoiceDueDate,
-		UpdatedAt:        summary.UpdatedAt,
+		ID:                summary.ID,
+		Period:            summary.BillingPeriodStart + " to " + summary.BillingPeriodEnd,
+		PayerAccountID:    summary.PayerAccountID,
+		State:             displayBillState(summary.BillState),
+		LineItemCount:     summary.LineItemCount,
+		Charges:           formatUSDMicros(summary.UsageChargeMicros),
+		Credits:           formatUSDMicros(summary.CreditMicros),
+		Refunds:           formatUSDMicros(summary.RefundMicros),
+		Tax:               formatUSDMicros(summary.TaxMicros),
+		Total:             formatUSDMicros(summary.TotalMicros),
+		InvoiceID:         summary.InvoiceID,
+		InvoicePath:       invoicePath,
+		InvoiceCSVPath:    invoiceCSVPath,
+		InvoicePDFPath:    invoicePDFPath,
+		CanViewInvoice:    canViewInvoice,
+		InvoiceRestricted: hasIssuedBill && !canViewInvoice,
+		CURCSVPath:        curCSVPath,
+		CURReconcilePath:  curReconcilePath,
+		InvoiceStatus:     displayBillState(summary.InvoiceStatus),
+		InvoiceAmountDue:  formatUSDMicros(summary.InvoiceAmountDueMicros),
+		InvoicePaid:       formatUSDMicros(summary.InvoiceAmountPaidMicros),
+		InvoiceDate:       summary.InvoiceDate,
+		InvoiceDueDate:    summary.InvoiceDueDate,
+		UpdatedAt:         summary.UpdatedAt,
 	}
 }
 
@@ -1037,6 +1063,15 @@ func billStateDefinitions() []billStateDefinition {
 	}
 }
 
+func billStateHasInvoiceDocument(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "issued", "adjusted", "paid", "past_due":
+		return true
+	default:
+		return false
+	}
+}
+
 func displayBillState(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1320,10 +1355,17 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 									<td><strong>{{.Total}}</strong></td>
 									<td>
 										{{if .InvoiceID}}
-											<strong><a href="{{.InvoicePath}}">{{.InvoiceID}}</a></strong>
-											<small>{{.InvoiceStatus}} due {{.InvoiceAmountDue}} paid {{.InvoicePaid}}</small>
-											<small>{{.InvoiceDate}} to {{.InvoiceDueDate}}</small>
-											<small><a href="{{.InvoiceCSVPath}}">Invoice CSV</a> <a href="{{.InvoicePDFPath}}">PDF</a></small>
+											{{if .CanViewInvoice}}
+												<strong><a href="{{.InvoicePath}}">{{.InvoiceID}}</a></strong>
+												<small>{{.InvoiceStatus}} due {{.InvoiceAmountDue}} paid {{.InvoicePaid}}</small>
+												<small>{{.InvoiceDate}} to {{.InvoiceDueDate}}</small>
+												<small><a href="{{.InvoiceCSVPath}}">Invoice CSV</a> <a href="{{.InvoicePDFPath}}">PDF</a></small>
+											{{else}}
+												<span class="muted">invoice restricted</span>
+											{{end}}
+											{{if .CURCSVPath}}<small><a href="{{.CURCSVPath}}">CUR CSV</a> <a href="{{.CURReconcilePath}}">Reconcile</a></small>{{end}}
+										{{else if .InvoiceRestricted}}
+											<span class="muted">invoice restricted</span>
 											{{if .CURCSVPath}}<small><a href="{{.CURCSVPath}}">CUR CSV</a> <a href="{{.CURReconcilePath}}">Reconcile</a></small>{{end}}
 										{{else}}
 											<span class="muted">not issued</span>

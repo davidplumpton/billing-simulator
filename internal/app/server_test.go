@@ -7698,6 +7698,49 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 			t.Fatalf("GET /bills management viewer after close missing scoped invoice link %q: %s", want, body)
 		}
 	}
+	resp, err = client.Get(server.URL + "/bills" + memberViewerQuery)
+	if err != nil {
+		t.Fatalf("GET /bills member viewer after close error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills member viewer after close status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	memberCURCSVPath := curCSVExportPathWithViewer(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     "999988887777",
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     "final",
+	}, exportViewerFields{Role: "member-account", AccountID: "111122223333"})
+	memberCURReconcilePath := curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     "999988887777",
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     "final",
+	}, exportViewerFields{Role: "member-account", AccountID: "111122223333"})
+	for _, want := range []string{
+		"Workflow web",
+		"invoice restricted",
+		strings.ReplaceAll(memberCURCSVPath, "&", "&amp;"),
+		strings.ReplaceAll(memberCURReconcilePath, "&", "&amp;"),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills member viewer after close missing %q: %s", want, body)
+		}
+	}
+	for _, leaked := range []string{
+		invoiceID,
+		invoicePath,
+		invoiceCSVPath,
+		invoicePDFPath,
+		"due $1.0832 paid $0.00",
+	} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("GET /bills member viewer after close leaked invoice document detail %q: %s", leaked, body)
+		}
+	}
 	resp, err = client.Get(server.URL + invoicePath)
 	if err != nil {
 		t.Fatalf("GET /invoices/{id} error = %v", err)

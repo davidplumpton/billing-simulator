@@ -592,6 +592,73 @@ code {
 	white-space: normal;
 }
 
+.query-lab-start {
+	align-items: stretch;
+}
+
+.query-lab-start .detail-list {
+	min-width: min(100%, 420px);
+	border-bottom: 0;
+	padding: 0;
+}
+
+.schema-chip-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 14px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
+.schema-chip-list code {
+	display: inline-flex;
+	align-items: center;
+	min-height: 26px;
+	border-radius: 6px;
+	background: #f1f4f6;
+	padding: 3px 7px;
+	color: #42515d;
+}
+
+.query-lab-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+	gap: 14px;
+}
+
+.query-example {
+	min-width: 0;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 14px;
+}
+
+.query-example-heading {
+	display: grid;
+	gap: 5px;
+	margin-bottom: 12px;
+}
+
+.sql-block {
+	max-height: 560px;
+	margin: 0;
+	padding: 12px;
+	overflow: auto;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: #172026;
+	color: #eef6f5;
+}
+
+.sql-block code {
+	font-size: 12px;
+	line-height: 1.45;
+	white-space: pre;
+}
+
 .tags {
 	display: flex;
 	flex-wrap: wrap;

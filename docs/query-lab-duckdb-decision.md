@@ -34,9 +34,9 @@ Leave a clear revisit point. If later work needs interactive in-app SQL, Parquet
 
 ## Consequences
 
-`bd-hz2.2.2` should add query examples that target exported CUR-like CSV files, not internal simulator tables. A practical first set should cover linked-account totals, untagged spend, top usage types, invoice reconciliation, and allocated cost comparisons.
+`bd-hz2.2.2` adds query examples that target exported CUR-like CSV files, not internal simulator tables. The first set covers linked-account totals, untagged spend, top usage types, invoice reconciliation, and allocated cost comparisons.
 
-The app should continue to expose export generation, download, regeneration, and reconciliation through existing workspace-local routes. Query-lab documentation can point learners from `/exports` to an external SQL command or SQL client.
+The app should continue to expose export generation, download, regeneration, and reconciliation through existing workspace-local routes. Query-lab examples can point learners from `/exports` and `/query-lab` to an external SQL command or SQL client.
 
 `go.mod` and `go.sum` should not add `github.com/duckdb/duckdb-go/v2` for this phase.
 
@@ -45,12 +45,12 @@ The app should continue to expose export generation, download, regeneration, and
 1. Start the simulator with a project-local workspace and state file.
 2. Launch a packaged scenario that closes a billing period, such as "First consolidated bill".
 3. Open `/exports`, generate or regenerate a CUR CSV export, and download the generated file.
-4. Run an optional external DuckDB CLI query against the CSV:
+4. Open `/query-lab`, then run an optional external DuckDB CLI query against the CSV:
 
 ```sql
 SELECT
   usage_account_id,
-  ROUND(SUM(unblended_cost) / 1000000.0, 2) AS unblended_cost_usd
+  ROUND(SUM(CAST(unblended_cost AS DOUBLE)), 2) AS unblended_cost_usd
 FROM read_csv_auto('tmp/workspace/exports/<cur-file>.csv')
 GROUP BY usage_account_id
 ORDER BY unblended_cost_usd DESC;

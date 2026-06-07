@@ -202,6 +202,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/exports/reconciliation", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleCURReconciliation(w, r)
 	})
+	mux.HandleFunc("/query-lab", func(w http.ResponseWriter, r *http.Request) {
+		newQueryLabHandler().handleQueryLab(w, r)
+	})
 	mux.HandleFunc("/budgets", func(w http.ResponseWriter, r *http.Request) {
 		newBudgetHandler(workspace.DB()).handleBudgets(w, r)
 	})

@@ -7591,6 +7591,7 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		LineItemStatus:     "final",
 	})
 	managementViewerQuery := "?viewer_role=management-account&viewer_account_id=999988887777"
+	managementInvoiceQuery := "viewer_account_id=999988887777&viewer_role=management-account"
 	escapedManagementInvoiceQuery := "viewer_account_id=999988887777&amp;viewer_role=management-account"
 	memberViewerQuery := "?viewer_role=member-account&viewer_account_id=111122223333"
 	if !strings.Contains(body, invoicePath) {
@@ -7670,6 +7671,15 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(body, "Invoice "+invoiceID) || !strings.Contains(body, "Workflow web") {
 		t.Fatalf("GET /invoices/{id} management viewer missing invoice details: %s", body)
+	}
+	for _, want := range []string{
+		`href="` + invoiceCSVPath + `?` + escapedManagementInvoiceQuery + `"`,
+		`href="` + invoicePDFPath + `?` + escapedManagementInvoiceQuery + `"`,
+		`href="/bills?` + escapedManagementInvoiceQuery + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /invoices/{id} management viewer missing scoped action link %q: %s", want, body)
+		}
 	}
 	crossPayerViewerQuery := "?viewer_role=management-account&viewer_account_id=000000000000"
 	resp, err = client.Get(server.URL + invoicePath + crossPayerViewerQuery)
@@ -7773,8 +7783,11 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("GET /invoices/{id}/document.pdf management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotImplemented, body)
 	}
-	if !strings.Contains(body, "packaged HTML-to-PDF renderer") || !strings.Contains(body, invoicePath) {
-		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing implementation plan: %s", body)
+	scopedManagementInvoicePath := invoicePath + "?" + managementInvoiceQuery
+	if !strings.Contains(body, "packaged HTML-to-PDF renderer") ||
+		!strings.Contains(body, scopedManagementInvoicePath) ||
+		!strings.Contains(resp.Header.Get("Link"), "<"+scopedManagementInvoicePath+">") {
+		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing scoped implementation plan: headers=%v body=%s", resp.Header, body)
 	}
 	resp, err = client.Get(server.URL + invoicePDFPath + crossPayerViewerQuery)
 	if err != nil {

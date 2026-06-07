@@ -384,6 +384,7 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 		InvoiceID:      invoiceID,
 		Error:          errorMessage,
 	}
+	viewer := exportViewerFieldsFromBillsFilter(billsFilterFromRequest(r))
 	if h.db != nil && data.Error == "" {
 		printable, err := h.invoices.GetPrintableByInvoiceID(r.Context(), invoiceID)
 		if err != nil {
@@ -398,12 +399,12 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 			status = http.StatusForbidden
 			data.Error = err.Error()
 		} else {
-			data = invoicePageDataFromPrintable(printable)
+			data = invoicePageDataFromPrintable(printable, viewer)
 		}
 	}
 	data.Notices = uiNotices("", data.Error)
 	data.WorkspaceEmptyState = uiWorkspaceRequiredState()
-	data.Actions = invoiceActionBar(data)
+	data.Actions = invoiceActionBar(data, viewer)
 	data.Tables = invoiceTables()
 
 	renderPage(w, status, pageLayoutOptions{
@@ -433,12 +434,12 @@ func invoiceTables() invoiceTablesView {
 }
 
 // invoiceActionBar returns the invoice links available for the current page state.
-func invoiceActionBar(data invoicePageData) uiActionBarView {
+func invoiceActionBar(data invoicePageData, viewer exportViewerFields) uiActionBarView {
 	actions := []uiActionLinkView{}
 	if data.Loaded {
 		actions = append(actions, uiActionLink("CSV", data.CSVPath), uiActionLink("PDF", data.PDFPath))
 	}
-	actions = append(actions, uiActionLink("Bills", "/bills"))
+	actions = append(actions, uiActionLink("Bills", billsPathWithExportViewer(viewer)))
 	return uiActionBar(actions...)
 }
 
@@ -493,7 +494,8 @@ func (h billsHandler) handleInvoicePDFPlan(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	htmlPath := invoicePathForID(invoiceID)
+	viewer := exportViewerFieldsFromBillsFilter(billsFilterFromRequest(r))
+	htmlPath := invoicePathForIDWithViewer(invoiceID, viewer)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Link", "<"+htmlPath+`>; rel="alternate"; type="text/html"`)
 	w.Header().Set("X-Invoice-PDF-Implementation", "packaged-html-to-pdf")
@@ -731,7 +733,7 @@ func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter bil
 }
 
 // invoicePageDataFromPrintable prepares a printable invoice for the HTML template.
-func invoicePageDataFromPrintable(printable persistence.PrintableInvoice) invoicePageData {
+func invoicePageDataFromPrintable(printable persistence.PrintableInvoice, viewer exportViewerFields) invoicePageData {
 	document := printable.Document
 	obligation := printable.Obligation
 	data := invoicePageData{
@@ -762,8 +764,8 @@ func invoicePageDataFromPrintable(printable persistence.PrintableInvoice) invoic
 		PaymentStatus:         displayBillState(obligation.Status),
 		AmountDue:             formatUSDMicros(obligation.AmountDueMicros),
 		AmountPaid:            formatUSDMicros(obligation.AmountPaidMicros),
-		CSVPath:               invoiceCSVPathForID(document.InvoiceID),
-		PDFPath:               invoicePDFPathForID(document.InvoiceID),
+		CSVPath:               invoiceCSVPathForIDWithViewer(document.InvoiceID, viewer),
+		PDFPath:               invoicePDFPathForIDWithViewer(document.InvoiceID, viewer),
 	}
 	for _, summary := range printable.ServiceSummaries {
 		data.ServiceSummaries = append(data.ServiceSummaries, invoiceChargeSummaryViewFromSummary(summary))

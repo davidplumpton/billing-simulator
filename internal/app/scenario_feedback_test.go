@@ -77,7 +77,9 @@ func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
 		key         string
 		definition  string
 		wantSources []string
+		wantText    []string
 		staleNames  []string
+		staleText   []string
 	}{
 		{
 			name:       "account and usage actions",
@@ -117,6 +119,28 @@ func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
 				"payer_payment_profiles",
 			},
 		},
+		{
+			name:       "budget forecast and saved report actions",
+			key:        "forecast-budget-alert",
+			definition: "Forecast and Budget Alert",
+			wantSources: []string{
+				"budgets, budget_thresholds",
+				"budget_forecast_summaries, budget_alert_notifications",
+				"saved_reports",
+			},
+			wantText: []string{
+				"Created or reused a monthly budget guardrail with actual and forecast thresholds.",
+				"Recomputed budget forecast summaries and in-app alert notifications for the billing period.",
+				"Created or updated a Cost Explorer saved report definition for the lab drilldown.",
+				"Budgets compare actual and forecast spend against learner-defined thresholds for a billing period.",
+				"Budget forecasts estimate open-period spend and alert notifications surface threshold breaches before month end.",
+				"Cost Explorer saved reports preserve reusable grouping, filter, metric, and chart choices for spend analysis.",
+			},
+			staleText: []string{
+				"Recorded a scenario action outcome.",
+				"Scenario audit rows make the billing lab reproducible and inspectable.",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -150,9 +174,19 @@ func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
 					t.Fatalf("feedback body missing source %q: %s", want, body)
 				}
 			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(body, want) {
+					t.Fatalf("feedback body missing text %q: %s", want, body)
+				}
+			}
 			for _, staleName := range tc.staleNames {
 				if strings.Contains(body, staleName) {
 					t.Fatalf("feedback body still contains stale source %q: %s", staleName, body)
+				}
+			}
+			for _, staleText := range tc.staleText {
+				if strings.Contains(body, staleText) {
+					t.Fatalf("feedback body still contains stale text %q: %s", staleText, body)
 				}
 			}
 		})

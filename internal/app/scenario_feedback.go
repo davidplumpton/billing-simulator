@@ -272,6 +272,12 @@ func scenarioActionWhatChanged(actionType string) string {
 		return "Created or reused an ordered Cost Category classification rule."
 	case "create_cost_category_split_rule":
 		return "Created or reused a Cost Category split-charge allocation rule."
+	case "create_budget":
+		return "Created or reused a monthly budget guardrail with actual and forecast thresholds."
+	case "refresh_budget_forecasts":
+		return "Recomputed budget forecast summaries and in-app alert notifications for the billing period."
+	case "create_saved_report":
+		return "Created or updated a Cost Explorer saved report definition for the lab drilldown."
 	case "create_payment_method":
 		return "Created a simulated payer payment method."
 	case "schedule_payment", "process_payment", "fail_payment", "mark_payment_due":
@@ -303,6 +309,12 @@ func scenarioActionDataSource(actionType string) string {
 		return "cost_category_rules, cost_category_line_item_assignments"
 	case "create_cost_category_split_rule":
 		return "cost_category_split_charge_rules, cost_category_split_charge_allocations"
+	case "create_budget":
+		return "budgets, budget_thresholds"
+	case "refresh_budget_forecasts":
+		return "budget_forecast_summaries, budget_alert_notifications"
+	case "create_saved_report":
+		return "saved_reports"
 	case "create_payment_method":
 		return "payment_profiles, payment_methods"
 	case "schedule_payment", "process_payment", "fail_payment", "mark_payment_due", "mark_payment_past_due", "collect_payment":
@@ -330,6 +342,12 @@ func scenarioActionBillingConcept(actionType string) string {
 		return "Cost allocation tags must be discovered and activated before they appear in billing reports."
 	case "create_cost_category", "create_cost_category_rule", "create_cost_category_split_rule":
 		return "Cost Categories classify and allocate spend through ordered business rules."
+	case "create_budget":
+		return "Budgets compare actual and forecast spend against learner-defined thresholds for a billing period."
+	case "refresh_budget_forecasts":
+		return "Budget forecasts estimate open-period spend and alert notifications surface threshold breaches before month end."
+	case "create_saved_report":
+		return "Cost Explorer saved reports preserve reusable grouping, filter, metric, and chart choices for spend analysis."
 	case "create_payment_method", "schedule_payment", "process_payment", "fail_payment", "mark_payment_due", "mark_payment_past_due", "collect_payment":
 		return "Payment lifecycle changes invoice collection state without changing underlying usage charges."
 	default:

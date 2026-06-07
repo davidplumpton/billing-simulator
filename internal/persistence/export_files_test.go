@@ -93,6 +93,32 @@ func TestExportFileRepositoryWritesFileAndMetadata(t *testing.T) {
 	if len(listed) != 1 || listed[0].Filename != record.Filename {
 		t.Fatalf("List() = %+v, want the stored export", listed)
 	}
+	listedByUsage, err := repo.List(ctx, ExportFileListRequest{
+		ExportType:         ExportFileTypeCURCSV,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("List(usage account) error = %v", err)
+	}
+	if len(listedByUsage) != 1 || listedByUsage[0].Filename != record.Filename {
+		t.Fatalf("List(usage account) = %+v, want the stored export", listedByUsage)
+	}
+	listedByOtherUsage, err := repo.List(ctx, ExportFileListRequest{
+		ExportType:         ExportFileTypeCURCSV,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "444455556666",
+	})
+	if err != nil {
+		t.Fatalf("List(other usage account) error = %v", err)
+	}
+	if len(listedByOtherUsage) != 0 {
+		t.Fatalf("List(other usage account) = %+v, want no rows", listedByOtherUsage)
+	}
 
 	updatedContent := []byte("new-header\n")
 	updated, err := repo.Write(ctx, ExportFileWriteRequest{

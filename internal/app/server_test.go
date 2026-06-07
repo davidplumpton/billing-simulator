@@ -2991,6 +2991,184 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 			t.Fatalf("GET /exports/reconciliation filtered body missing %q: %s", want, body)
 		}
 	}
+
+	memberQuery := url.Values{
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"payer_account_id":     {persistence.AnyCompanyRetailManagementAccountID},
+		"line_item_status":     {"final"},
+		"limit":                {"2"},
+		"viewer_role":          {"member-account"},
+		"viewer_account_id":    {"111122223333"},
+	}
+	memberExportFilename := curCSVExportFilename(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     "final",
+		Limit:              2,
+	})
+	resp, err = client.Get(server.URL + "/exports/cur.csv?" + memberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/cur.csv member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/cur.csv member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != memberExportFilename {
+		t.Fatalf("GET /exports/cur.csv member viewer stored filename = %q, want %q", storedFilename, memberExportFilename)
+	}
+	memberRecords, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	if err != nil {
+		t.Fatalf("read member CUR CSV response: %v\n%s", err, body)
+	}
+	if len(memberRecords) != 2 {
+		t.Fatalf("member CUR CSV records = %d (%+v), want header plus own usage row", len(memberRecords), memberRecords)
+	}
+	memberUsage := requireCSVResponseRecord(t, memberRecords, "usage_account_id", "111122223333")
+	if got := memberUsage[csvResponseColumnIndex(t, memberRecords[0], "source_bill_id")]; got != "" {
+		t.Fatalf("member CUR CSV source_bill_id = %q, want payer document hidden", got)
+	}
+	if strings.Contains(body, "AWSSupport") || strings.Contains(body, "999988887777,999988887777") {
+		t.Fatalf("member CUR CSV leaked payer-scoped support row: %s", body)
+	}
+	memberRecord, err := persistence.NewExportFileRepository(db, workspacePath).GetByFilename(ctx, memberExportFilename)
+	if err != nil {
+		t.Fatalf("GetByFilename(member CUR export) error = %v", err)
+	}
+	if memberRecord.UsageAccountID != "111122223333" ||
+		memberRecord.GenerationParameters["usage_account_id"] != "111122223333" ||
+		memberRecord.GenerationParameters["source_bill_id"] != "" ||
+		memberRecord.GenerationParameters["rows_written"] != "1" {
+		t.Fatalf("member CUR export metadata = %+v, want member-scoped export without payer bill ID", memberRecord)
+	}
+
+	crossAccountMemberQuery := url.Values{}
+	for key, values := range memberQuery {
+		crossAccountMemberQuery[key] = values
+	}
+	crossAccountMemberQuery.Set("usage_account_id", "444455556666")
+	resp, err = client.Get(server.URL + "/exports/cur.csv?" + crossAccountMemberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/cur.csv member cross-account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /exports/cur.csv member cross-account status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+
+	memberListQuery := url.Values{
+		"viewer_role":       {"member-account"},
+		"viewer_account_id": {"111122223333"},
+	}
+	resp, err = client.Get(server.URL + "/exports?" + memberListQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, memberExportFilename) || !strings.Contains(body, filteredExportFilename) {
+		t.Fatalf("GET /exports member viewer missing own usage-account exports: %s", body)
+	}
+	if strings.Contains(body, exportFilename) || strings.Contains(body, "usage all accounts") {
+		t.Fatalf("GET /exports member viewer leaked all-account export: %s", body)
+	}
+
+	resp, err = client.Get(server.URL + exportFileDownloadPathWithViewer(exportFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
+	if err != nil {
+		t.Fatalf("GET all-account export as member error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET all-account export as member status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+	resp, err = client.Get(server.URL + exportFileDownloadPathWithViewer(memberExportFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
+	if err != nil {
+		t.Fatalf("GET member export as member error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET member export as member status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if strings.Contains(body, "AWSSupport") || !strings.Contains(body, "resource-cur-export-ui") {
+		t.Fatalf("GET member export as member body = %s, want own usage row only", body)
+	}
+
+	resp, err = client.PostForm(server.URL+"/exports/regenerate", url.Values{
+		"filename":          {exportFilename},
+		"viewer_role":       {"member-account"},
+		"viewer_account_id": {"111122223333"},
+	})
+	if err != nil {
+		t.Fatalf("POST /exports/regenerate all-account as member error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /exports/regenerate all-account as member status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+	resp, err = client.PostForm(server.URL+"/exports/regenerate", url.Values{
+		"filename":          {memberExportFilename},
+		"viewer_role":       {"member-account"},
+		"viewer_account_id": {"111122223333"},
+	})
+	if err != nil {
+		t.Fatalf("POST /exports/regenerate member export error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/regenerate member export final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Query().Get("viewer_role"); got != "member-account" {
+		t.Fatalf("POST /exports/regenerate member export final viewer_role = %q, want preserved member-account", got)
+	}
+	if !strings.Contains(body, "Regenerated "+memberExportFilename+" from 1 source rows") ||
+		strings.Contains(body, exportFilename) {
+		t.Fatalf("POST /exports/regenerate member export body = %s, want scoped flash and no all-account export", body)
+	}
+
+	memberReconciliationQuery := url.Values{}
+	for key, values := range memberQuery {
+		memberReconciliationQuery[key] = values
+	}
+	memberReconciliationQuery.Del("limit")
+	resp, err = client.Get(server.URL + "/exports/reconciliation?" + memberReconciliationQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/reconciliation member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/reconciliation member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"balanced",
+		"111122223333",
+		"$0.0832",
+		"visible-line-items",
+		"not-available",
+		"viewer_role=member-account",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /exports/reconciliation member viewer body missing %q: %s", want, body)
+		}
+	}
+	for _, leaked := range []string{"$1.0832", "$1.00", "AWSSupport"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("GET /exports/reconciliation member viewer leaked %q: %s", leaked, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + "/exports/reconciliation?" + crossAccountMemberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/reconciliation member cross-account error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /exports/reconciliation member cross-account status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
 }
 
 func TestCostExplorerSavedReportsAreScopedByOwnerContext(t *testing.T) {

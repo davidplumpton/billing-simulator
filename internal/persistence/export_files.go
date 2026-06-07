@@ -54,6 +54,7 @@ type ExportFileListRequest struct {
 	BillingPeriodStart string
 	BillingPeriodEnd   string
 	PayerAccountID     string
+	UsageAccountID     string
 	Limit              int
 }
 
@@ -249,6 +250,7 @@ func (r ExportFileRepository) List(ctx context.Context, request ExportFileListRe
 		   AND (? = '' OR billing_period_start = ?)
 		   AND (? = '' OR billing_period_end = ?)
 		   AND (? = '' OR payer_account_id = ?)
+		   AND (? = '' OR usage_account_id = ?)
 		 ORDER BY created_at DESC, filename DESC
 		 LIMIT ?`,
 		request.ExportType,
@@ -259,6 +261,8 @@ func (r ExportFileRepository) List(ctx context.Context, request ExportFileListRe
 		request.BillingPeriodEnd,
 		request.PayerAccountID,
 		request.PayerAccountID,
+		request.UsageAccountID,
+		request.UsageAccountID,
 		request.Limit,
 	)
 	if err != nil {
@@ -296,6 +300,7 @@ func normalizeExportFileListRequest(request ExportFileListRequest) ExportFileLis
 	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
 	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
 	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
+	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
 	if request.Limit <= 0 {
 		request.Limit = defaultExportFileListLimit
 	}

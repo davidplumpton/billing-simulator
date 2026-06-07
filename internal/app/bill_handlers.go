@@ -531,7 +531,7 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	summaries = filterBillStateSummaries(summaries, data.Filters)
 	data.StateCards = billStateCards(summaries)
 	for _, summary := range summaries {
-		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary))
+		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary, data.Filters))
 	}
 
 	reconciliations, err := h.bills.ListBillReconciliations(ctx, persistence.BillReconciliationRequest{
@@ -673,28 +673,35 @@ func filterBillResourceChargeSummaries(rows []persistence.BillResourceChargeSumm
 	return filtered
 }
 
-func billSummaryViewFromSummary(summary persistence.BillStateSummary) billSummaryView {
+func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter billsFilterView) billSummaryView {
 	invoicePath := ""
 	invoiceCSVPath := ""
 	invoicePDFPath := ""
 	curCSVPath := ""
 	curReconcilePath := ""
 	if strings.TrimSpace(summary.InvoiceID) != "" {
+		viewer := exportViewerFieldsFromBillsFilter(filter)
+		usageAccountID := strings.TrimSpace(filter.UsageAccountID)
+		if viewer.Role == billingvisibility.RoleMemberAccount.String() && viewer.AccountID != "" {
+			usageAccountID = viewer.AccountID
+		}
 		invoicePath = invoicePathForID(summary.InvoiceID)
 		invoiceCSVPath = invoiceCSVPathForID(summary.InvoiceID)
 		invoicePDFPath = invoicePDFPathForID(summary.InvoiceID)
-		curCSVPath = curCSVExportPath(persistence.CURCSVExportRequest{
+		curCSVPath = curCSVExportPathWithViewer(persistence.CURCSVExportRequest{
 			BillingPeriodStart: summary.BillingPeriodStart,
 			BillingPeriodEnd:   summary.BillingPeriodEnd,
 			PayerAccountID:     summary.PayerAccountID,
+			UsageAccountID:     usageAccountID,
 			LineItemStatus:     "final",
-		})
-		curReconcilePath = curExportReconciliationPath(persistence.CURExportReconciliationRequest{
+		}, viewer)
+		curReconcilePath = curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{
 			BillingPeriodStart: summary.BillingPeriodStart,
 			BillingPeriodEnd:   summary.BillingPeriodEnd,
 			PayerAccountID:     summary.PayerAccountID,
+			UsageAccountID:     usageAccountID,
 			LineItemStatus:     "final",
-		})
+		}, viewer)
 	}
 	return billSummaryView{
 		ID:               summary.ID,

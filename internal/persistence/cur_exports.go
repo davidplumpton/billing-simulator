@@ -101,6 +101,7 @@ type CURLineItemListRequest struct {
 	PayerAccountID     string
 	UsageAccountID     string
 	LineItemStatus     string
+	Visibility         BillingVisibilityFilter
 	Limit              int
 }
 
@@ -112,6 +113,7 @@ type CURCSVExportRequest struct {
 	UsageAccountID     string
 	LineItemStatus     string
 	GeneratedAt        string
+	Visibility         BillingVisibilityFilter
 	Limit              int
 }
 
@@ -129,6 +131,7 @@ type CURExportReconciliationRequest struct {
 	PayerAccountID     string
 	UsageAccountID     string
 	LineItemStatus     string
+	Visibility         BillingVisibilityFilter
 	Limit              int
 }
 
@@ -181,6 +184,8 @@ type CURExportReconciliationReport struct {
 	InvoiceRefundResidualMicros int64
 	InvoiceTaxResidualMicros    int64
 	InvoiceTotalResidualMicros  int64
+
+	ScopedToVisibleLineItems bool
 }
 
 // CURLineItemRepository maps persisted bill line items to CUR-like export rows.
@@ -266,6 +271,8 @@ func (r CURLineItemRepository) ListLineItems(ctx context.Context, request CURLin
 		   AND (? = '' OR li.payer_account_id = ?)
 		   AND (? = '' OR li.usage_account_id = ?)
 		   AND (? = '' OR li.line_item_status = ?)
+		   AND (? = '' OR li.payer_account_id = ?)
+		   AND (? = '' OR li.usage_account_id = ?)
 		 ORDER BY li.billing_period_start, li.billing_period_end, li.usage_start_time, li.id
 		 LIMIT ?`,
 		defaultInvoiceSellerOfRecord,
@@ -282,6 +289,10 @@ func (r CURLineItemRepository) ListLineItems(ctx context.Context, request CURLin
 		request.UsageAccountID,
 		request.LineItemStatus,
 		request.LineItemStatus,
+		request.Visibility.PayerAccountID,
+		request.Visibility.PayerAccountID,
+		request.Visibility.UsageAccountID,
+		request.Visibility.UsageAccountID,
 		request.Limit,
 	)
 	if err != nil {
@@ -346,6 +357,7 @@ func (r CURLineItemRepository) WriteCSVExport(ctx context.Context, writer io.Wri
 		PayerAccountID:     request.PayerAccountID,
 		UsageAccountID:     request.UsageAccountID,
 		LineItemStatus:     request.LineItemStatus,
+		Visibility:         request.Visibility,
 		Limit:              request.Limit,
 	})
 	if err != nil {
@@ -393,6 +405,7 @@ func (r CURLineItemRepository) GetReconciliationReport(ctx context.Context, requ
 		PayerAccountID:     request.PayerAccountID,
 		UsageAccountID:     request.UsageAccountID,
 		LineItemStatus:     request.LineItemStatus,
+		Visibility:         request.Visibility,
 		Limit:              request.Limit,
 	})
 	if err != nil {
@@ -408,8 +421,14 @@ func (r CURLineItemRepository) GetReconciliationReport(ctx context.Context, requ
 		CurrencyCode:       defaultBillCurrencyCode,
 	}
 	applyCURExportTotals(&report, items)
-	if err := r.loadBillAndInvoiceTotalsForCURExport(ctx, &report); err != nil {
-		return CURExportReconciliationReport{}, err
+	if request.Visibility.UsageAccountID != "" {
+		if err := r.loadVisibleLineItemTotalsForCURExport(ctx, &report, request.Visibility); err != nil {
+			return CURExportReconciliationReport{}, err
+		}
+	} else {
+		if err := r.loadBillAndInvoiceTotalsForCURExport(ctx, &report); err != nil {
+			return CURExportReconciliationReport{}, err
+		}
 	}
 	applyCURExportReconciliationResiduals(&report)
 	return report, nil
@@ -421,6 +440,7 @@ func normalizeCURLineItemListRequest(request CURLineItemListRequest) CURLineItem
 	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
 	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
 	request.LineItemStatus = strings.TrimSpace(request.LineItemStatus)
+	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	if request.Limit <= 0 {
 		request.Limit = defaultCURLineItemLimit
 	}
@@ -458,6 +478,7 @@ func normalizeCURCSVExportRequest(request CURCSVExportRequest) CURCSVExportReque
 	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
 	request.LineItemStatus = strings.TrimSpace(request.LineItemStatus)
 	request.GeneratedAt = strings.TrimSpace(request.GeneratedAt)
+	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	if request.Limit <= 0 || request.Limit > maxCURLineItemLimit {
 		request.Limit = maxCURLineItemLimit
 	}
@@ -470,6 +491,7 @@ func normalizeCURExportReconciliationRequest(request CURExportReconciliationRequ
 	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
 	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
 	request.LineItemStatus = strings.TrimSpace(request.LineItemStatus)
+	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	if request.Limit <= 0 || request.Limit > maxCURLineItemLimit {
 		request.Limit = maxCURLineItemLimit
 	}
@@ -538,6 +560,9 @@ func (r CURLineItemRepository) resolveCURCSVExportGeneratedAt(ctx context.Contex
 }
 
 func (r CURLineItemRepository) sourceBillIDForCURCSVExport(ctx context.Context, request CURCSVExportRequest) (string, error) {
+	if request.Visibility.UsageAccountID != "" {
+		return "", nil
+	}
 	var sourceBillID string
 	err := r.db.QueryRowContext(
 		ctx,
@@ -661,6 +686,43 @@ func (r CURLineItemRepository) loadBillAndInvoiceTotalsForCURExport(ctx context.
 	report.InvoiceRefundMicros = nullInt64Value(invoiceRefundMicros)
 	report.InvoiceTaxMicros = nullInt64Value(invoiceTaxMicros)
 	report.InvoiceTotalMicros = nullInt64Value(invoiceTotalMicros)
+	return nil
+}
+
+func (r CURLineItemRepository) loadVisibleLineItemTotalsForCURExport(ctx context.Context, report *CURExportReconciliationReport, visibility BillingVisibilityFilter) error {
+	items, err := r.ListLineItems(ctx, CURLineItemListRequest{
+		BillingPeriodStart: report.BillingPeriodStart,
+		BillingPeriodEnd:   report.BillingPeriodEnd,
+		PayerAccountID:     report.PayerAccountID,
+		UsageAccountID:     report.UsageAccountID,
+		LineItemStatus:     report.LineItemStatus,
+		Visibility:         visibility,
+		Limit:              maxCURLineItemLimit,
+	})
+	if err != nil {
+		return err
+	}
+	scoped := CURExportReconciliationReport{
+		CurrencyCode: defaultBillCurrencyCode,
+	}
+	applyCURExportTotals(&scoped, items)
+	report.ScopedToVisibleLineItems = true
+	report.BillID = "visible-line-items"
+	report.BillState = "scoped"
+	report.BillLineItemCount = scoped.ExportLineItemCount
+	report.BillChargeMicros = scoped.ExportChargeMicros
+	report.BillCreditMicros = scoped.ExportCreditMicros
+	report.BillRefundMicros = scoped.ExportRefundMicros
+	report.BillTaxMicros = scoped.ExportTaxMicros
+	report.BillTotalMicros = scoped.ExportTotalMicros
+	report.InvoiceID = "not-available"
+	report.InvoiceStatus = "scoped"
+	report.InvoiceLineItemCount = scoped.ExportLineItemCount
+	report.InvoiceChargeMicros = scoped.ExportChargeMicros
+	report.InvoiceCreditMicros = scoped.ExportCreditMicros
+	report.InvoiceRefundMicros = scoped.ExportRefundMicros
+	report.InvoiceTaxMicros = scoped.ExportTaxMicros
+	report.InvoiceTotalMicros = scoped.ExportTotalMicros
 	return nil
 }
 

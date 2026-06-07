@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"aws-billing-simulator/internal/billingvisibility"
 	"aws-billing-simulator/internal/persistence"
 )
 
@@ -38,8 +39,13 @@ type exportFileFilterView struct {
 	BillingPeriodStart string
 	BillingPeriodEnd   string
 	PayerAccountID     string
+	UsageAccountID     string
+	ViewerRole         string
+	ViewerAccountID    string
 	Limit              string
 	ExportTypeField    uiSelectFieldView
+	ViewerRoleField    uiSelectFieldView
+	ViewerAccountField uiInputFieldView
 	ApplyButton        uiSubmitButtonView
 	ClearPath          string
 	HasFilters         bool
@@ -61,6 +67,8 @@ type exportFileRowView struct {
 	UpdatedAt          string
 	DownloadPath       string
 	RegenerateFilename string
+	ViewerRole         string
+	ViewerAccountID    string
 	CanRegenerate      bool
 	ReconciliationPath string
 }
@@ -86,8 +94,12 @@ type exportReconciliationFilterView struct {
 	BillingPeriodEnd    string
 	PayerAccountID      string
 	UsageAccountID      string
+	ViewerRole          string
+	ViewerAccountID     string
 	LineItemStatus      string
 	Limit               string
+	ViewerRoleField     uiSelectFieldView
+	ViewerAccountField  uiInputFieldView
 	LineItemStatusField uiSelectFieldView
 	ApplyButton         uiSubmitButtonView
 	ClearPath           string
@@ -128,6 +140,18 @@ type exportReconciliationTablesView struct {
 	Documents uiTableView
 }
 
+type exportAccessError struct {
+	err error
+}
+
+func (e exportAccessError) Error() string {
+	return e.err.Error()
+}
+
+func (e exportAccessError) Unwrap() error {
+	return e.err
+}
+
 func newExportsHandler(db *sql.DB) exportsHandler {
 	return newWorkspaceExportsHandler(db, "")
 }
@@ -164,6 +188,24 @@ func (h exportsHandler) handleExportFileDownload(w http.ResponseWriter, r *http.
 	filename, ok := exportFileDownloadFilenameFromPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	policy, err := h.exportPolicyFromValues(r.Context(), r.URL.Query())
+	if err != nil {
+		http.Error(w, "download export file: "+err.Error(), exportHTTPStatus(err))
+		return
+	}
+	record, err := h.exportFiles.GetByFilename(r.Context(), filename)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "download export file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ensureExportFileVisibleToPolicy(policy, record); err != nil {
+		http.Error(w, "download export file: "+err.Error(), http.StatusForbidden)
 		return
 	}
 	record, content, err := h.exportFiles.Read(r.Context(), filename)
@@ -203,6 +245,11 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 	}
 
 	filename := strings.TrimSpace(r.PostForm.Get("filename"))
+	policy, err := h.exportPolicyFromValues(r.Context(), r.PostForm)
+	if err != nil {
+		h.renderExports(w, r, exportHTTPStatus(err), "regenerate export: "+err.Error(), "")
+		return
+	}
 	file, err := h.exportFiles.GetByFilename(r.Context(), filename)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -212,9 +259,18 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 		h.renderExports(w, r, status, "regenerate export: "+err.Error(), "")
 		return
 	}
+	if err := ensureExportFileVisibleToPolicy(policy, file); err != nil {
+		h.renderExports(w, r, http.StatusForbidden, "regenerate export: "+err.Error(), "")
+		return
+	}
 	request, err := curCSVExportRequestFromExportFile(file)
 	if err != nil {
 		h.renderExports(w, r, http.StatusBadRequest, "regenerate export: "+err.Error(), "")
+		return
+	}
+	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
+	if err != nil {
+		h.renderExports(w, r, exportHTTPStatus(err), "regenerate export: "+err.Error(), "")
 		return
 	}
 
@@ -231,15 +287,16 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 	}
 
 	flash := fmt.Sprintf("Regenerated %s from %d source rows", record.Filename, result.RowsWritten)
-	http.Redirect(w, r, "/exports?flash="+urlQueryEscape(flash), http.StatusSeeOther)
+	http.Redirect(w, r, exportsPathWithViewer(exportViewerFieldsFromValues(r.PostForm), flash), http.StatusSeeOther)
 }
 
 func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
+	viewer := exportViewerFieldsFromValues(r.URL.Query())
 	data := exportsPageData{
 		WorkspaceReady:      h.db != nil,
 		Error:               errorMessage,
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
-		Actions:             uiActionBar(uiActionLink("Reconciliation", "/exports/reconciliation"), uiActionLink("Bills", "/bills")),
+		Actions:             uiActionBar(uiActionLink("Reconciliation", curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{}, viewer)), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
 		Filters:             exportFileFilterFromRequest(r),
 		Tables:              exportsTablesView{Files: exportFilesTable()},
 	}
@@ -249,12 +306,34 @@ func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, st
 			status = http.StatusBadRequest
 			data.Error = "list exports: " + err.Error()
 		} else {
+			policy, err := h.exportPolicyFromValues(r.Context(), r.URL.Query())
+			if err != nil {
+				status = exportHTTPStatus(err)
+				data.Error = "list exports: " + err.Error()
+				data.Notices = uiNotices(flashMessage, data.Error)
+				renderPage(w, status, pageLayoutOptions{
+					Title:     "Exports - AWS Billing Simulator",
+					ActiveNav: "exports",
+				}, exportsPageTemplate, data, "render exports page")
+				return
+			}
+			request, err = h.scopedExportFileListRequest(r.Context(), request, policy)
+			if err != nil {
+				status = exportHTTPStatus(err)
+				data.Error = "list exports: " + err.Error()
+				data.Notices = uiNotices(flashMessage, data.Error)
+				renderPage(w, status, pageLayoutOptions{
+					Title:     "Exports - AWS Billing Simulator",
+					ActiveNav: "exports",
+				}, exportsPageTemplate, data, "render exports page")
+				return
+			}
 			files, err := h.exportFiles.List(r.Context(), request)
 			if err != nil {
 				status = http.StatusInternalServerError
 				data.Error = "list exports: " + err.Error()
 			} else {
-				data.Files = exportFileRowsFromFiles(files)
+				data.Files = exportFileRowsFromFiles(files, viewer)
 			}
 		}
 	}
@@ -280,6 +359,16 @@ func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 	request, err := curCSVExportRequestFromQuery(r)
 	if err != nil {
 		http.Error(w, "export CUR CSV: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	policy, err := h.exportPolicyFromValues(r.Context(), r.URL.Query())
+	if err != nil {
+		http.Error(w, "export CUR CSV: "+err.Error(), exportHTTPStatus(err))
+		return
+	}
+	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
+	if err != nil {
+		http.Error(w, "export CUR CSV: "+err.Error(), exportHTTPStatus(err))
 		return
 	}
 
@@ -314,10 +403,11 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	viewer := exportViewerFieldsFromValues(r.URL.Query())
 	data := exportReconciliationPageData{
 		WorkspaceReady:      h.db != nil,
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
-		Actions:             uiActionBar(uiActionLink("Bills", "/bills")),
+		Actions:             uiActionBar(uiActionLink("Bills", billsPathWithExportViewer(viewer))),
 		Filters:             exportReconciliationFilterFromRequest(r),
 		Tables: exportReconciliationTablesView{
 			Documents: uiTable(uiTableHeaders("Source", "ID", "Status", "Items", "Charges", "Credits", "Refunds", "Tax", "Total", "Item Delta", "Charge Delta", "Credit Delta", "Refund Delta", "Tax Delta", "Total Delta"), "Run a reconciliation report"),
@@ -330,16 +420,38 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 			status = http.StatusBadRequest
 			data.Error = "reconcile CUR export: " + err.Error()
 		} else {
+			policy, err := h.exportPolicyFromValues(r.Context(), r.URL.Query())
+			if err != nil {
+				status = exportHTTPStatus(err)
+				data.Error = "reconcile CUR export: " + err.Error()
+				data.Notices = uiNotices("", data.Error)
+				renderPage(w, status, pageLayoutOptions{
+					Title:     "Export Reconciliation - AWS Billing Simulator",
+					ActiveNav: "exports",
+				}, exportReconciliationPageTemplate, data, "render export reconciliation page")
+				return
+			}
+			request, err = h.scopedCURExportReconciliationRequest(r.Context(), request, policy)
+			if err != nil {
+				status = exportHTTPStatus(err)
+				data.Error = "reconcile CUR export: " + err.Error()
+				data.Notices = uiNotices("", data.Error)
+				renderPage(w, status, pageLayoutOptions{
+					Title:     "Export Reconciliation - AWS Billing Simulator",
+					ActiveNav: "exports",
+				}, exportReconciliationPageTemplate, data, "render export reconciliation page")
+				return
+			}
 			report, err := h.cur.GetReconciliationReport(r.Context(), request)
 			if err != nil {
 				status = http.StatusBadRequest
 				data.Error = "reconcile CUR export: " + err.Error()
 			} else {
 				data.Loaded = true
-				data.Report = exportReconciliationReportViewFromReport(report)
+				data.Report = exportReconciliationReportViewFromReport(report, viewer)
 				data.Actions = uiActionBar(
 					uiActionLink("CUR CSV", data.Report.CURCSVPath),
-					uiActionLink("Bills", "/bills"),
+					uiActionLink("Bills", billsPathWithExportViewer(viewer)),
 				)
 			}
 		}
@@ -403,6 +515,143 @@ func (h exportsHandler) writeCURCSVExportFile(ctx context.Context, request persi
 	})
 }
 
+func (h exportsHandler) exportPolicyFromValues(ctx context.Context, values url.Values) (billingvisibility.Policy, error) {
+	viewer := exportViewerFieldsFromValues(values)
+	if viewer.Role == "" && viewer.AccountID != "" {
+		return billingvisibility.Policy{}, fmt.Errorf("viewer role is required when viewer account ID is set")
+	}
+	roleValue := viewer.Role
+	if roleValue == "" {
+		roleValue = billingvisibility.RoleManagementAccount.String()
+	}
+	role, err := billingvisibility.ParseRole(roleValue)
+	if err != nil {
+		return billingvisibility.Policy{}, err
+	}
+	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return billingvisibility.Policy{}, err
+	}
+	accountID := viewer.AccountID
+	if (role == billingvisibility.RoleManagementAccount || role == billingvisibility.RoleFinance) && accountID == "" {
+		accountID = managementAccountID
+	}
+	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:                role,
+		AccountID:           accountID,
+		ManagementAccountID: managementAccountID,
+	})
+	if err != nil {
+		return billingvisibility.Policy{}, err
+	}
+	if !policy.AllowsView(billingvisibility.ViewExports) {
+		return billingvisibility.Policy{}, exportAccessError{err: fmt.Errorf("billing role %q cannot view exports", policy.Role)}
+	}
+	return policy, nil
+}
+
+func (h exportsHandler) scopedExportFileListRequest(ctx context.Context, request persistence.ExportFileListRequest, policy billingvisibility.Policy) (persistence.ExportFileListRequest, error) {
+	defaultPayerAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return persistence.ExportFileListRequest{}, err
+	}
+	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
+		if request.PayerAccountID != "" && request.PayerAccountID != payerAccountID {
+			return persistence.ExportFileListRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot list exports for payer account %q", policy.Role, request.PayerAccountID)}
+		}
+		request.PayerAccountID = payerAccountID
+	}
+	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
+		if request.PayerAccountID != "" && defaultPayerAccountID != "" && request.PayerAccountID != defaultPayerAccountID {
+			return persistence.ExportFileListRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot list exports for payer account %q", policy.Role, request.PayerAccountID)}
+		}
+		if request.UsageAccountID != "" && request.UsageAccountID != usageAccountID {
+			return persistence.ExportFileListRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot list exports for usage account %q", policy.Role, request.UsageAccountID)}
+		}
+		if request.PayerAccountID == "" {
+			request.PayerAccountID = defaultPayerAccountID
+		}
+		request.UsageAccountID = usageAccountID
+	}
+	return request, nil
+}
+
+func (h exportsHandler) scopedCURCSVExportRequest(ctx context.Context, request persistence.CURCSVExportRequest, policy billingvisibility.Policy) (persistence.CURCSVExportRequest, error) {
+	defaultPayerAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
+	if err != nil {
+		return persistence.CURCSVExportRequest{}, err
+	}
+	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
+		if request.PayerAccountID != "" && request.PayerAccountID != payerAccountID {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.PayerAccountID)}
+		}
+		request.PayerAccountID = payerAccountID
+		request.Visibility = persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}
+	}
+	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
+		if request.PayerAccountID != "" && defaultPayerAccountID != "" && request.PayerAccountID != defaultPayerAccountID {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export payer account %q", policy.Role, request.PayerAccountID)}
+		}
+		if request.UsageAccountID != "" && request.UsageAccountID != usageAccountID {
+			return persistence.CURCSVExportRequest{}, exportAccessError{err: fmt.Errorf("billing role %q cannot export usage account %q", policy.Role, request.UsageAccountID)}
+		}
+		if request.PayerAccountID == "" {
+			request.PayerAccountID = defaultPayerAccountID
+		}
+		request.UsageAccountID = usageAccountID
+		request.Visibility = persistence.BillingVisibilityFilter{UsageAccountID: usageAccountID}
+	}
+	return request, nil
+}
+
+func (h exportsHandler) scopedCURExportReconciliationRequest(ctx context.Context, request persistence.CURExportReconciliationRequest, policy billingvisibility.Policy) (persistence.CURExportReconciliationRequest, error) {
+	csvRequest, err := h.scopedCURCSVExportRequest(ctx, persistence.CURCSVExportRequest{
+		BillingPeriodStart: request.BillingPeriodStart,
+		BillingPeriodEnd:   request.BillingPeriodEnd,
+		PayerAccountID:     request.PayerAccountID,
+		UsageAccountID:     request.UsageAccountID,
+		LineItemStatus:     request.LineItemStatus,
+		Limit:              request.Limit,
+	}, policy)
+	if err != nil {
+		return persistence.CURExportReconciliationRequest{}, err
+	}
+	request.PayerAccountID = csvRequest.PayerAccountID
+	request.UsageAccountID = csvRequest.UsageAccountID
+	request.Visibility = csvRequest.Visibility
+	return request, nil
+}
+
+func ensureExportFileVisibleToPolicy(policy billingvisibility.Policy, file persistence.ExportFile) error {
+	if !policy.AllowsView(billingvisibility.ViewExports) {
+		return exportAccessError{err: fmt.Errorf("billing role %q cannot view exports", policy.Role)}
+	}
+	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
+		if file.PayerAccountID != payerAccountID {
+			return exportAccessError{err: fmt.Errorf("billing role %q cannot access export for payer account %q", policy.Role, file.PayerAccountID)}
+		}
+		return nil
+	}
+	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
+		if file.UsageAccountID == "" {
+			return exportAccessError{err: fmt.Errorf("billing role %q cannot access all-account exports", policy.Role)}
+		}
+		if file.UsageAccountID != usageAccountID {
+			return exportAccessError{err: fmt.Errorf("billing role %q cannot access export for usage account %q", policy.Role, file.UsageAccountID)}
+		}
+		return nil
+	}
+	return nil
+}
+
+func exportHTTPStatus(err error) int {
+	var accessErr exportAccessError
+	if errors.As(err, &accessErr) {
+		return http.StatusForbidden
+	}
+	return http.StatusBadRequest
+}
+
 func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
 	query := r.URL.Query()
 	filter := exportFileFilterView{
@@ -410,15 +659,23 @@ func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
 		BillingPeriodStart: query.Get("billing_period_start"),
 		BillingPeriodEnd:   query.Get("billing_period_end"),
 		PayerAccountID:     query.Get("payer_account_id"),
+		UsageAccountID:     query.Get("usage_account_id"),
+		ViewerRole:         query.Get("viewer_role"),
+		ViewerAccountID:    query.Get("viewer_account_id"),
 		Limit:              query.Get("limit"),
 		ApplyButton:        uiSubmitButton("Apply"),
 		ClearPath:          "/exports",
 	}
 	filter.ExportTypeField = exportFileTypeSelect(filter.ExportType)
+	filter.ViewerRoleField = exportsViewerRoleSelect(filter.ViewerRole)
+	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
 	filter.HasFilters = filter.ExportType != "" ||
 		filter.BillingPeriodStart != "" ||
 		filter.BillingPeriodEnd != "" ||
 		filter.PayerAccountID != "" ||
+		filter.UsageAccountID != "" ||
+		filter.ViewerRole != "" ||
+		filter.ViewerAccountID != "" ||
 		filter.Limit != ""
 	return filter
 }
@@ -429,6 +686,7 @@ func exportFileListRequestFromFilter(filter exportFileFilterView) (persistence.E
 		BillingPeriodStart: filter.BillingPeriodStart,
 		BillingPeriodEnd:   filter.BillingPeriodEnd,
 		PayerAccountID:     filter.PayerAccountID,
+		UsageAccountID:     filter.UsageAccountID,
 	}
 	if rawLimit := strings.TrimSpace(filter.Limit); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)
@@ -455,19 +713,85 @@ func exportFileTypeSelect(selected string) uiSelectFieldView {
 	}
 }
 
+func exportsViewerRoleSelect(selected string) uiSelectFieldView {
+	options := []uiSelectOptionView{
+		{Value: "", Label: "Default viewer"},
+		{Value: billingvisibility.RoleManagementAccount.String(), Label: "Management"},
+		{Value: billingvisibility.RoleFinance.String(), Label: "Finance"},
+		{Value: billingvisibility.RoleMemberAccount.String(), Label: "Member"},
+		{Value: billingvisibility.RoleInstructor.String(), Label: "Instructor"},
+	}
+	for idx := range options {
+		options[idx].Selected = options[idx].Value == selected
+	}
+	return uiSelectFieldView{
+		Label:   "Viewer Role",
+		Name:    "viewer_role",
+		Options: options,
+	}
+}
+
+type exportViewerFields struct {
+	Role      string
+	AccountID string
+}
+
+func exportViewerFieldsFromValues(values url.Values) exportViewerFields {
+	return exportViewerFields{
+		Role:      strings.TrimSpace(values.Get("viewer_role")),
+		AccountID: strings.TrimSpace(values.Get("viewer_account_id")),
+	}
+}
+
+func exportViewerFieldsFromBillsFilter(filter billsFilterView) exportViewerFields {
+	return exportViewerFields{
+		Role:      strings.TrimSpace(filter.ViewerRole),
+		AccountID: strings.TrimSpace(filter.ViewerAccountID),
+	}
+}
+
+func (v exportViewerFields) appendToValues(values url.Values) {
+	if v.Role != "" {
+		values.Set("viewer_role", v.Role)
+	}
+	if v.AccountID != "" {
+		values.Set("viewer_account_id", v.AccountID)
+	}
+}
+
+func exportsPathWithViewer(viewer exportViewerFields, flash string) string {
+	values := url.Values{}
+	viewer.appendToValues(values)
+	appendQueryValue(values, "flash", flash)
+	if len(values) == 0 {
+		return "/exports"
+	}
+	return "/exports?" + values.Encode()
+}
+
+func billsPathWithExportViewer(viewer exportViewerFields) string {
+	values := url.Values{}
+	appendQueryValue(values, "viewer_role", viewer.Role)
+	appendQueryValue(values, "viewer_account_id", viewer.AccountID)
+	if len(values) == 0 {
+		return "/bills"
+	}
+	return "/bills?" + values.Encode()
+}
+
 func exportFilesTable() uiTableView {
 	return uiTable(uiTableHeaders("File", "Type", "Period", "Scope", "Provenance", "Size", "Checksum", "Updated", "Actions"), "No generated exports")
 }
 
-func exportFileRowsFromFiles(files []persistence.ExportFile) []exportFileRowView {
+func exportFileRowsFromFiles(files []persistence.ExportFile, viewer exportViewerFields) []exportFileRowView {
 	rows := make([]exportFileRowView, 0, len(files))
 	for _, file := range files {
-		rows = append(rows, exportFileRowViewFromFile(file))
+		rows = append(rows, exportFileRowViewFromFile(file, viewer))
 	}
 	return rows
 }
 
-func exportFileRowViewFromFile(file persistence.ExportFile) exportFileRowView {
+func exportFileRowViewFromFile(file persistence.ExportFile, viewer exportViewerFields) exportFileRowView {
 	row := exportFileRowView{
 		Filename:           file.Filename,
 		ExportType:         displayExportFileType(file.ExportType),
@@ -482,20 +806,22 @@ func exportFileRowViewFromFile(file persistence.ExportFile) exportFileRowView {
 		RowsWritten:        displayOptionalValue(file.GenerationParameters["rows_written"]),
 		CreatedAt:          file.CreatedAt,
 		UpdatedAt:          file.UpdatedAt,
-		DownloadPath:       exportFileDownloadPath(file.Filename),
+		DownloadPath:       exportFileDownloadPathWithViewer(file.Filename, viewer),
 		RegenerateFilename: file.Filename,
+		ViewerRole:         viewer.Role,
+		ViewerAccountID:    viewer.AccountID,
 	}
 	request, err := curCSVExportRequestFromExportFile(file)
 	if err == nil {
 		row.CanRegenerate = true
-		row.ReconciliationPath = curExportReconciliationPath(persistence.CURExportReconciliationRequest{
+		row.ReconciliationPath = curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{
 			BillingPeriodStart: request.BillingPeriodStart,
 			BillingPeriodEnd:   request.BillingPeriodEnd,
 			PayerAccountID:     request.PayerAccountID,
 			UsageAccountID:     request.UsageAccountID,
 			LineItemStatus:     request.LineItemStatus,
 			Limit:              request.Limit,
-		})
+		}, viewer)
 	}
 	return row
 }
@@ -589,6 +915,16 @@ func exportFileDownloadPath(filename string) string {
 	return "/exports/files/" + url.PathEscape(filename)
 }
 
+func exportFileDownloadPathWithViewer(filename string, viewer exportViewerFields) string {
+	path := exportFileDownloadPath(filename)
+	values := url.Values{}
+	viewer.appendToValues(values)
+	if len(values) == 0 {
+		return path
+	}
+	return path + "?" + values.Encode()
+}
+
 func exportFileDownloadFilenameFromPath(path string) (string, bool) {
 	const prefix = "/exports/files/"
 	if !strings.HasPrefix(path, prefix) {
@@ -621,11 +957,15 @@ func exportReconciliationFilterFromRequest(r *http.Request) exportReconciliation
 		BillingPeriodEnd:   query.Get("billing_period_end"),
 		PayerAccountID:     query.Get("payer_account_id"),
 		UsageAccountID:     query.Get("usage_account_id"),
+		ViewerRole:         query.Get("viewer_role"),
+		ViewerAccountID:    query.Get("viewer_account_id"),
 		LineItemStatus:     query.Get("line_item_status"),
 		Limit:              query.Get("limit"),
 		ApplyButton:        uiSubmitButton("Run Report"),
 		ClearPath:          "/exports/reconciliation",
 	}
+	filter.ViewerRoleField = exportsViewerRoleSelect(filter.ViewerRole)
+	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
 	filter.LineItemStatusField = exportReconciliationLineItemStatusSelect(filter.LineItemStatus)
 	filter.HasFilters = filter.BillingPeriodStart != "" ||
 		filter.BillingPeriodEnd != "" ||
@@ -694,6 +1034,10 @@ func safeCSVFilenamePart(value, fallback string) string {
 }
 
 func curCSVExportPath(request persistence.CURCSVExportRequest) string {
+	return curCSVExportPathWithViewer(request, exportViewerFields{})
+}
+
+func curCSVExportPathWithViewer(request persistence.CURCSVExportRequest, viewer exportViewerFields) string {
 	values := url.Values{}
 	appendQueryValue(values, "billing_period_start", request.BillingPeriodStart)
 	appendQueryValue(values, "billing_period_end", request.BillingPeriodEnd)
@@ -702,6 +1046,10 @@ func curCSVExportPath(request persistence.CURCSVExportRequest) string {
 	appendQueryValue(values, "line_item_status", request.LineItemStatus)
 	if request.Limit > 0 {
 		values.Set("limit", strconv.Itoa(request.Limit))
+	}
+	viewer.appendToValues(values)
+	if len(values) == 0 {
+		return "/exports/cur.csv"
 	}
 	return "/exports/cur.csv?" + values.Encode()
 }
@@ -724,6 +1072,10 @@ func curCSVExportGenerationParameters(request persistence.CURCSVExportRequest, r
 }
 
 func curExportReconciliationPath(request persistence.CURExportReconciliationRequest) string {
+	return curExportReconciliationPathWithViewer(request, exportViewerFields{})
+}
+
+func curExportReconciliationPathWithViewer(request persistence.CURExportReconciliationRequest, viewer exportViewerFields) string {
 	values := url.Values{}
 	appendQueryValue(values, "billing_period_start", request.BillingPeriodStart)
 	appendQueryValue(values, "billing_period_end", request.BillingPeriodEnd)
@@ -732,6 +1084,10 @@ func curExportReconciliationPath(request persistence.CURExportReconciliationRequ
 	appendQueryValue(values, "line_item_status", request.LineItemStatus)
 	if request.Limit > 0 {
 		values.Set("limit", strconv.Itoa(request.Limit))
+	}
+	viewer.appendToValues(values)
+	if len(values) == 0 {
+		return "/exports/reconciliation"
 	}
 	return "/exports/reconciliation?" + values.Encode()
 }
@@ -743,7 +1099,7 @@ func appendQueryValue(values url.Values, key, value string) {
 	}
 }
 
-func exportReconciliationReportViewFromReport(report persistence.CURExportReconciliationReport) exportReconciliationReportView {
+func exportReconciliationReportViewFromReport(report persistence.CURExportReconciliationReport, viewer exportViewerFields) exportReconciliationReportView {
 	usageAccountID := strings.TrimSpace(report.UsageAccountID)
 	if usageAccountID == "" {
 		usageAccountID = "all accounts"
@@ -760,13 +1116,13 @@ func exportReconciliationReportViewFromReport(report persistence.CURExportReconc
 		CurrencyCode:   report.CurrencyCode,
 		Status:         displayBillState(report.Status),
 		Flags:          strings.Join(report.Flags, ", "),
-		CURCSVPath: curCSVExportPath(persistence.CURCSVExportRequest{
+		CURCSVPath: curCSVExportPathWithViewer(persistence.CURCSVExportRequest{
 			BillingPeriodStart: report.BillingPeriodStart,
 			BillingPeriodEnd:   report.BillingPeriodEnd,
 			PayerAccountID:     report.PayerAccountID,
 			UsageAccountID:     report.UsageAccountID,
 			LineItemStatus:     report.LineItemStatus,
-		}),
+		}, viewer),
 	}
 	view.DocumentRows = []exportReconciliationDocumentRowView{
 		{
@@ -839,6 +1195,8 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 			<section class="filter-bar" aria-label="Export file filters">
 				<form method="get" action="/exports" class="filter-form">
 					{{template "ui.select-field" .Filters.ExportTypeField}}
+					{{template "ui.select-field" .Filters.ViewerRoleField}}
+					{{template "ui.input-field" .Filters.ViewerAccountField}}
 					<label>Billing Period Start
 						<input name="billing_period_start" value="{{.Filters.BillingPeriodStart}}" placeholder="2026-02-01">
 					</label>
@@ -847,6 +1205,9 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 					</label>
 					<label>Payer Account ID
 						<input name="payer_account_id" value="{{.Filters.PayerAccountID}}">
+					</label>
+					<label>Usage Account ID
+						<input name="usage_account_id" value="{{.Filters.UsageAccountID}}">
 					</label>
 					<label>Limit
 						<input name="limit" value="{{.Filters.Limit}}" inputmode="numeric">
@@ -882,6 +1243,8 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 											{{if .CanRegenerate}}
 												<form method="post" action="/exports/regenerate">
 													<input type="hidden" name="filename" value="{{.RegenerateFilename}}">
+													<input type="hidden" name="viewer_role" value="{{.ViewerRole}}">
+													<input type="hidden" name="viewer_account_id" value="{{.ViewerAccountID}}">
 													<button type="submit">Regenerate</button>
 												</form>
 											{{end}}
@@ -912,6 +1275,8 @@ var exportReconciliationPageTemplate = newPageTemplate("export-reconciliation-pa
 		{{else}}
 			<section class="filter-bar" aria-label="Export reconciliation filters">
 				<form method="get" action="/exports/reconciliation" class="filter-form">
+					{{template "ui.select-field" .Filters.ViewerRoleField}}
+					{{template "ui.input-field" .Filters.ViewerAccountField}}
 					<label>Billing Period Start
 						<input name="billing_period_start" value="{{.Filters.BillingPeriodStart}}" placeholder="2026-02-01">
 					</label>

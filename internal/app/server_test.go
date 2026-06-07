@@ -1131,6 +1131,83 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 		}
 	}
 
+	obligationID := closeResult.InvoiceObligation.ID
+	financePaymentPath := "/payments?viewer_role=finance"
+	resp, err = client.Get(server.URL() + financePaymentPath)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", financePaymentPath, err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d; body=%s", financePaymentPath, resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<option value="finance" selected>Finance</option>`,
+		`href="` + invoicePathForIDWithViewer(closeResult.InvoiceObligation.InvoiceID, exportViewerFields{Role: "finance"}) + `"`,
+		`name="viewer_role" value="finance"`,
+		closeResult.InvoiceObligation.InvoiceID,
+		"Payment Setup",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET %s body missing %q: %s", financePaymentPath, want, body)
+		}
+	}
+
+	memberPaymentPath := "/payments?viewer_role=member-account&viewer_account_id=111122223333"
+	resp, err = client.Get(server.URL() + memberPaymentPath)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", memberPaymentPath, err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET %s status = %d, want %d; body=%s", memberPaymentPath, resp.StatusCode, http.StatusForbidden, body)
+	}
+	if !strings.Contains(body, "cannot manage payments") ||
+		strings.Contains(body, closeResult.InvoiceObligation.InvoiceID) ||
+		strings.Contains(body, `action="/payments/action"`) {
+		t.Fatalf("GET %s did not block member payment workflow cleanly: %s", memberPaymentPath, body)
+	}
+
+	assertObligationStatus := func(want string) {
+		t.Helper()
+		var got string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM invoice_payment_states WHERE invoice_obligation_id = ?`, obligationID).Scan(&got); err != nil {
+			t.Fatalf("read invoice payment status: %v", err)
+		}
+		if got != want {
+			t.Fatalf("invoice payment status = %q, want %q", got, want)
+		}
+	}
+	resp, err = client.PostForm(server.URL()+"/payments/action", url.Values{
+		"viewer_role":           {"member-account"},
+		"viewer_account_id":     {"111122223333"},
+		"invoice_obligation_id": {obligationID},
+		"action":                {"schedule"},
+	})
+	if err != nil {
+		t.Fatalf("POST /payments/action member viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /payments/action member viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+	assertObligationStatus("due")
+
+	resp, err = client.PostForm(server.URL()+"/payments/action", url.Values{
+		"viewer_role":           {"management-account"},
+		"viewer_account_id":     {"000000000000"},
+		"invoice_obligation_id": {obligationID},
+		"action":                {"schedule"},
+	})
+	if err != nil {
+		t.Fatalf("POST /payments/action cross-payer viewer error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /payments/action cross-payer viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
+	}
+	assertObligationStatus("due")
+
 	postPaymentAction := func(values url.Values) string {
 		t.Helper()
 		resp, err := client.PostForm(server.URL()+"/payments/action", values)
@@ -1144,7 +1221,6 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 		return body
 	}
 
-	obligationID := closeResult.InvoiceObligation.ID
 	body = postPaymentAction(url.Values{
 		"invoice_obligation_id": {obligationID},
 		"action":                {"schedule"},

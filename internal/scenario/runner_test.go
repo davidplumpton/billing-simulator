@@ -659,6 +659,82 @@ func TestRunnerAppliesPaymentFailureSeed(t *testing.T) {
 	}
 }
 
+func TestRunnerPreflightsClosedBillingPeriodBeforeScenarioMutations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	firstDefinition, err := LoadSeedDefinition(FirstConsolidatedBillSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", FirstConsolidatedBillSeedKey, err)
+	}
+	if _, err := NewRunner(db).Run(ctx, firstDefinition); err != nil {
+		t.Fatalf("Run(first consolidated bill) error = %v", err)
+	}
+
+	paymentDefinition, err := LoadSeedDefinition(PaymentFailureSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", PaymentFailureSeedKey, err)
+	}
+	result, err := NewRunner(db).Run(ctx, paymentDefinition)
+	if err == nil {
+		t.Fatal("Run(payment failure after closed March) error = nil, want preflight conflict")
+	}
+	wantMessage := "Cannot price March 2026 usage because billing period 2026-03-01 to 2026-04-01 is already closed for payer 999988887777. Reset or clone the workspace before launching this scenario."
+	if !strings.Contains(err.Error(), wantMessage) {
+		t.Fatalf("Run() error = %q, want learner-facing closed-period message", err.Error())
+	}
+	for _, leaked := range []string{"constraint failed", "1811", "billing period is closed for payer"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("Run() error = %q, should not expose raw trigger detail %q", err.Error(), leaked)
+		}
+	}
+	if result.Run.Status != scenarioRunStatusFailed ||
+		result.Run.CurrentEventID != "meter-payment-failure-month" ||
+		result.Run.EventsSucceeded != 0 ||
+		result.ResourcesCreated != 0 ||
+		result.UsageEventsCreated != 0 ||
+		result.MeteringRecordsCreated != 0 ||
+		result.BillLineItemsCreated != 0 {
+		t.Fatalf("failed run = %+v, want preflight failure before scenario mutations", result.Run)
+	}
+
+	var runStatus, runError, progressState string
+	if err := db.QueryRowContext(ctx, `SELECT status, error_message FROM scenario_runs WHERE id = ?`, result.Run.ID).Scan(&runStatus, &runError); err != nil {
+		t.Fatalf("read failed scenario run: %v", err)
+	}
+	if runStatus != scenarioRunStatusFailed || !strings.Contains(runError, wantMessage) {
+		t.Fatalf("persisted run = %q/%q, want failed learner-facing preflight message", runStatus, runError)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT current_objective_state FROM scenario_learner_progress WHERE scenario_run_id = ?`, result.Run.ID).Scan(&progressState); err != nil {
+		t.Fatalf("read failed learner progress: %v", err)
+	}
+	if progressState != persistence.ScenarioProgressStateFailed {
+		t.Fatalf("failed learner progress state = %q, want failed", progressState)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*) FROM scenario_run_events WHERE scenario_run_id = ?`, result.Run.ID); got != 0 {
+		t.Fatalf("failed run scenario events = %d, want preflight failure before event execution", got)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*) FROM resources WHERE scenario_run_id = ?`, result.Run.ID); got != 0 {
+		t.Fatalf("failed run resources = %d, want none", got)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*) FROM usage_events WHERE scenario_run_id = ?`, result.Run.ID); got != 0 {
+		t.Fatalf("failed run usage events = %d, want none", got)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM metering_records m
+		JOIN usage_events u ON u.id = m.usage_event_id
+		WHERE u.scenario_run_id = ?`, result.Run.ID); got != 0 {
+		t.Fatalf("failed run metering records = %d, want none", got)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM bill_line_items li
+		JOIN usage_events u ON u.id = li.usage_event_id
+		WHERE u.scenario_run_id = ?`, result.Run.ID); got != 0 {
+		t.Fatalf("failed run bill line items = %d, want none", got)
+	}
+}
+
 func TestRunnerAppliesForecastBudgetAlertSeed(t *testing.T) {
 	t.Parallel()
 

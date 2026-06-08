@@ -2452,6 +2452,99 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 }
 
+func TestScenarioLaunchReportsClosedPeriodConflictBeforePartialSetup(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.WorkspacePath = filepath.Join(root, "closed-period-scenario-workspace")
+	cfg.StatePath = filepath.Join(root, "state.json")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	db := server.workspace.DB()
+	if db == nil {
+		t.Fatal("Start() did not open workspace database")
+	}
+	client := http.Client{Timeout: 3 * time.Second}
+
+	resp, err := client.PostForm(server.URL()+"/scenarios/launch", url.Values{
+		"scenario_key": {"first-consolidated-bill"},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/launch first consolidated bill error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /scenarios/launch first consolidated bill status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	resp, err = client.PostForm(server.URL()+"/scenarios/launch", url.Values{
+		"scenario_key": {"payment-failure"},
+	})
+	if err != nil {
+		t.Fatalf("POST /scenarios/launch payment failure error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /scenarios/launch payment failure status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	wantMessage := "Cannot price March 2026 usage because billing period 2026-03-01 to 2026-04-01 is already closed for payer 999988887777. Reset or clone the workspace before launching this scenario."
+	if !strings.Contains(body, wantMessage) {
+		t.Fatalf("POST /scenarios/launch body missing closed-period message: %s", body)
+	}
+	for _, leaked := range []string{"constraint failed", "1811", "billing period is closed for payer"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("POST /scenarios/launch body leaked raw trigger detail %q: %s", leaked, body)
+		}
+	}
+
+	var runID, status, errorMessage, progressState string
+	if err := db.QueryRowContext(ctx, `
+		SELECT id, status, error_message
+		FROM scenario_runs
+		WHERE definition_name = ?
+	`, "Payment Failure").Scan(&runID, &status, &errorMessage); err != nil {
+		t.Fatalf("read failed payment scenario run: %v", err)
+	}
+	if status != "failed" || !strings.Contains(errorMessage, wantMessage) {
+		t.Fatalf("failed payment run = %q/%q, want learner-facing failed run", status, errorMessage)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT current_objective_state
+		FROM scenario_learner_progress
+		WHERE scenario_run_id = ?
+	`, runID).Scan(&progressState); err != nil {
+		t.Fatalf("read failed payment learner progress: %v", err)
+	}
+	if progressState != persistence.ScenarioProgressStateFailed {
+		t.Fatalf("failed payment progress state = %q, want failed", progressState)
+	}
+	for _, table := range []string{"scenario_run_events", "resources", "usage_events"} {
+		var count int
+		if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE scenario_run_id = ?`, table), runID).Scan(&count); err != nil {
+			t.Fatalf("count %s for failed run: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows for failed run = %d, want none", table, count)
+		}
+	}
+}
+
 func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	t.Parallel()
 

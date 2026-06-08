@@ -16,7 +16,7 @@ br sync --flush-only  # Export issue changes before jj commit
 
 `bv --robot-next` is useful for recommendation context, but its JSON command fields may still name the legacy `bd` executable. Treat those command fields as hints only: use the returned issue `id` with the equivalent `br show`, `br update`, and `br close` commands from the quick reference.
 
-When the user asks for work with a specific label, select from `br ready --label <label>` before acting on the generic `bv --robot-next` recommendation. For a lightweight smoke check, run `bv --robot-next`, then verify the returned `id` with `br show <id>`; never run a legacy tracker executable from the robot output.
+When the user asks for work with a specific label, select from `br ready --label <label>` before acting on the generic `bv --robot-next` recommendation. If the prompt names required context files such as `README.md`, `AGENTS.md`, or `MIND_MAP.md`, read those files first, then resolve the label-scoped queue. For a lightweight smoke check or generic recommendation context, run `bv --robot-next`, then verify the returned `id` with `br show <id>`; never run a legacy tracker executable from the robot output.
 
 ## br Stats Caveat
 
@@ -38,8 +38,9 @@ When the user asks for work with a specific label, select from `br ready --label
 
 ### Best Practices
 
-- Check `bv --robot-next` at session start for recommendation context
-- Use `br ready --label <label>` when the requested work is label-scoped
+- Read any project context files explicitly named by the user before selecting work
+- For label-scoped requests, use `br ready --label <label>` before generic `bv --robot-next` recommendations
+- For unscoped requests, check `bv --robot-next` at session start for recommendation context
 - Update status as you work, from in_progress to closed
 - Create new issues with `br create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type, and dependencies between related items

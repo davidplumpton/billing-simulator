@@ -609,6 +609,7 @@ func validateInvoicePaymentTransition(fromStatus, toStatus string) error {
 			invoiceObligationStatusSucceeded:     true,
 		},
 		invoiceObligationStatusPartiallyPaid: {
+			invoiceObligationStatusDue:        true,
 			invoiceObligationStatusScheduled:  true,
 			invoiceObligationStatusProcessing: true,
 			invoiceObligationStatusFailed:     true,

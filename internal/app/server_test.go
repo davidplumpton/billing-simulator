@@ -1284,6 +1284,7 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 		!strings.Contains(body, "Partially Paid") ||
 		!strings.Contains(body, "partially-paid") ||
 		!strings.Contains(body, "past-due") ||
+		!strings.Contains(body, `value="mark_due"`) ||
 		!strings.Contains(body, formatUSDMicros(remainingMicros)) {
 		t.Fatalf("partial past-due collect response missing partial and past-due state: %s", body)
 	}
@@ -1315,6 +1316,32 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 	}
 	if !strings.Contains(body, "past-due") || !strings.Contains(body, "partially-paid") {
 		t.Fatalf("GET /bills after partial past-due payment missing past-due partial invoice state: %s", body)
+	}
+
+	body = postPaymentAction(url.Values{
+		"invoice_obligation_id": {obligationID},
+		"action":                {"mark_due"},
+	})
+	if !strings.Contains(body, "Marked "+closeResult.InvoiceObligation.InvoiceID+" due") ||
+		!strings.Contains(body, "due") ||
+		!strings.Contains(body, formatUSDMicros(remainingMicros)) {
+		t.Fatalf("mark partially paid due response missing due state: %s", body)
+	}
+	var dueBillState, duePaymentStatus string
+	var dueAmountDue, dueAmountPaid int64
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT b.bill_state, ps.status, ps.amount_due_micros, ps.amount_paid_micros
+		   FROM bills b
+		   JOIN invoice_payment_states ps ON ps.invoice_obligation_id = ?
+		  WHERE b.id = ?`,
+		obligationID,
+		closeResult.Bill.ID,
+	).Scan(&dueBillState, &duePaymentStatus, &dueAmountDue, &dueAmountPaid); err != nil {
+		t.Fatalf("read marked-due partial payment state: %v", err)
+	}
+	if dueBillState != "issued" || duePaymentStatus != "due" || dueAmountDue != remainingMicros || dueAmountPaid != partialMicros {
+		t.Fatalf("marked-due partial payment state = bill %q payment %q due %d paid %d, want issued/due/%d/%d", dueBillState, duePaymentStatus, dueAmountDue, dueAmountPaid, remainingMicros, partialMicros)
 	}
 
 	body = postPaymentAction(url.Values{

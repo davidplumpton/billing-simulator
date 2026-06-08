@@ -750,7 +750,7 @@ func canFailPayment(status string, amountDueMicros int64) bool {
 }
 
 func canMarkPaymentDue(status string, amountDueMicros int64) bool {
-	return amountDueMicros > 0 && matchesAny(status, "scheduled", "failed", "past_due", "refunded")
+	return amountDueMicros > 0 && matchesAny(status, "scheduled", "failed", "past_due", "partially_paid", "refunded")
 }
 
 func canMarkPaymentPastDue(status string, amountDueMicros int64) bool {

@@ -206,6 +206,30 @@ func TestPaymentLifecycleRepositoryPreservesPastDueBillAfterPartialPayment(t *te
 		summary.InvoiceAmountPaidMicros != 500_000 {
 		t.Fatalf("bill summary after partial past-due payment = %+v, want past-due bill with partial invoice balance", summary)
 	}
+
+	due, err := repo.MarkDue(ctx, PaymentLifecycleTransitionRequest{
+		InvoiceObligationID: obligation.ID,
+		Reason:              "Resume ordinary collections on remaining balance",
+		OccurredAt:          "2026-03-25",
+	})
+	if err != nil {
+		t.Fatalf("MarkDue(partially paid) error = %v", err)
+	}
+	if due.Obligation.Status != invoiceObligationStatusDue ||
+		due.Obligation.AmountDueMicros != bill.TotalMicros-500_000 ||
+		due.Obligation.AmountPaidMicros != 500_000 ||
+		due.Event.FromStatus != invoiceObligationStatusPartiallyPaid ||
+		due.Event.ToStatus != invoiceObligationStatusDue {
+		t.Fatalf("MarkDue(partially paid) = %+v, want due state preserving partial balance", due)
+	}
+
+	summary = requireBillStateSummaryFromDB(t, ctx, db, bill.ID)
+	if summary.BillState != billStateIssued ||
+		summary.InvoiceStatus != invoiceObligationStatusDue ||
+		summary.InvoiceAmountDueMicros != bill.TotalMicros-500_000 ||
+		summary.InvoiceAmountPaidMicros != 500_000 {
+		t.Fatalf("bill summary after marking partial payment due = %+v, want issued bill with due partial invoice balance", summary)
+	}
 }
 
 func TestPaymentLifecycleRepositoryRejectsInvalidTransitions(t *testing.T) {

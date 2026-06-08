@@ -122,6 +122,7 @@ func (s *Server) Wait() error {
 
 // newMux wires the simulator's local browser UI and smoke-testable endpoints.
 func newMux(db *sql.DB) http.Handler {
+	overview := newOverviewHandler()
 	resourceLab := newResourceLabHandler(db)
 	bills := newBillsHandler(db)
 	organization := newOrganizationHandler(db)
@@ -137,6 +138,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/", resourceLab.handleRoot)
 	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
 	mux.HandleFunc("/assets/app.js", serveAppScript)
+	mux.HandleFunc("/overview", overview.handleOverview)
 	mux.HandleFunc("/organization", organization.handleOrganization)
 	mux.HandleFunc("/organization/accounts/create", organization.handleCreateAccount)
 	mux.HandleFunc("/organization/accounts/move", organization.handleMoveAccount)

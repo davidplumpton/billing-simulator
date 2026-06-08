@@ -550,6 +550,116 @@ button:hover {
 	overflow-wrap: anywhere;
 }
 
+.overview-page {
+	max-width: 1180px;
+}
+
+.overview-safety {
+	display: grid;
+	grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+	gap: 18px;
+	margin-top: 20px;
+	padding: 16px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
+.overview-safety-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+	align-content: start;
+}
+
+.overview-safety-grid span {
+	min-height: 32px;
+	border-radius: 6px;
+	background: var(--surface-soft);
+	color: var(--accent-strong);
+	padding: 7px 9px;
+	font-weight: 700;
+}
+
+.overview-flow {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.overview-flow-summary {
+	margin-top: 6px;
+}
+
+.overview-flow-step {
+	display: grid;
+	grid-template-columns: 32px minmax(0, 1fr);
+	gap: 10px;
+	min-height: 112px;
+	padding: 14px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
+.overview-flow-step > span {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	border-radius: 6px;
+	background: #e6eef8;
+	color: #17446f;
+	font-weight: 800;
+}
+
+.overview-flow-step strong,
+.overview-card strong,
+.overview-start-item strong {
+	display: block;
+	margin-bottom: 6px;
+}
+
+.overview-card-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+	gap: 12px;
+}
+
+.overview-card {
+	display: block;
+	min-height: 136px;
+	padding: 14px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	color: inherit;
+	text-decoration: none;
+}
+
+.overview-card:hover {
+	border-color: var(--accent);
+}
+
+.overview-card span {
+	color: var(--muted);
+}
+
+.overview-start-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 12px;
+}
+
+.overview-start-item {
+	min-height: 126px;
+	padding: 14px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
 section {
 	margin-top: 26px;
 }
@@ -1157,6 +1267,9 @@ code {
 		.organization-layout,
 		.fields,
 		.builder-panel .fields,
+		.overview-safety,
+		.overview-safety-grid,
+		.overview-flow,
 		.scenario-meta-grid,
 		.scenario-editor-layout,
 		.scenario-editor-summary,

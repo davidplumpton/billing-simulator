@@ -114,6 +114,7 @@ func wantsPageFragment(r *http.Request, fragmentName string) bool {
 func pageNavItems(active string) []pageNavItem {
 	items := []pageNavItem{
 		{Key: "workspaces", Label: "Workspaces", Path: "/workspaces"},
+		{Key: "overview", Label: "Overview", Path: "/overview"},
 		{Key: "organization", Label: "Organization", Path: "/organization"},
 		{Key: "resources", Label: "Resources", Path: "/resources"},
 		{Key: "tags", Label: "Tags", Path: "/tags"},

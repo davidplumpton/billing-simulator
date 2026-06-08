@@ -33,6 +33,7 @@ The current codebase already includes these working foundations:
 - Local-only HTTP binding to `127.0.0.1` or `localhost`.
 - SQLite workspace directories with embedded migrations and WAL-mode persistence.
 - A workspace selector that opens or creates a local `simulator.db` workspace and remembers the last workspace path.
+- A learner overview page that links the major simulator workflows, explains the billing-data flow, distinguishes safe start/reset/clone paths, and states the local synthetic safety boundaries.
 - Embedded server-rendered HTML templates, CSS, and vanilla JavaScript partial-refresh behavior.
 - An AnyCompany Retail seed organization with management account, OUs, member accounts, and a suspended account.
 - Organization tree UI with account directory, account detail panels, billing/resource drilldown links, and lifecycle forms for creating, moving, suspending, and closing accounts.

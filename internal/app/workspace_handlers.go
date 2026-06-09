@@ -291,7 +291,30 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")
 	})
-	return mux
+	return workspaceLeaseMiddleware(workspace, mux)
+}
+
+// workspaceLeaseMiddleware keeps DB-backed request handlers from racing with workspace swaps.
+func workspaceLeaseMiddleware(workspace *workspaceSession, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !workspaceRouteUsesActiveDB(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		release := workspace.BeginRequest()
+		defer release()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// workspaceRouteUsesActiveDB identifies routes whose handlers may keep the active DB for request work.
+func workspaceRouteUsesActiveDB(path string) bool {
+	switch path {
+	case "/", "/workspaces", "/workspaces/open", "/workspaces/start", "/assets/app.css", "/assets/app.js", "/overview", "/query-lab", "/healthz", "/scenarios/reset", "/scenarios/clone":
+		return false
+	default:
+		return true
+	}
 }
 
 // resourceRoute adapts resource handlers to the database currently open in the workspace session.

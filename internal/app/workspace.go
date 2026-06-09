@@ -76,6 +76,7 @@ func (s workspaceStateStore) Save(state workspaceState) error {
 
 type workspaceSession struct {
 	mu       sync.Mutex
+	swapMu   sync.RWMutex
 	store    workspaceStateStore
 	db       *sql.DB
 	path     string
@@ -137,6 +138,9 @@ func (s *workspaceSession) Open(ctx context.Context, rawPath string) error {
 		return err
 	}
 
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+
 	s.mu.Lock()
 	oldDB := s.db
 	s.db = db
@@ -150,6 +154,15 @@ func (s *workspaceSession) Open(ctx context.Context, rawPath string) error {
 		}
 	}
 	return nil
+}
+
+// BeginRequest pins the active workspace database so swaps cannot close it before the request finishes.
+func (s *workspaceSession) BeginRequest() func() {
+	if s == nil {
+		return func() {}
+	}
+	s.swapMu.RLock()
+	return s.swapMu.RUnlock
 }
 
 // DB returns the active workspace database, or nil when no workspace is open.
@@ -175,6 +188,9 @@ func (s *workspaceSession) LastPath() string {
 
 // Close closes the active workspace database.
 func (s *workspaceSession) Close() error {
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+
 	s.mu.Lock()
 	db := s.db
 	s.db = nil

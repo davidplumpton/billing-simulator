@@ -195,6 +195,9 @@ func (s *workspaceSession) CloneTo(ctx context.Context, rawTargetPath string) (s
 		return "", err
 	}
 
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+
 	s.mu.Lock()
 	sourcePath := s.path
 	db := s.db
@@ -205,8 +208,30 @@ func (s *workspaceSession) CloneTo(ctx context.Context, rawTargetPath string) (s
 	if err := cloneWorkspaceDirectory(ctx, db, sourcePath, targetPath); err != nil {
 		return "", err
 	}
-	if err := s.Open(ctx, targetPath); err != nil {
+
+	clonedDB, err := persistence.OpenWorkspace(ctx, targetPath)
+	if err != nil {
 		return "", fmt.Errorf("open cloned workspace: %w", err)
+	}
+	if err := s.store.Save(workspaceState{LastWorkspacePath: targetPath}); err != nil {
+		closeErr := clonedDB.Close()
+		if closeErr != nil {
+			return "", fmt.Errorf("%w; close cloned workspace database: %v", err, closeErr)
+		}
+		return "", err
+	}
+
+	s.mu.Lock()
+	oldDB := s.db
+	s.db = clonedDB
+	s.path = targetPath
+	s.lastPath = targetPath
+	s.mu.Unlock()
+
+	if oldDB != nil {
+		if err := oldDB.Close(); err != nil {
+			return "", fmt.Errorf("close previous workspace database: %w", err)
+		}
 	}
 	return targetPath, nil
 }
@@ -217,16 +242,21 @@ func (s *workspaceSession) ResetToScenarioSeed(ctx context.Context, definition s
 		return scenario.RunResult{}, fmt.Errorf("workspace session is required")
 	}
 
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+
 	s.mu.Lock()
 	workspacePath := s.path
 	oldDB := s.db
-	s.db = nil
-	s.path = ""
 	s.mu.Unlock()
 
 	if workspacePath == "" {
 		return scenario.RunResult{}, fmt.Errorf("open workspace is required")
 	}
+	s.mu.Lock()
+	s.db = nil
+	s.path = ""
+	s.mu.Unlock()
 	if oldDB != nil {
 		if err := oldDB.Close(); err != nil {
 			return scenario.RunResult{}, fmt.Errorf("close workspace before reset: %w", err)

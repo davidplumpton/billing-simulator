@@ -325,6 +325,137 @@ func TestWorkspaceUIStartsFreshExperienceAndPersistsGeneratedPath(t *testing.T) 
 	}
 }
 
+func TestWorkspaceOpenWaitsForActiveWorkspaceBackedRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	initialPath := filepath.Join(root, "active-workspace")
+	nextPath := filepath.Join(root, "next-workspace")
+	session := &workspaceSession{store: newWorkspaceStateStore(filepath.Join(root, "state.json"))}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	for _, path := range []string{initialPath, nextPath, initialPath} {
+		if err := session.Open(ctx, path); err != nil {
+			t.Fatalf("Open(%q) error = %v", path, err)
+		}
+	}
+
+	requestStarted := make(chan struct{})
+	allowQuery := make(chan struct{})
+	type responseResult struct {
+		resp *http.Response
+		err  error
+	}
+	heldDone := make(chan responseResult, 1)
+	openDone := make(chan error, 1)
+
+	released := false
+	releaseHeldRequest := func() {
+		if !released {
+			close(allowQuery)
+			released = true
+		}
+	}
+	defer releaseHeldRequest()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hold", func(w http.ResponseWriter, r *http.Request) {
+		db := session.DB()
+		if db == nil {
+			http.Error(w, "workspace database is required", http.StatusServiceUnavailable)
+			return
+		}
+		close(requestStarted)
+		select {
+		case <-allowQuery:
+		case <-r.Context().Done():
+			return
+		}
+
+		var migrationCount int
+		if err := db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
+			http.Error(w, "query held workspace database: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if migrationCount == 0 {
+			http.Error(w, "workspace migrations are missing", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
+	server := httptest.NewServer(workspaceLeaseMiddleware(session, mux))
+	t.Cleanup(server.Close)
+
+	client := server.Client()
+	client.Timeout = 2 * time.Second
+	go func() {
+		resp, err := client.Get(server.URL + "/hold")
+		heldDone <- responseResult{resp: resp, err: err}
+	}()
+
+	select {
+	case <-requestStarted:
+	case result := <-heldDone:
+		if result.err != nil {
+			t.Fatalf("GET /hold error before lease was held: %v", result.err)
+		}
+		body := readResponseBody(t, result.resp)
+		t.Fatalf("GET /hold finished before release with status %d; body=%s", result.resp.StatusCode, body)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for held request to start")
+	}
+
+	go func() {
+		openDone <- session.Open(ctx, nextPath)
+	}()
+
+	openedBeforeRelease := false
+	var openBeforeReleaseErr error
+	select {
+	case openBeforeReleaseErr = <-openDone:
+		openedBeforeRelease = true
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	releaseHeldRequest()
+	var heldResult responseResult
+	select {
+	case heldResult = <-heldDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for held request to finish")
+	}
+	if heldResult.err != nil {
+		t.Fatalf("GET /hold error = %v", heldResult.err)
+	}
+	body := readResponseBody(t, heldResult.resp)
+	if heldResult.resp.StatusCode != http.StatusOK || body != "ok" {
+		t.Fatalf("GET /hold status = %d, body=%q; want 200 ok", heldResult.resp.StatusCode, body)
+	}
+	if openedBeforeRelease {
+		if openBeforeReleaseErr != nil {
+			t.Fatalf("Open returned before held request finished with error: %v", openBeforeReleaseErr)
+		}
+		t.Fatal("Open returned before the held workspace-backed request finished")
+	}
+
+	select {
+	case err := <-openDone:
+		if err != nil {
+			t.Fatalf("Open after held request finished error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Open after held request finished")
+	}
+	if got := session.CurrentPath(); got != nextPath {
+		t.Fatalf("CurrentPath() = %q, want %q", got, nextPath)
+	}
+}
+
 func TestFreshWorkspacePathUsesActiveWorkspaceParent(t *testing.T) {
 	t.Parallel()
 

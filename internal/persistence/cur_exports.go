@@ -65,33 +65,41 @@ var curLineItemColumns = []string{
 
 // CURLineItem stores one bill line item projected into the simulator's CUR-like export schema.
 type CURLineItem struct {
-	LineItemID          string
-	BillingPeriodStart  string
-	BillingPeriodEnd    string
-	PayerAccountID      string
-	UsageAccountID      string
-	AccountName         string
-	ServiceCode         string
-	ServiceName         string
-	ProductCode         string
-	Region              string
-	AvailabilityZone    string
-	UsageType           string
-	Operation           string
-	LineItemType        string
-	ResourceID          string
-	UsageStartTime      string
-	UsageEndTime        string
-	UsageAmountMicros   int64
-	UsageUnit           string
-	UnblendedRateMicros int64
-	UnblendedCostMicros int64
-	Currency            string
-	LegalEntity         string
-	InvoiceEntity       string
-	Tags                map[string]string
-	CostCategories      map[string]string
-	Description         string
+	LineItemID           string
+	BillingPeriodStart   string
+	BillingPeriodEnd     string
+	PayerAccountID       string
+	PayerAccountName     string
+	UsageAccountID       string
+	AccountName          string
+	ServiceCode          string
+	ServiceName          string
+	ProductFamily        string
+	ProductCode          string
+	Region               string
+	AvailabilityZone     string
+	UsageType            string
+	Operation            string
+	LineItemType         string
+	ResourceID           string
+	ResourceName         string
+	ResourceType         string
+	UsageStartTime       string
+	UsageEndTime         string
+	ConsumedAmountMicros int64
+	ConsumedUnit         string
+	UsageAmountMicros    int64
+	UsageUnit            string
+	UnblendedRateMicros  int64
+	UnblendedCostMicros  int64
+	Currency             string
+	LegalEntity          string
+	InvoiceEntity        string
+	InvoiceID            string
+	PriceCatalogSKU      string
+	Tags                 map[string]string
+	CostCategories       map[string]string
+	Description          string
 }
 
 // CURLineItemListRequest filters bill line items for CUR-like export reads.
@@ -230,10 +238,12 @@ func (r CURLineItemRepository) ListLineItems(ctx context.Context, request CURLin
 			li.billing_period_start,
 			li.billing_period_end,
 			li.payer_account_id,
+			COALESCE(pa.name, ''),
 			li.usage_account_id,
 			COALESCE(oa.name, ''),
 			li.service_code,
 			li.service_name,
+			li.product_family,
 			li.service_code,
 			li.region_code,
 			'',
@@ -241,8 +251,12 @@ func (r CURLineItemRepository) ListLineItems(ctx context.Context, request CURLin
 			li.operation,
 			li.line_item_type,
 			li.resource_id,
+			COALESCE(r.resource_name, ''),
+			COALESCE(r.resource_type, ''),
 			li.usage_start_time,
 			li.usage_end_time,
+			li.usage_quantity_micros,
+			li.usage_unit,
 			li.pricing_quantity_micros,
 			li.pricing_unit,
 			li.unblended_rate_micros,
@@ -250,10 +264,14 @@ func (r CURLineItemRepository) ListLineItems(ctx context.Context, request CURLin
 			li.currency_code,
 			COALESCE(NULLIF(doc.seller_of_record, ''), NULLIF(seller.seller_of_record, ''), ?),
 			COALESCE(NULLIF(doc.seller_of_record, ''), NULLIF(seller.seller_of_record, ''), ?),
+			COALESCE(doc.invoice_id, ''),
+			li.price_catalog_sku,
 			li.tag_snapshot_json,
 			li.description
 		 FROM bill_line_items li
+		 LEFT JOIN accounts pa ON pa.id = li.payer_account_id
 		 LEFT JOIN accounts oa ON oa.id = li.usage_account_id
+		 LEFT JOIN resources r ON r.id = li.resource_id
 		 LEFT JOIN invoice_documents doc
 		   ON doc.billing_period_start = li.billing_period_start
 		  AND doc.billing_period_end = li.billing_period_end
@@ -841,10 +859,12 @@ func scanCURLineItem(row interface{ Scan(dest ...any) error }) (CURLineItem, err
 		&item.BillingPeriodStart,
 		&item.BillingPeriodEnd,
 		&item.PayerAccountID,
+		&item.PayerAccountName,
 		&item.UsageAccountID,
 		&item.AccountName,
 		&item.ServiceCode,
 		&item.ServiceName,
+		&item.ProductFamily,
 		&item.ProductCode,
 		&item.Region,
 		&item.AvailabilityZone,
@@ -852,8 +872,12 @@ func scanCURLineItem(row interface{ Scan(dest ...any) error }) (CURLineItem, err
 		&item.Operation,
 		&item.LineItemType,
 		&resourceID,
+		&item.ResourceName,
+		&item.ResourceType,
 		&item.UsageStartTime,
 		&item.UsageEndTime,
+		&item.ConsumedAmountMicros,
+		&item.ConsumedUnit,
 		&item.UsageAmountMicros,
 		&item.UsageUnit,
 		&item.UnblendedRateMicros,
@@ -861,6 +885,8 @@ func scanCURLineItem(row interface{ Scan(dest ...any) error }) (CURLineItem, err
 		&item.Currency,
 		&item.LegalEntity,
 		&item.InvoiceEntity,
+		&item.InvoiceID,
+		&item.PriceCatalogSKU,
 		&tagsJSON,
 		&item.Description,
 	); err != nil {

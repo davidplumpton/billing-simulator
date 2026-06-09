@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	ExportFileTypeCURCSV = "cur_csv"
+	ExportFileTypeCURCSV   = "cur_csv"
+	ExportFileTypeFOCUSCSV = "focus_csv"
 
 	defaultExportFileListLimit = 100
 	maxExportFileListLimit     = 1_000

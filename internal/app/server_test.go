@@ -2887,6 +2887,226 @@ func TestCURCSVExportFilenameIncludesRequestVariantDimensions(t *testing.T) {
 	}
 }
 
+func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspacePath := t.TempDir()
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	usageRepo := persistence.NewResourceUsageRepository(db)
+	if _, err := usageRepo.CreateResource(ctx, persistence.ResourceCreateRequest{
+		ID:           "resource-focus-export-ui",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  "AmazonEC2",
+		ResourceType: "ec2_instance",
+		ResourceName: "FOCUS export UI web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+		Tags: map[string]string{
+			"app": "storefront",
+		},
+	}); err != nil {
+		t.Fatalf("CreateResource() error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, persistence.UsageEventCreateRequest{
+		ID:                  "usage-focus-export-ui",
+		ResourceID:          "resource-focus-export-ui",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T02:00:00Z",
+		UsageQuantityMicros: 2_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock close time) error = %v", err)
+	}
+	closeResult, err := persistence.NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, persistence.MonthEndCloseRequest{
+		PayerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		InvoiceDueDays: 14,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+	if _, err := persistence.NewSimulatorClockRepository(db).Set(ctx, "2026-03-02T09:30:00Z"); err != nil {
+		t.Fatalf("Set(clock export time) error = %v", err)
+	}
+
+	server := httptest.NewServer(newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}))
+	t.Cleanup(server.Close)
+	client := server.Client()
+	exportRepo := persistence.NewExportFileRepository(db, workspacePath)
+
+	query := url.Values{
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"payer_account_id":     {persistence.AnyCompanyRetailManagementAccountID},
+	}
+	exportFilename := focusCSVExportFilename(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
+	})
+	assertExportNotStored := func(filename string) {
+		t.Helper()
+		if _, err := exportRepo.GetByFilename(ctx, filename); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("GetByFilename(%s) after direct GET error = %v, want sql.ErrNoRows", filename, err)
+		}
+		if _, err := os.Stat(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), filename)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Stat(%s) after direct GET error = %v, want missing file", filename, err)
+		}
+	}
+
+	resp, err := client.Get(server.URL + "/exports/focus.csv?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/focus.csv error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/focus.csv status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+		t.Fatalf("GET /exports/focus.csv content type = %q, want text/csv", contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, exportFilename) {
+		t.Fatalf("GET /exports/focus.csv content disposition = %q, want FOCUS filename", disposition)
+	}
+	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	if err != nil {
+		t.Fatalf("read FOCUS CSV response: %v\n%s", err, body)
+	}
+	initialCSVBody := body
+	if len(records) != 3 {
+		t.Fatalf("FOCUS CSV response records = %d (%+v), want header plus usage and support rows", len(records), records)
+	}
+	if got := strings.Join(records[0][:4], ","); got != "x_SimulatorExportGeneratedAt,x_SimulatorSourceBillId,x_SimulatorLineItemId,x_SimulatorSchema" {
+		t.Fatalf("FOCUS CSV header prefix = %q, want simulator metadata columns", got)
+	}
+	usage := requireCSVResponseRecord(t, records, "ResourceId", "resource-focus-export-ui")
+	for column, want := range map[string]string{
+		"x_SimulatorSourceBillId": closeResult.Bill.ID,
+		"BillingAccountId":        persistence.AnyCompanyRetailManagementAccountID,
+		"SubAccountId":            "111122223333",
+		"InvoiceId":               closeResult.InvoiceObligation.InvoiceID,
+		"EffectiveCost":           "0.083200",
+		"ResourceName":            "FOCUS export UI web",
+		"Tags":                    `{"app":"storefront"}`,
+	} {
+		if got := usage[csvResponseColumnIndex(t, records[0], column)]; got != want {
+			t.Fatalf("FOCUS CSV usage column %s = %q, want %q in %v", column, got, want, usage)
+		}
+	}
+	assertExportNotStored(exportFilename)
+
+	resp, err = client.PostForm(server.URL+"/exports/generate-focus", query)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-focus error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/generate-focus final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated "+exportFilename+" from 2 source rows") ||
+		!strings.Contains(body, "Generate FOCUS Export") ||
+		!strings.Contains(body, "FOCUS CSV") {
+		t.Fatalf("POST /exports/generate-focus body missing stored FOCUS export state: %s", body)
+	}
+	exportRecord, err := exportRepo.GetByFilename(ctx, exportFilename)
+	if err != nil {
+		t.Fatalf("GetByFilename(FOCUS export) error = %v", err)
+	}
+	if exportRecord.ExportType != persistence.ExportFileTypeFOCUSCSV ||
+		exportRecord.GenerationParameters["schema"] != "FOCUS-like" ||
+		exportRecord.GenerationParameters["source_bill_id"] != closeResult.Bill.ID ||
+		exportRecord.GenerationParameters["rows_written"] != "2" {
+		t.Fatalf("stored FOCUS export metadata = %+v, want FOCUS schema and source metadata", exportRecord)
+	}
+	exportContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), exportFilename))
+	if err != nil {
+		t.Fatalf("read stored FOCUS CSV export: %v", err)
+	}
+	if string(exportContent) != initialCSVBody {
+		t.Fatalf("stored FOCUS CSV export differs from direct response:\nfile=%s\nbody=%s", exportContent, initialCSVBody)
+	}
+
+	memberQuery := url.Values{
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"payer_account_id":     {persistence.AnyCompanyRetailManagementAccountID},
+		"line_item_status":     {"final"},
+		"viewer_role":          {"member-account"},
+		"viewer_account_id":    {"111122223333"},
+	}
+	memberFilename := focusCSVExportFilename(persistence.CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     "final",
+		Visibility:         persistence.BillingVisibilityFilter{UsageAccountID: "111122223333"},
+	})
+	resp, err = client.Get(server.URL + "/exports/focus.csv?" + memberQuery.Encode())
+	if err != nil {
+		t.Fatalf("GET /exports/focus.csv member error = %v", err)
+	}
+	memberBody := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /exports/focus.csv member status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, memberBody)
+	}
+	memberRecords, err := csv.NewReader(strings.NewReader(memberBody)).ReadAll()
+	if err != nil {
+		t.Fatalf("read member FOCUS CSV response: %v\n%s", err, memberBody)
+	}
+	if len(memberRecords) != 2 {
+		t.Fatalf("member FOCUS CSV records = %d (%+v), want header plus one visible row", len(memberRecords), memberRecords)
+	}
+	memberUsage := requireCSVResponseRecord(t, memberRecords, "SubAccountId", "111122223333")
+	if got := memberUsage[csvResponseColumnIndex(t, memberRecords[0], "InvoiceId")]; got != "" {
+		t.Fatalf("member FOCUS InvoiceId = %q, want hidden payer document", got)
+	}
+	if strings.Contains(memberBody, "AWS Support") || strings.Contains(memberBody, closeResult.Bill.ID) {
+		t.Fatalf("member FOCUS export leaked payer-scoped data: %s", memberBody)
+	}
+	assertExportNotStored(memberFilename)
+	resp, err = client.PostForm(server.URL+"/exports/generate-focus", memberQuery)
+	if err != nil {
+		t.Fatalf("POST /exports/generate-focus member error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /exports/generate-focus member final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if !strings.Contains(body, "Generated "+memberFilename+" from 1 source rows") ||
+		strings.Contains(body, exportFilename) {
+		t.Fatalf("POST /exports/generate-focus member body = %s, want scoped FOCUS export only", body)
+	}
+	memberRecord, err := exportRepo.GetByFilename(ctx, memberFilename)
+	if err != nil {
+		t.Fatalf("GetByFilename(member FOCUS export) error = %v", err)
+	}
+	if memberRecord.ExportType != persistence.ExportFileTypeFOCUSCSV ||
+		memberRecord.GenerationParameters["visibility_scope"] != "usage-account" ||
+		memberRecord.GenerationParameters["source_bill_id"] != "" ||
+		memberRecord.GenerationParameters["rows_written"] != "1" {
+		t.Fatalf("member FOCUS export metadata = %+v, want member-scoped metadata without payer document", memberRecord)
+	}
+}
+
 func TestQueryLabPageShowsCURCSVExamples(t *testing.T) {
 	t.Parallel()
 

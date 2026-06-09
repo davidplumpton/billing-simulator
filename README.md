@@ -49,7 +49,7 @@ The current codebase already includes these working foundations:
 - Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Cost Explorer derived summary tables for daily cost, monthly account/service spend, tag coverage, and Cost Category value rollups after billing changes.
 - Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
-- CUR-like export schema mapping, payer-period CSV downloads, workspace-local export file metadata, Exports UI for explicitly generating/listing/downloading/regenerating generated files, and export reconciliation reports over bill line items for payer and usage accounts, product code, usage, rates, costs, line-item type, resource IDs, tags, Cost Categories, legal/invoice entity fields, source bill metadata, deterministic generation time, consolidated bill/invoice total comparisons for payer-scoped views, and visible line-item total comparisons for member-scoped exports.
+- CUR-like export schema mapping, FOCUS-like CSV export mapping documented in [docs/focus-like-export-schema.md](docs/focus-like-export-schema.md), payer-period CSV downloads, workspace-local export file metadata, Exports UI for explicitly generating/listing/downloading/regenerating generated files, and export reconciliation reports over bill line items for payer and usage accounts, product code, usage, rates, costs, line-item type, resource IDs, tags, Cost Categories, legal/invoice entity fields, source bill metadata, deterministic generation time, consolidated bill/invoice total comparisons for payer-scoped views, and visible line-item total comparisons for member-scoped exports.
 - Query Lab UI with external SQL examples over generated CUR-like CSV exports for linked-account totals, untagged spend, top usage types, invoice reconciliation, and allocated cost comparisons.
 - Monthly budget definitions scoped by linked account, service, tag, or Cost Category with actual and forecast threshold checks backed by persisted simple month-end forecasts from elapsed-day run rate and scheduled scenario usage, plus in-app alert notification history for breached thresholds.
 - Billing visibility policy modeling for management-account, member-account, finance, and instructor personas.
@@ -63,7 +63,7 @@ Some implemented pieces are persistence or policy foundations that do not yet ha
 The broader MVP and later phases include:
 
 - Richer past-due payment remediation teaching workflows beyond the current retry, collection, and payment-method fix flows.
-- FOCUS-style exports beyond the current CUR-like exports, plus richer query-lab workflows beyond the current external SQL examples.
+- Strict FOCUS conformance metadata and richer FOCUS coverage beyond the current FOCUS-like CSV export, plus richer query-lab workflows beyond the current external SQL examples.
 - Query-lab SQL examples target generated CUR-like exports; the current dependency decision keeps DuckDB optional and external rather than embedded in the simulator binary. See [docs/query-lab-duckdb-decision.md](docs/query-lab-duckdb-decision.md).
 - Billing Conductor-style pro forma views and additional shared-cost lab workflows.
 - Richer instructor-authored scenarios and instructor assessment review workflows beyond current learner progress and check feedback.

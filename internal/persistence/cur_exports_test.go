@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -305,6 +306,157 @@ func TestCURLineItemRepositoryWritesCSVExportWithBillMetadata(t *testing.T) {
 	}
 	if got := support[csvColumnIndex(t, records[0], "line_item_type")]; got != billLineItemTypeFee {
 		t.Fatalf("support line_item_type = %q, want Fee", got)
+	}
+}
+
+func TestCURLineItemRepositoryWritesFOCUSCSVExport(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	item := recordAndPriceSingleUsage(t, ctx, db,
+		ResourceCreateRequest{
+			ID:           "resource-focus-csv-ec2",
+			AccountID:    "111122223333",
+			RegionCode:   "us-east-1",
+			ServiceCode:  serviceAmazonEC2,
+			ResourceType: "ec2_instance",
+			ResourceName: "FOCUS CSV web",
+			Status:       "active",
+			StartedAt:    "2026-02-01T00:00:00Z",
+			Tags: map[string]string{
+				"app":   "storefront",
+				"owner": "finops",
+			},
+		},
+		UsageEventCreateRequest{
+			ID:                  "usage-focus-csv-hours",
+			ResourceID:          "resource-focus-csv-ec2",
+			UsageType:           "instance-hours:t3.medium",
+			Operation:           "RunInstances",
+			UsageStartTime:      "2026-02-01T00:00:00Z",
+			UsageEndTime:        "2026-02-01T02:00:00Z",
+			UsageQuantityMicros: 2_000_000,
+			UsageUnit:           "Hours",
+		},
+	)
+	if _, err := NewSimulatorClockRepository(db).Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	closeResult, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: AnyCompanyRetailManagementAccountID,
+		InvoiceDueDays: 14,
+	})
+	if err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+
+	var body bytes.Buffer
+	result, err := NewCURLineItemRepository(db).WriteFOCUSCSVExport(ctx, &body, CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		GeneratedAt:        "2026-03-02T01:02:03+13:00",
+	})
+	if err != nil {
+		t.Fatalf("WriteFOCUSCSVExport() error = %v", err)
+	}
+	if result.GeneratedAt != "2026-03-01T12:02:03Z" ||
+		result.SourceBillID != closeResult.Bill.ID ||
+		result.RowsWritten != 2 {
+		t.Fatalf("WriteFOCUSCSVExport() = %+v, want UTC generated time, bill ID, and two rows", result)
+	}
+
+	records, err := csv.NewReader(bytes.NewReader(body.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("read FOCUS CSV export: %v\n%s", err, body.String())
+	}
+	if len(records) != 3 {
+		t.Fatalf("FOCUS CSV records = %d (%+v), want header plus usage and support rows", len(records), records)
+	}
+	if !slices.Equal(records[0], FOCUSCSVExportColumns()) {
+		t.Fatalf("FOCUS CSV header = %+v, want %+v", records[0], FOCUSCSVExportColumns())
+	}
+	for _, column := range []string{"BillingAccountId", "SubAccountId", "EffectiveCost", "InvoiceId", "Tags", "x_SimulatorCostCategories"} {
+		if !slices.Contains(FOCUSCSVExportColumns(), column) {
+			t.Fatalf("FOCUSCSVExportColumns() missing %q", column)
+		}
+	}
+
+	usage := requireCSVRecord(t, records, "ResourceId", "resource-focus-csv-ec2")
+	for column, want := range map[string]string{
+		"x_SimulatorExportGeneratedAt": "2026-03-01T12:02:03Z",
+		"x_SimulatorSourceBillId":      closeResult.Bill.ID,
+		"BillingAccountId":             AnyCompanyRetailManagementAccountID,
+		"BillingAccountName":           "Management",
+		"ChargeCategory":               "Usage",
+		"ConsumedQuantity":             "2.000000",
+		"ConsumedUnit":                 "Hours",
+		"EffectiveCost":                "0.083200",
+		"InvoiceId":                    closeResult.InvoiceObligation.InvoiceID,
+		"ListCost":                     "0.083200",
+		"ListUnitPrice":                "0.041600",
+		"PricingCategory":              "Standard",
+		"PricingQuantity":              "2.000000",
+		"Provider":                     defaultInvoiceSellerOfRecord,
+		"RegionId":                     "us-east-1",
+		"ResourceName":                 "FOCUS CSV web",
+		"ResourceType":                 "ec2_instance",
+		"ServiceCategory":              "Compute",
+		"ServiceName":                  "Amazon EC2",
+		"SkuId":                        item.PriceCatalogSKU,
+		"SubAccountId":                 "111122223333",
+		"SubAccountName":               "Storefront Prod",
+		"SubAccountType":               "Linked Account",
+		"Tags":                         `{"app":"storefront","owner":"finops"}`,
+		"x_SimulatorUsageType":         "instance-hours:t3.medium",
+		"x_SimulatorOperation":         "RunInstances",
+	} {
+		if got := usage[csvColumnIndex(t, records[0], column)]; got != want {
+			t.Fatalf("FOCUS usage column %s = %q, want %q in %v", column, got, want, usage)
+		}
+	}
+
+	support := requireCSVRecord(t, records, "ServiceName", "AWS Support")
+	if got := support[csvColumnIndex(t, records[0], "ChargeCategory")]; got != "Fee" {
+		t.Fatalf("support ChargeCategory = %q, want Fee", got)
+	}
+	if got := support[csvColumnIndex(t, records[0], "ResourceId")]; got != "" {
+		t.Fatalf("support ResourceId = %q, want blank resource lineage", got)
+	}
+
+	var memberBody bytes.Buffer
+	memberResult, err := NewCURLineItemRepository(db).WriteFOCUSCSVExport(ctx, &memberBody, CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		LineItemStatus:     billLineItemStatusFinal,
+		Visibility:         BillingVisibilityFilter{UsageAccountID: "111122223333"},
+		Limit:              10,
+	})
+	if err != nil {
+		t.Fatalf("WriteFOCUSCSVExport(member) error = %v", err)
+	}
+	if memberResult.SourceBillID != "" || memberResult.RowsWritten != 1 {
+		t.Fatalf("WriteFOCUSCSVExport(member) = %+v, want hidden bill ID and one visible row", memberResult)
+	}
+	memberRecords, err := csv.NewReader(bytes.NewReader(memberBody.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("read member FOCUS CSV export: %v\n%s", err, memberBody.String())
+	}
+	if len(memberRecords) != 2 {
+		t.Fatalf("member FOCUS CSV records = %d (%+v), want header plus one row", len(memberRecords), memberRecords)
+	}
+	memberUsage := requireCSVRecord(t, memberRecords, "SubAccountId", "111122223333")
+	if got := memberUsage[csvColumnIndex(t, memberRecords[0], "InvoiceId")]; got != "" {
+		t.Fatalf("member FOCUS InvoiceId = %q, want hidden payer document", got)
+	}
+	if got := memberUsage[csvColumnIndex(t, memberRecords[0], "x_SimulatorSourceBillId")]; got != "" {
+		t.Fatalf("member FOCUS source bill = %q, want hidden payer document", got)
+	}
+	if strings.Contains(memberBody.String(), "AWS Support") {
+		t.Fatalf("member FOCUS export leaked payer-scoped support row: %s", memberBody.String())
 	}
 }
 

@@ -31,6 +31,7 @@ type exportsPageData struct {
 	Actions             uiActionBarView
 	Filters             exportFileFilterView
 	GenerateCURCSV      curCSVGenerationFormView
+	GenerateFOCUSCSV    curCSVGenerationFormView
 	Files               []exportFileRowView
 	Tables              exportsTablesView
 }
@@ -291,18 +292,7 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 		h.renderExports(w, r, http.StatusForbidden, "regenerate export: "+err.Error(), "")
 		return
 	}
-	request, err := curCSVExportRequestFromExportFile(file)
-	if err != nil {
-		h.renderExports(w, r, http.StatusBadRequest, "regenerate export: "+err.Error(), "")
-		return
-	}
-	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
-	if err != nil {
-		h.renderExports(w, r, exportHTTPStatus(err), "regenerate export: "+err.Error(), "")
-		return
-	}
-
-	record, result, err := h.persistCURCSVExportFile(r.Context(), request)
+	record, result, err := h.regenerateExportFile(r.Context(), file, policy)
 	if err != nil {
 		h.renderExports(w, r, exportGenerationHTTPStatus(err), "regenerate export: "+err.Error(), "")
 		return
@@ -357,6 +347,51 @@ func (h exportsHandler) handleGenerateCURCSVExport(w http.ResponseWriter, r *htt
 	http.Redirect(w, r, exportsPathWithViewer(exportViewerFieldsFromValues(r.PostForm), flash), http.StatusSeeOther)
 }
 
+// handleGenerateFOCUSCSVExport writes a new persisted FOCUS-like CSV export from explicit form input.
+func (h exportsHandler) handleGenerateFOCUSCSVExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+	if h.workspacePath == "" {
+		http.Error(w, "workspace path required", http.StatusConflict)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.renderExports(w, r, http.StatusBadRequest, "generate FOCUS export: "+err.Error(), "")
+		return
+	}
+
+	request, err := curCSVExportRequestFromForm(r)
+	if err != nil {
+		h.renderExports(w, r, http.StatusBadRequest, "generate FOCUS export: "+err.Error(), "")
+		return
+	}
+	policy, err := h.exportPolicyFromValues(r.Context(), r.PostForm)
+	if err != nil {
+		h.renderExports(w, r, exportHTTPStatus(err), "generate FOCUS export: "+err.Error(), "")
+		return
+	}
+	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
+	if err != nil {
+		h.renderExports(w, r, exportHTTPStatus(err), "generate FOCUS export: "+err.Error(), "")
+		return
+	}
+
+	record, result, err := h.persistFOCUSCSVExportFile(r.Context(), request)
+	if err != nil {
+		h.renderExports(w, r, exportGenerationHTTPStatus(err), "generate FOCUS export: "+err.Error(), "")
+		return
+	}
+
+	flash := fmt.Sprintf("Generated %s from %d source rows", record.Filename, result.RowsWritten)
+	http.Redirect(w, r, exportsPathWithViewer(exportViewerFieldsFromValues(r.PostForm), flash), http.StatusSeeOther)
+}
+
 func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	viewer := exportViewerFieldsFromValues(r.URL.Query())
 	data := exportsPageData{
@@ -366,6 +401,7 @@ func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, st
 		Actions:             uiActionBar(uiActionLink("Query Lab", "/query-lab"), uiActionLink("Reconciliation", curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{}, viewer)), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
 		Filters:             exportFileFilterFromRequest(r),
 		GenerateCURCSV:      curCSVGenerationFormFromRequest(r),
+		GenerateFOCUSCSV:    focusCSVGenerationFormFromRequest(r),
 		Tables:              exportsTablesView{Files: exportFilesTable()},
 	}
 	if h.db != nil && data.Error == "" {
@@ -449,6 +485,48 @@ func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+curCSVExportFilename(request)+`"`)
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body.Bytes())
+	}
+}
+
+// handleFOCUSCSV exports payer-period bill line items in a FOCUS-like CSV schema.
+func (h exportsHandler) handleFOCUSCSV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	if h.db == nil {
+		http.Error(w, "workspace required", http.StatusConflict)
+		return
+	}
+
+	request, err := curCSVExportRequestFromQuery(r)
+	if err != nil {
+		http.Error(w, "export FOCUS CSV: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	policy, err := h.exportPolicyFromValues(r.Context(), r.URL.Query())
+	if err != nil {
+		http.Error(w, "export FOCUS CSV: "+err.Error(), exportHTTPStatus(err))
+		return
+	}
+	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
+	if err != nil {
+		http.Error(w, "export FOCUS CSV: "+err.Error(), exportHTTPStatus(err))
+		return
+	}
+
+	var body bytes.Buffer
+	_, err = h.cur.WriteFOCUSCSVExport(r.Context(), &body, request)
+	if err != nil {
+		http.Error(w, "export FOCUS CSV: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+focusCSVExportFilename(request)+`"`)
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body.Bytes())
@@ -594,6 +672,59 @@ func (h exportsHandler) writeCURCSVExportFile(ctx context.Context, request persi
 		GenerationParameters: curCSVExportGenerationParameters(request, result),
 		Content:              content,
 	})
+}
+
+func (h exportsHandler) persistFOCUSCSVExportFile(ctx context.Context, request persistence.CURCSVExportRequest) (persistence.ExportFile, persistence.CURCSVExportResult, error) {
+	var body bytes.Buffer
+	result, err := h.cur.WriteFOCUSCSVExport(ctx, &body, request)
+	if err != nil {
+		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, err
+	}
+	record, err := h.writeFOCUSCSVExportFile(ctx, request, body.Bytes(), result)
+	if err != nil {
+		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, exportStorageError{err: err}
+	}
+	return record, result, nil
+}
+
+func (h exportsHandler) writeFOCUSCSVExportFile(ctx context.Context, request persistence.CURCSVExportRequest, content []byte, result persistence.CURCSVExportResult) (persistence.ExportFile, error) {
+	return h.exportFiles.Write(ctx, persistence.ExportFileWriteRequest{
+		Filename:             focusCSVExportFilename(request),
+		ExportType:           persistence.ExportFileTypeFOCUSCSV,
+		BillingPeriodStart:   request.BillingPeriodStart,
+		BillingPeriodEnd:     request.BillingPeriodEnd,
+		PayerAccountID:       request.PayerAccountID,
+		UsageAccountID:       request.UsageAccountID,
+		GenerationParameters: focusCSVExportGenerationParameters(request, result),
+		Content:              content,
+	})
+}
+
+func (h exportsHandler) regenerateExportFile(ctx context.Context, file persistence.ExportFile, policy billingvisibility.Policy) (persistence.ExportFile, persistence.CURCSVExportResult, error) {
+	switch file.ExportType {
+	case persistence.ExportFileTypeCURCSV:
+		request, err := curCSVExportRequestFromExportFile(file)
+		if err != nil {
+			return persistence.ExportFile{}, persistence.CURCSVExportResult{}, err
+		}
+		request, err = h.scopedCURCSVExportRequest(ctx, request, policy)
+		if err != nil {
+			return persistence.ExportFile{}, persistence.CURCSVExportResult{}, err
+		}
+		return h.persistCURCSVExportFile(ctx, request)
+	case persistence.ExportFileTypeFOCUSCSV:
+		request, err := focusCSVExportRequestFromExportFile(file)
+		if err != nil {
+			return persistence.ExportFile{}, persistence.CURCSVExportResult{}, err
+		}
+		request, err = h.scopedCURCSVExportRequest(ctx, request, policy)
+		if err != nil {
+			return persistence.ExportFile{}, persistence.CURCSVExportResult{}, err
+		}
+		return h.persistFOCUSCSVExportFile(ctx, request)
+	default:
+		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, fmt.Errorf("export type %q cannot be regenerated", file.ExportType)
+	}
 }
 
 func (h exportsHandler) exportPolicyFromValues(ctx context.Context, values url.Values) (billingvisibility.Policy, error) {
@@ -840,6 +971,12 @@ func curCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
 	return form
 }
 
+func focusCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
+	form := curCSVGenerationFormFromRequest(r)
+	form.GenerateButton = uiSubmitButton("Generate FOCUS Export")
+	return form
+}
+
 func exportFileListRequestFromFilter(filter exportFileFilterView) (persistence.ExportFileListRequest, error) {
 	request := persistence.ExportFileListRequest{
 		ExportType:         filter.ExportType,
@@ -862,6 +999,7 @@ func exportFileTypeSelect(selected string) uiSelectFieldView {
 	options := []uiSelectOptionView{
 		{Value: "", Label: "All export types"},
 		{Value: persistence.ExportFileTypeCURCSV, Label: "CUR CSV"},
+		{Value: persistence.ExportFileTypeFOCUSCSV, Label: "FOCUS CSV"},
 	}
 	for idx := range options {
 		options[idx].Selected = options[idx].Value == selected
@@ -982,13 +1120,23 @@ func exportFileRowViewFromFile(file persistence.ExportFile, viewer exportViewerF
 			LineItemStatus:     request.LineItemStatus,
 			Limit:              request.Limit,
 		}, viewer)
+	} else if _, err := focusCSVExportRequestFromExportFile(file); err == nil {
+		row.CanRegenerate = true
 	}
 	return row
 }
 
 func curCSVExportRequestFromExportFile(file persistence.ExportFile) (persistence.CURCSVExportRequest, error) {
-	if file.ExportType != persistence.ExportFileTypeCURCSV {
-		return persistence.CURCSVExportRequest{}, fmt.Errorf("export type %q cannot be regenerated as CUR CSV", file.ExportType)
+	return csvExportRequestFromExportFile(file, persistence.ExportFileTypeCURCSV, "CUR CSV")
+}
+
+func focusCSVExportRequestFromExportFile(file persistence.ExportFile) (persistence.CURCSVExportRequest, error) {
+	return csvExportRequestFromExportFile(file, persistence.ExportFileTypeFOCUSCSV, "FOCUS CSV")
+}
+
+func csvExportRequestFromExportFile(file persistence.ExportFile, exportType, label string) (persistence.CURCSVExportRequest, error) {
+	if file.ExportType != exportType {
+		return persistence.CURCSVExportRequest{}, fmt.Errorf("export type %q cannot be regenerated as %s", file.ExportType, label)
 	}
 	visibility, err := curCSVExportVisibilityFromGenerationParameters(file.GenerationParameters)
 	if err != nil {
@@ -1016,6 +1164,8 @@ func displayExportFileType(exportType string) string {
 	switch exportType {
 	case persistence.ExportFileTypeCURCSV:
 		return "CUR CSV"
+	case persistence.ExportFileTypeFOCUSCSV:
+		return "FOCUS CSV"
 	default:
 		return displayBillState(exportType)
 	}
@@ -1108,7 +1258,7 @@ func exportFileDownloadFilenameFromPath(path string) (string, bool) {
 
 func exportFileContentType(exportType string) string {
 	switch exportType {
-	case persistence.ExportFileTypeCURCSV:
+	case persistence.ExportFileTypeCURCSV, persistence.ExportFileTypeFOCUSCSV:
 		return "text/csv; charset=utf-8"
 	default:
 		return "application/octet-stream"
@@ -1160,12 +1310,20 @@ func exportReconciliationLineItemStatusSelect(selected string) uiSelectFieldView
 }
 
 func curCSVExportFilename(request persistence.CURCSVExportRequest) string {
+	return csvExportFilename("cur", request)
+}
+
+func focusCSVExportFilename(request persistence.CURCSVExportRequest) string {
+	return csvExportFilename("focus", request)
+}
+
+func csvExportFilename(prefix string, request persistence.CURCSVExportRequest) string {
 	limitPart := "default"
 	if request.Limit > 0 {
 		limitPart = strconv.Itoa(request.Limit)
 	}
 	parts := []string{
-		"cur",
+		prefix,
 		safeCSVFilenamePart(request.BillingPeriodStart, "period-start"),
 		safeCSVFilenamePart(request.BillingPeriodEnd, "period-end"),
 		"payer",
@@ -1226,17 +1384,29 @@ func curCSVExportPathWithViewer(request persistence.CURCSVExportRequest, viewer 
 
 func curCSVExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
 	visibilityScope, visibilityAccountID := curCSVExportVisibilityScope(request.Visibility)
+	parameters := csvExportGenerationParameters(request, result)
+	parameters["visibility_scope"] = visibilityScope
+	parameters["visibility_account_id"] = visibilityAccountID
+	return parameters
+}
+
+func focusCSVExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
+	parameters := curCSVExportGenerationParameters(request, result)
+	parameters["schema"] = "FOCUS-like"
+	parameters["schema_version"] = "2026-06-09"
+	return parameters
+}
+
+func csvExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
 	parameters := map[string]string{
-		"billing_period_start":  request.BillingPeriodStart,
-		"billing_period_end":    request.BillingPeriodEnd,
-		"payer_account_id":      request.PayerAccountID,
-		"usage_account_id":      request.UsageAccountID,
-		"line_item_status":      request.LineItemStatus,
-		"visibility_scope":      visibilityScope,
-		"visibility_account_id": visibilityAccountID,
-		"generated_at":          result.GeneratedAt,
-		"source_bill_id":        result.SourceBillID,
-		"rows_written":          strconv.Itoa(result.RowsWritten),
+		"billing_period_start": request.BillingPeriodStart,
+		"billing_period_end":   request.BillingPeriodEnd,
+		"payer_account_id":     request.PayerAccountID,
+		"usage_account_id":     request.UsageAccountID,
+		"line_item_status":     request.LineItemStatus,
+		"generated_at":         result.GeneratedAt,
+		"source_bill_id":       result.SourceBillID,
+		"rows_written":         strconv.Itoa(result.RowsWritten),
 	}
 	if request.Limit > 0 {
 		parameters["limit"] = strconv.Itoa(request.Limit)
@@ -1471,6 +1641,30 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 						<input name="limit" value="{{.GenerateCURCSV.Limit}}" inputmode="numeric">
 					</label>
 					{{template "ui.submit-button" .GenerateCURCSV.GenerateButton}}
+				</form>
+			</section>
+
+			<section class="filter-bar" aria-label="Generate FOCUS CSV export">
+				<form method="post" action="/exports/generate-focus" class="filter-form">
+					{{template "ui.select-field" .GenerateFOCUSCSV.ViewerRoleField}}
+					{{template "ui.input-field" .GenerateFOCUSCSV.ViewerAccountField}}
+					<label>Billing Period Start
+						<input name="billing_period_start" value="{{.GenerateFOCUSCSV.BillingPeriodStart}}" placeholder="2026-02-01" required>
+					</label>
+					<label>Billing Period End
+						<input name="billing_period_end" value="{{.GenerateFOCUSCSV.BillingPeriodEnd}}" placeholder="2026-03-01" required>
+					</label>
+					<label>Payer Account ID
+						<input name="payer_account_id" value="{{.GenerateFOCUSCSV.PayerAccountID}}">
+					</label>
+					<label>Usage Account ID
+						<input name="usage_account_id" value="{{.GenerateFOCUSCSV.UsageAccountID}}">
+					</label>
+					{{template "ui.select-field" .GenerateFOCUSCSV.LineItemStatusField}}
+					<label>Limit
+						<input name="limit" value="{{.GenerateFOCUSCSV.Limit}}" inputmode="numeric">
+					</label>
+					{{template "ui.submit-button" .GenerateFOCUSCSV.GenerateButton}}
 				</form>
 			</section>
 

@@ -201,8 +201,14 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/exports/generate-cur", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleGenerateCURCSVExport(w, r)
 	})
+	mux.HandleFunc("/exports/generate-focus", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleGenerateFOCUSCSVExport(w, r)
+	})
 	mux.HandleFunc("/exports/cur.csv", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleCURCSV(w, r)
+	})
+	mux.HandleFunc("/exports/focus.csv", func(w http.ResponseWriter, r *http.Request) {
+		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleFOCUSCSV(w, r)
 	})
 	mux.HandleFunc("/exports/reconciliation", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleCURReconciliation(w, r)

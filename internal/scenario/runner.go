@@ -20,6 +20,7 @@ const (
 	scenarioRunStatusSucceeded = "succeeded"
 	scenarioRunStatusFailed    = "failed"
 	scenarioEventSource        = "scenario"
+	defaultScenarioReportRole  = "management-account"
 	maxScenarioRunIDAttempts   = 10_000
 )
 
@@ -869,6 +870,9 @@ func (r Runner) createSavedReport(ctx context.Context, state *scenarioExecutionS
 		Metrics:        append([]string(nil), event.Metrics...),
 		ChartType:      event.ChartType,
 	}
+	if request.OwnerRole == "" {
+		request.OwnerRole = defaultScenarioReportRole
+	}
 	if existing, ok, err := r.existingScenarioSavedReport(ctx, request); err != nil {
 		return persistence.SavedReport{}, err
 	} else if ok {
@@ -918,8 +922,10 @@ func (r Runner) existingScenarioSavedReport(ctx context.Context, request persist
 		err = r.db.QueryRowContext(ctx, `SELECT id
 			FROM saved_reports
 			WHERE owner_account_id = ?
+			  AND owner_role = ?
 			  AND lower(name) = lower(?)`,
 			request.OwnerAccountID,
+			request.OwnerRole,
 			request.Name,
 		).Scan(&id)
 	}

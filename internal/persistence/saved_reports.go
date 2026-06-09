@@ -350,15 +350,19 @@ func (r SavedReportRepository) GetForOwner(ctx context.Context, id, ownerAccount
 	return report, nil
 }
 
-// GetByName reads one saved report for an owner by case-insensitive report name.
-func (r SavedReportRepository) GetByName(ctx context.Context, ownerAccountID, name string) (SavedReport, error) {
+// GetByName reads one saved report for a role/account owner by case-insensitive report name.
+func (r SavedReportRepository) GetByName(ctx context.Context, ownerAccountID, ownerRole, name string) (SavedReport, error) {
 	if r.db == nil {
 		return SavedReport{}, fmt.Errorf("database handle is required")
 	}
 	ownerAccountID = strings.TrimSpace(ownerAccountID)
+	ownerRole = strings.TrimSpace(ownerRole)
 	name = strings.TrimSpace(name)
 	if ownerAccountID == "" {
 		return SavedReport{}, fmt.Errorf("saved report owner account ID is required")
+	}
+	if err := validateSavedReportOwnerRole(ownerRole); err != nil {
+		return SavedReport{}, err
 	}
 	if name == "" {
 		return SavedReport{}, fmt.Errorf("saved report name is required")
@@ -368,16 +372,18 @@ func (r SavedReportRepository) GetByName(ctx context.Context, ownerAccountID, na
 		ctx,
 		savedReportSelectSQL+`
 		 WHERE owner_account_id = ?
+		   AND owner_role = ?
 		   AND lower(name) = lower(?)`,
 		ownerAccountID,
+		ownerRole,
 		name,
 	)
 	report, err := scanSavedReport(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return SavedReport{}, fmt.Errorf("saved report %q for owner %q not found", name, ownerAccountID)
+			return SavedReport{}, fmt.Errorf("saved report %q for owner %q/%q not found", name, ownerRole, ownerAccountID)
 		}
-		return SavedReport{}, fmt.Errorf("get saved report %q for owner %q: %w", name, ownerAccountID, err)
+		return SavedReport{}, fmt.Errorf("get saved report %q for owner %q/%q: %w", name, ownerRole, ownerAccountID, err)
 	}
 	return report, nil
 }

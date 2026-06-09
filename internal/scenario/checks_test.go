@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"aws-billing-simulator/internal/persistence"
@@ -62,6 +63,69 @@ func TestEvaluatorEvaluatesTagActivationCheck(t *testing.T) {
 		t.Fatalf("Evaluate(%q) error = %v", MissingTagsSeedKey, err)
 	}
 	requireAllScenarioChecksPassed(t, result)
+}
+
+func TestEvaluatorScopesSavedReportExistsByOwnerRole(t *testing.T) {
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	reportRepo := persistence.NewSavedReportRepository(db)
+	if _, err := reportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-check-management",
+		Name:           "Payer role report",
+		OwnerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "management-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	}); err != nil {
+		t.Fatalf("Create(management report) error = %v", err)
+	}
+	if _, err := reportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-check-finance",
+		Name:           "Payer role report",
+		OwnerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "finance",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	}); err != nil {
+		t.Fatalf("Create(finance report) error = %v", err)
+	}
+	definition := parseScenarioDefinitionForTest(t, `{
+		"name": "Role-scoped saved report check",
+		"clock": {"start": "2026-02-01"},
+		"organization_template": "anycompany-retail",
+		"checks": [
+			{
+				"id": "check-finance-report",
+				"type": "saved_report_exists",
+				"report_name": "Payer role report",
+				"account_id": "999988887777",
+				"owner_role": "finance"
+			},
+			{
+				"id": "check-instructor-report",
+				"type": "saved_report_exists",
+				"report_name": "Payer role report",
+				"account_id": "999988887777",
+				"owner_role": "instructor"
+			}
+		]
+	}`)
+
+	result, err := NewEvaluator(db).Evaluate(ctx, definition)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result.ChecksTotal != 2 || result.ChecksPassed != 1 || result.ChecksFailed != 1 {
+		t.Fatalf("Evaluate() = %+v, want one role-scoped pass and one role-scoped failure", result)
+	}
+	if !result.Results[0].Passed ||
+		!strings.Contains(result.Results[0].Actual, "saved-report-check-finance") ||
+		!strings.Contains(result.Results[0].Actual, "owner=finance/999988887777") {
+		t.Fatalf("finance check = %+v, want finance-owned report evidence", result.Results[0])
+	}
+	if result.Results[1].Passed || result.Results[1].Actual != "not found" {
+		t.Fatalf("instructor check = %+v, want not found for unmatched owner_role", result.Results[1])
+	}
 }
 
 func TestEvaluatorEvaluatesBillReconciliationAndPaymentStatusChecks(t *testing.T) {

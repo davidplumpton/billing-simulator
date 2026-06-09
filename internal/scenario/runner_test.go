@@ -190,6 +190,90 @@ func TestRunnerAllowsSameDefinitionRerunInOneWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunnerMatchesExistingSavedReportByOwnerRole(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	reportRepo := persistence.NewSavedReportRepository(db)
+	managementReport, err := reportRepo.Create(ctx, persistence.SavedReportCreateRequest{
+		ID:             "saved-report-existing-management-shelf",
+		Name:           "Payer overlap report",
+		Description:    "Original management shelf report",
+		OwnerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "management-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("Create(management report) error = %v", err)
+	}
+	definition := parseScenarioDefinitionForTest(t, `{
+		"name": "Finance saved report shelf scenario",
+		"clock": {"start": "2026-02-01"},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "create-finance-report",
+				"day": 1,
+				"action": "create_saved_report",
+				"report_name": "Payer overlap report",
+				"description": "Scenario finance shelf report",
+				"owner_account": "Management",
+				"owner_role": "finance",
+				"date_range_start": "2026-02-01",
+				"date_range_end": "2026-03-01",
+				"groupings": [{"type": "dimension", "key": "service"}]
+			}
+		]
+	}`)
+
+	if _, err := NewRunner(db).Run(ctx, definition); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	financeReport, err := reportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "finance", "payer overlap report")
+	if err != nil {
+		t.Fatalf("GetByName(finance report) error = %v", err)
+	}
+	if financeReport.ID == managementReport.ID || financeReport.OwnerRole != "finance" {
+		t.Fatalf("finance report = %+v, want distinct finance-owned saved report", financeReport)
+	}
+	managementAfterRun, err := reportRepo.Get(ctx, managementReport.ID)
+	if err != nil {
+		t.Fatalf("Get(management report) error = %v", err)
+	}
+	if managementAfterRun.Description != "Original management shelf report" {
+		t.Fatalf("management report = %+v, want untouched by finance scenario", managementAfterRun)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM saved_reports
+		WHERE owner_account_id = ?
+		  AND lower(name) = lower(?)`,
+		persistence.AnyCompanyRetailManagementAccountID,
+		"Payer overlap report"); got != 2 {
+		t.Fatalf("same-name payer reports = %d, want management and finance shelves", got)
+	}
+
+	if _, err := NewRunner(db).Run(ctx, definition); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	financeAfterRerun, err := reportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "finance", "payer overlap report")
+	if err != nil {
+		t.Fatalf("GetByName(finance rerun report) error = %v", err)
+	}
+	if financeAfterRerun.ID != financeReport.ID {
+		t.Fatalf("finance report ID after rerun = %q, want existing %q rewritten", financeAfterRerun.ID, financeReport.ID)
+	}
+	if got := countScenarioRows(t, db, `SELECT COUNT(*)
+		FROM saved_reports
+		WHERE owner_account_id = ?
+		  AND lower(name) = lower(?)`,
+		persistence.AnyCompanyRetailManagementAccountID,
+		"Payer overlap report"); got != 2 {
+		t.Fatalf("same-name payer reports after rerun = %d, want no duplicate finance report", got)
+	}
+}
+
 func TestRunnerDistinguishesSameHeaderDefinitionsWithDifferentBodies(t *testing.T) {
 	t.Parallel()
 

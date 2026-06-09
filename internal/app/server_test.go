@@ -137,8 +137,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 32 {
-		t.Fatalf("schema_migrations count = %d, want 32", count)
+	if count != 33 {
+		t.Fatalf("schema_migrations count = %d, want 33", count)
 	}
 
 	var catalogCount int
@@ -2826,7 +2826,7 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 		}
 	}
 
-	report, err := persistence.NewSavedReportRepository(db).GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "Storefront EC2 daily")
+	report, err := persistence.NewSavedReportRepository(db).GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "management-account", "Storefront EC2 daily")
 	if err != nil {
 		t.Fatalf("GetByName(saved report) error = %v", err)
 	}
@@ -4545,7 +4545,7 @@ func TestCostExplorerReportUIFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 
 	savedReportRepo := persistence.NewSavedReportRepository(db)
-	report, err := savedReportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "Daily App EC2 Spend")
+	report, err := savedReportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "management-account", "Daily App EC2 Spend")
 	if err != nil {
 		t.Fatalf("GetByName(saved report) error = %v", err)
 	}
@@ -4729,7 +4729,7 @@ func TestCostExplorerSavedReportRunRecordsLastRunMetadata(t *testing.T) {
 	}
 
 	savedReportRepo := persistence.NewSavedReportRepository(db)
-	report, err := savedReportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "Saved report run metadata")
+	report, err := savedReportRepo.GetByName(ctx, persistence.AnyCompanyRetailManagementAccountID, "management-account", "Saved report run metadata")
 	if err != nil {
 		t.Fatalf("GetByName(saved report) error = %v", err)
 	}

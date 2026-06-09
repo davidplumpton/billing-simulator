@@ -139,16 +139,20 @@ func (e Evaluator) evaluateSavedReportExists(ctx context.Context, definition Def
 		clauses = append(clauses, "owner_account_id = ?")
 		args = append(args, ownerAccountID)
 	}
-	var reportID, ownerID string
+	if check.OwnerRole != "" {
+		clauses = append(clauses, "owner_role = ?")
+		args = append(args, check.OwnerRole)
+	}
+	var reportID, ownerID, ownerRole string
 	err = e.db.QueryRowContext(
 		ctx,
-		`SELECT id, owner_account_id
+		`SELECT id, owner_account_id, owner_role
 		 FROM saved_reports
 		 WHERE `+strings.Join(clauses, " AND ")+`
 		 ORDER BY updated_at DESC, id
 		 LIMIT 1`,
 		args...,
-	).Scan(&reportID, &ownerID)
+	).Scan(&reportID, &ownerID, &ownerRole)
 	evaluation := baseCheckEvaluation(check, check.ReportName)
 	if err == sql.ErrNoRows {
 		evaluation.Actual = "not found"
@@ -158,7 +162,7 @@ func (e Evaluator) evaluateSavedReportExists(ctx context.Context, definition Def
 	if err != nil {
 		return CheckEvaluation{}, fmt.Errorf("evaluate saved report check %q: %w", check.ID, err)
 	}
-	evaluation.Actual = fmt.Sprintf("%s owner=%s", reportID, ownerID)
+	evaluation.Actual = fmt.Sprintf("%s owner=%s/%s", reportID, ownerRole, ownerID)
 	evaluation.Message = fmt.Sprintf("saved report %q exists", check.ReportName)
 	return finishCheckEvaluation(evaluation, true), nil
 }

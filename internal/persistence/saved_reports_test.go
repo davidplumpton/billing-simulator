@@ -48,7 +48,7 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 		t.Fatalf("created report = %+v, want stored definition with never-run metadata", report)
 	}
 
-	byName, err := repo.GetByName(ctx, "999988887777", "monthly COST by service")
+	byName, err := repo.GetByName(ctx, "999988887777", "management-account", "monthly COST by service")
 	if err != nil {
 		t.Fatalf("GetByName() error = %v", err)
 	}
@@ -247,12 +247,66 @@ func TestSavedReportRepositoryScopesCostExplorerReportsByViewer(t *testing.T) {
 		t.Fatalf("member reports = %+v, want only account-scoped member Cost Explorer report", memberReports)
 	}
 
-	memberByName, err := repo.GetByName(ctx, "111122223333", "monthly ACCOUNT spend")
+	memberByName, err := repo.GetByName(ctx, "111122223333", memberPolicy.Role.String(), "monthly ACCOUNT spend")
 	if err != nil {
 		t.Fatalf("GetByName(member viewer) error = %v", err)
 	}
 	if memberByName.ID != memberReport.ID || memberByName.ID == managementReport.ID || memberByName.ID == otherMemberReport.ID {
 		t.Fatalf("member report by name = %+v, want same-name report owned by member account", memberByName)
+	}
+}
+
+func TestSavedReportRepositoryAllowsSameOwnerAccountNameForDifferentRoles(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewSavedReportRepository(db)
+
+	managementReport, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-management-payer-shelf",
+		Name:           "Shared payer report",
+		OwnerAccountID: AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "management-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("Create(management report) error = %v", err)
+	}
+	financeReport, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-finance-payer-shelf",
+		Name:           "Shared payer report",
+		OwnerAccountID: AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "finance",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("Create(finance report) error = %v", err)
+	}
+
+	managementByName, err := repo.GetByName(ctx, AnyCompanyRetailManagementAccountID, "management-account", "shared PAYER report")
+	if err != nil {
+		t.Fatalf("GetByName(management) error = %v", err)
+	}
+	financeByName, err := repo.GetByName(ctx, AnyCompanyRetailManagementAccountID, "finance", "shared PAYER report")
+	if err != nil {
+		t.Fatalf("GetByName(finance) error = %v", err)
+	}
+	if managementByName.ID != managementReport.ID || financeByName.ID != financeReport.ID {
+		t.Fatalf("role-scoped reports = management %+v finance %+v, want distinct role shelves", managementByName, financeByName)
+	}
+
+	if _, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-finance-payer-shelf-duplicate",
+		Name:           "shared payer REPORT",
+		OwnerAccountID: AnyCompanyRetailManagementAccountID,
+		OwnerRole:      "finance",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	}); err == nil {
+		t.Fatal("Create(duplicate finance report) error = nil, want same role/account/name uniqueness failure")
 	}
 }
 

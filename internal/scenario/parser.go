@@ -248,6 +248,7 @@ type Check struct {
 	Category           string            `json:"category,omitempty"`
 	Account            string            `json:"account,omitempty"`
 	AccountID          string            `json:"account_id,omitempty"`
+	OwnerRole          string            `json:"owner_role,omitempty"`
 	PayerAccount       string            `json:"payer_account,omitempty"`
 	PayerAccountID     string            `json:"payer_account_id,omitempty"`
 	Service            string            `json:"service,omitempty"`
@@ -476,6 +477,7 @@ func normalizeCheck(check Check, index int) Check {
 	check.Category = strings.TrimSpace(check.Category)
 	check.Account = strings.TrimSpace(check.Account)
 	check.AccountID = strings.TrimSpace(check.AccountID)
+	check.OwnerRole = strings.TrimSpace(check.OwnerRole)
 	check.PayerAccount = strings.TrimSpace(check.PayerAccount)
 	check.PayerAccountID = strings.TrimSpace(check.PayerAccountID)
 	check.Service = strings.TrimSpace(check.Service)
@@ -956,6 +958,11 @@ func validateCheck(check Check, index int, problems *validationProblems) {
 	case CheckTypeSavedReportExists:
 		if check.ReportName == "" {
 			problems.add("%s.report_name is required for saved_report_exists", path)
+		}
+		switch check.OwnerRole {
+		case "", "management-account", "member-account", "finance", "instructor":
+		default:
+			problems.add("%s.owner_role %q is not supported for saved_report_exists", path, check.OwnerRole)
 		}
 	case CheckTypeIdentifiesTopDriver:
 		if check.ExpectedService == "" {

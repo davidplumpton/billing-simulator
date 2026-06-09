@@ -8185,13 +8185,22 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /invoices/{id}/document.pdf error = %v", err)
 	}
 	body = readResponseBody(t, resp)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("GET /invoices/{id}/document.pdf status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotImplemented, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /invoices/{id}/document.pdf status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
-	if !strings.Contains(resp.Header.Get("X-Invoice-PDF-Implementation"), "html-to-pdf") ||
-		!strings.Contains(body, "packaged HTML-to-PDF renderer") ||
-		!strings.Contains(body, invoicePath) {
-		t.Fatalf("GET /invoices/{id}/document.pdf missing implementation plan: headers=%v body=%s", resp.Header, body)
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/pdf") {
+		t.Fatalf("GET /invoices/{id}/document.pdf content type = %q, want application/pdf", contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, invoiceID+"-document.pdf") {
+		t.Fatalf("GET /invoices/{id}/document.pdf content disposition = %q, want invoice PDF filename", disposition)
+	}
+	if !strings.HasPrefix(body, "%PDF-1.4") ||
+		!strings.Contains(body, "Invoice "+invoiceID) ||
+		!strings.Contains(body, "AnyCompany Retail") ||
+		!strings.Contains(body, "Workflow web") ||
+		!strings.Contains(body, "AWSSupport") ||
+		!strings.Contains(body, "%%EOF") {
+		t.Fatalf("GET /invoices/{id}/document.pdf missing rendered invoice PDF content: headers=%v body=%s", resp.Header, body)
 	}
 
 	resp, err = client.Get(server.URL + invoicePDFPath + managementViewerQuery)
@@ -8199,14 +8208,15 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /invoices/{id}/document.pdf management viewer error = %v", err)
 	}
 	body = readResponseBody(t, resp)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("GET /invoices/{id}/document.pdf management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusNotImplemented, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /invoices/{id}/document.pdf management viewer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	scopedManagementInvoicePath := invoicePath + "?" + managementInvoiceQuery
-	if !strings.Contains(body, "packaged HTML-to-PDF renderer") ||
-		!strings.Contains(body, scopedManagementInvoicePath) ||
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/pdf") ||
+		!strings.Contains(body, "Invoice "+invoiceID) ||
+		!strings.Contains(body, "Workflow web") ||
 		!strings.Contains(resp.Header.Get("Link"), "<"+scopedManagementInvoicePath+">") {
-		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing scoped implementation plan: headers=%v body=%s", resp.Header, body)
+		t.Fatalf("GET /invoices/{id}/document.pdf management viewer missing scoped PDF response: headers=%v body=%s", resp.Header, body)
 	}
 	resp, err = client.Get(server.URL + invoicePDFPath + crossPayerViewerQuery)
 	if err != nil {

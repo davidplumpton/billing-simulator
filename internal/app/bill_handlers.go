@@ -291,7 +291,7 @@ func (h billsHandler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 	case invoiceExportCSV:
 		h.handleInvoiceCSV(w, r, route.InvoiceID)
 	case invoiceExportPDF:
-		h.handleInvoicePDFPlan(w, r, route.InvoiceID)
+		h.handleInvoicePDF(w, r, route.InvoiceID)
 	default:
 		h.renderInvoice(w, r, http.StatusOK, route.InvoiceID, "")
 	}
@@ -476,8 +476,8 @@ func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, i
 	_, _ = w.Write(body)
 }
 
-// handleInvoicePDFPlan reserves the packaged PDF URL and points it at the printable HTML source.
-func (h billsHandler) handleInvoicePDFPlan(w http.ResponseWriter, r *http.Request, invoiceID string) {
+// handleInvoicePDF serves a packaged PDF rendering of the printable invoice document.
+func (h billsHandler) handleInvoicePDF(w http.ResponseWriter, r *http.Request, invoiceID string) {
 	if h.db == nil {
 		http.Error(w, "workspace required", http.StatusConflict)
 		return
@@ -497,12 +497,18 @@ func (h billsHandler) handleInvoicePDFPlan(w http.ResponseWriter, r *http.Reques
 	}
 
 	viewer := exportViewerFieldsFromBillsFilter(billsFilterFromRequest(r))
+	data := invoicePageDataFromPrintable(printable, viewer)
+	body, err := invoicePDFBytes(data)
+	if err != nil {
+		http.Error(w, "render invoice PDF: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	htmlPath := invoicePathForIDWithViewer(invoiceID, viewer)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+invoicePDFFilename(invoiceID)+`"`)
 	w.Header().Set("Link", "<"+htmlPath+`>; rel="alternate"; type="text/html"`)
-	w.Header().Set("X-Invoice-PDF-Implementation", "packaged-html-to-pdf")
-	w.WriteHeader(http.StatusNotImplemented)
-	_, _ = fmt.Fprintf(w, "PDF export for invoice %s is reserved for the packaged HTML-to-PDF renderer. Printable HTML is available at %s.\n", invoiceID, htmlPath)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // loadBillsPageData reads clock context and bill summaries for rendering.
@@ -1141,7 +1147,7 @@ func invoiceCSVPathForIDWithViewer(invoiceID string, viewer exportViewerFields) 
 	return invoicePathWithViewer(invoiceCSVPathForID(invoiceID), viewer)
 }
 
-// invoicePDFPathForID returns the reserved packaged-PDF URL for an invoice.
+// invoicePDFPathForID returns the packaged-PDF download URL for an invoice.
 func invoicePDFPathForID(invoiceID string) string {
 	return invoicePathForID(invoiceID) + invoicePDFPathSuffix
 }
@@ -1161,6 +1167,15 @@ func invoicePathWithViewer(path string, viewer exportViewerFields) string {
 
 // invoiceCSVFilename sanitizes invoice IDs for the CSV content-disposition filename.
 func invoiceCSVFilename(invoiceID string) string {
+	return invoiceSafeFilenameBase(invoiceID) + "-line-items.csv"
+}
+
+// invoicePDFFilename sanitizes invoice IDs for the PDF content-disposition filename.
+func invoicePDFFilename(invoiceID string) string {
+	return invoiceSafeFilenameBase(invoiceID) + "-document.pdf"
+}
+
+func invoiceSafeFilenameBase(invoiceID string) string {
 	var builder strings.Builder
 	for _, r := range strings.TrimSpace(invoiceID) {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
@@ -1173,7 +1188,7 @@ func invoiceCSVFilename(invoiceID string) string {
 	if safe == "" {
 		safe = "invoice"
 	}
-	return safe + "-line-items.csv"
+	return safe
 }
 
 var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading">

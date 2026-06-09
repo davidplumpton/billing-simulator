@@ -38,7 +38,7 @@ func TestStartServesHealthCheck(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err := client.Get(server.URL() + "/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz error = %v", err)
@@ -176,7 +176,7 @@ func TestLocalServerSmokeFlowCreatesWorkspaceAndServesDashboard(t *testing.T) {
 		}
 	})
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/healthz")
 	if err != nil {
@@ -320,7 +320,7 @@ func TestOverviewIntroPageRendersWorkflowLinksInFreshWorkspace(t *testing.T) {
 		}
 	})
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err := client.Get(server.URL() + "/overview")
 	if err != nil {
 		t.Fatalf("GET /overview error = %v", err)
@@ -406,7 +406,7 @@ func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
 		}
 	})
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err := client.Get(server.URL() + "/organization")
 	if err != nil {
 		t.Fatalf("GET /organization without workspace error = %v", err)
@@ -594,7 +594,7 @@ func TestAnyCompanySeedOrganizationFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatal("Start() did not open workspace database")
 	}
 	repo := persistence.NewOrganizationRepository(db)
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/organization")
 	if err != nil {
@@ -775,7 +775,7 @@ func TestOrganizationAccountSimulationEpicWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/organization")
 	if err != nil {
@@ -913,7 +913,7 @@ func TestUsagePricingBillingEngineEpicWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/resources")
 	if err != nil {
@@ -1187,7 +1187,7 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 		t.Fatalf("CreatePaymentMethod(Advance Pay) error = %v", err)
 	}
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err := client.Get(server.URL() + "/payments")
 	if err != nil {
 		t.Fatalf("GET /payments error = %v", err)
@@ -1957,7 +1957,7 @@ func TestScenarioEditorValidationPreviewWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: 3 * time.Second}
+	client := appTestHTTPClientWithTimeout(3 * time.Second)
 
 	resp, err := client.Get(server.URL() + "/scenarios/editor")
 	if err != nil {
@@ -2202,7 +2202,7 @@ func TestScenarioFeedbackReportUsesPersistedLearnerEvidence(t *testing.T) {
 		t.Fatalf("RecordCheckResults() error = %v", err)
 	}
 
-	client := http.Client{Timeout: 3 * time.Second}
+	client := appTestHTTPClientWithTimeout(3 * time.Second)
 	resp, err := client.Get(server.URL() + "/scenarios")
 	if err != nil {
 		t.Fatalf("GET /scenarios error = %v", err)
@@ -2271,7 +2271,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: 3 * time.Second}
+	client := appTestHTTPClientWithTimeout(3 * time.Second)
 
 	resp, err := client.Get(server.URL() + "/scenarios")
 	if err != nil {
@@ -2565,7 +2565,7 @@ func TestScenarioLaunchReportsClosedPeriodConflictBeforePartialSetup(t *testing.
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: 3 * time.Second}
+	client := appTestHTTPClientWithTimeout(3 * time.Second)
 
 	resp, err := client.PostForm(server.URL()+"/scenarios/launch", url.Values{
 		"scenario_key": {"first-consolidated-bill"},
@@ -4582,7 +4582,7 @@ func TestCostExplorerReportUIFeatureWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/cost-explorer")
 	if err != nil {
@@ -5220,7 +5220,7 @@ func TestCostCategoryRulesFeatureWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/cost-categories")
 	if err != nil {
@@ -5562,7 +5562,7 @@ func TestSharedCostSplitChargesFeatureWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	createResource := func(name, accountID, product string) string {
 		t.Helper()
@@ -6003,7 +6003,7 @@ func TestTagsCostCategoriesAndAllocationEpicWorksInFreshWorkspace(t *testing.T) 
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	createResource := func(name, accountID, product string) string {
 		t.Helper()
@@ -6331,7 +6331,7 @@ func TestCostExplorerQueryEngineFeatureWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	createResource := func(name, accountID, appValue string) string {
 		t.Helper()
@@ -6822,7 +6822,7 @@ func TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace(t *testing.T) {
 	if db == nil {
 		t.Fatal("Start() did not open workspace database")
 	}
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 
 	resp, err := client.Get(server.URL() + "/tags")
 	if err != nil {
@@ -7948,7 +7948,7 @@ func TestBillingVisibilityModelFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 	seedFilterableUsage(t, context.Background(), db)
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	tests := []struct {
 		name  string
 		path  string

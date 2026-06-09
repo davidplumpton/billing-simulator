@@ -138,7 +138,7 @@ func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := startScenarioFeedbackTestServer(t, tc.key)
 			db := server.workspace.DB()
-			client := http.Client{Timeout: 3 * time.Second}
+			client := appTestHTTPClientWithTimeout(3 * time.Second)
 
 			resp, err := client.PostForm(server.URL()+"/scenarios/launch", url.Values{
 				"scenario_key": {tc.key},

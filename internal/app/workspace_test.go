@@ -186,7 +186,7 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 		t.Fatalf("GET / did not render workspace selector: %s", body)
 	}
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err = client.PostForm(server.URL()+"/workspaces/open", url.Values{
 		"workspace_path": {workspacePath},
 	})
@@ -253,7 +253,7 @@ func TestWorkspaceUIStartsFreshExperienceAndPersistsGeneratedPath(t *testing.T) 
 		}
 	})
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err := client.Get(server.URL() + "/workspaces")
 	if err != nil {
 		t.Fatalf("GET /workspaces error = %v", err)
@@ -499,7 +499,7 @@ func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 		}
 	})
 
-	client := http.Client{Timeout: time.Second}
+	client := appTestHTTPClient()
 	resp, err := client.Get(server.URL() + "/workspaces")
 	if err != nil {
 		t.Fatalf("GET /workspaces error = %v", err)

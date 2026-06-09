@@ -30,6 +30,7 @@ type costExplorerPageData struct {
 	Notices             []uiNoticeView
 	WorkspaceEmptyState uiEmptyStateView
 	Builder             costExplorerBuilderView
+	NewReportPath       string
 	Result              costExplorerResultView
 	SavedReports        []costExplorerSavedReportView
 	HasResult           bool
@@ -472,6 +473,7 @@ func (h costExplorerHandler) renderCostExplorer(w http.ResponseWriter, r *http.R
 		Error:               errorMessage,
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
 		Builder:             costExplorerDefaultBuilder(),
+		NewReportPath:       "/cost-explorer",
 		Group1TypeOptions:   costExplorerGroupTypeOptions("dimension"),
 		Group2TypeOptions:   costExplorerGroupTypeOptions(""),
 		MetricOptions:       costExplorerMetricOptions(""),
@@ -604,6 +606,7 @@ func (h costExplorerHandler) loadCostExplorerPageData(ctx context.Context, r *ht
 		data.Builder.ReportName = selectedReport.Name
 		data.Builder.Description = selectedReport.Description
 	}
+	data.NewReportPath = costExplorerNewReportPath(data.Builder)
 
 	result, err := h.queryFromBuilder(ctx, data.Builder)
 	if err != nil {
@@ -1045,6 +1048,23 @@ func costExplorerBuilderQueryValues(builder costExplorerBuilderView) url.Values 
 
 func costExplorerPath(builder costExplorerBuilderView) string {
 	return "/cost-explorer?" + costExplorerBuilderQueryValues(builder).Encode()
+}
+
+// costExplorerNewReportPath clears the report definition while keeping the current owner shelf.
+func costExplorerNewReportPath(builder costExplorerBuilderView) string {
+	values := url.Values{}
+	setQueryValue := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	setQueryValue("owner_account_id", builder.OwnerAccountID)
+	setQueryValue("owner_role", builder.OwnerRole)
+	if len(values) == 0 {
+		return "/cost-explorer"
+	}
+	return "/cost-explorer?" + values.Encode()
 }
 
 func costExplorerResultsCSVPath(builder costExplorerBuilderView) string {
@@ -1833,7 +1853,7 @@ var costExplorerPageTemplate = newPageTemplate("cost-explorer-page", `<div class
 				<div class="page-actions">
 					<a class="button-link secondary" href="/resources">Resources</a>
 					<a class="button-link secondary" href="/cost-categories">Cost Categories</a>
-					<a class="button-link" href="/cost-explorer">New Report</a>
+					<a class="button-link" href="{{.NewReportPath}}">New Report</a>
 				</div>
 			</section>
 

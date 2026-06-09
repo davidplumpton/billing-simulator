@@ -3863,6 +3863,29 @@ func TestCostExplorerSavedReportsAreScopedByOwnerContext(t *testing.T) {
 		strings.Contains(body, "Management saved report") {
 		t.Fatalf("member saved-report load body = %s, want only loaded member report", body)
 	}
+	memberNewReportHref := `/cost-explorer?owner_account_id=111122223333&amp;owner_role=member-account`
+	if !strings.Contains(body, `<a class="button-link" href="`+memberNewReportHref+`">New Report</a>`) {
+		t.Fatalf("member saved-report load missing scoped New Report link %q: %s", memberNewReportHref, body)
+	}
+
+	resp, err = client.Get(server.URL + "/cost-explorer?owner_account_id=111122223333&owner_role=member-account")
+	if err != nil {
+		t.Fatalf("GET /cost-explorer member new-report path error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer member new-report path status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`name="owner_account_id" value="111122223333"`,
+		`<option value="member-account" selected>Member</option>`,
+		`<input type="hidden" name="saved_report_id" value="">`,
+		`<input name="report_name" value="">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer member new-report path body missing %q: %s", want, body)
+		}
+	}
 
 	crossOwnerLoadQuery := url.Values{
 		"saved_report_id":  {memberReport.ID},

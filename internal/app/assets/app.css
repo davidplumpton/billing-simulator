@@ -65,6 +65,17 @@ nav .active {
 	padding: 28px 0 48px;
 }
 
+.site-disclaimer {
+	width: min(1380px, calc(100vw - 32px));
+	margin: 0 auto 24px;
+	padding-top: 14px;
+	border-top: 1px solid var(--line);
+}
+
+.site-disclaimer p {
+	font-size: 12px;
+}
+
 .page-heading,
 .section-heading {
 	display: flex;

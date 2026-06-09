@@ -343,6 +343,7 @@ func TestOverviewIntroPageRendersWorkflowLinksInFreshWorkspace(t *testing.T) {
 		"No real payments",
 		"Not tax-valid invoices",
 		"Synthetic pricing",
+		"This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services.",
 		"organization/accounts create visibility context",
 		"resources produce usage",
 		"metering/pricing creates bill line items",

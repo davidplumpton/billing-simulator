@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"aws-billing-simulator/internal/persistence"
 )
@@ -80,6 +81,8 @@ type workspaceSession struct {
 	path     string
 	lastPath string
 }
+
+const freshWorkspaceNamePrefix = "fresh-workspace-"
 
 // newWorkspaceSession loads the remembered workspace and opens the configured workspace when available.
 func newWorkspaceSession(ctx context.Context, cfg Config, logger *slog.Logger) (*workspaceSession, error) {
@@ -182,6 +185,47 @@ func (s *workspaceSession) Close() error {
 		return nil
 	}
 	return db.Close()
+}
+
+// NewFreshWorkspacePath returns a unique local directory path for a clean workspace.
+func (s *workspaceSession) NewFreshWorkspacePath() (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("workspace session is required")
+	}
+
+	s.mu.Lock()
+	currentPath := s.path
+	lastPath := s.lastPath
+	statePath := s.store.path
+	s.mu.Unlock()
+
+	root := ""
+	switch {
+	case currentPath != "":
+		root = filepath.Dir(currentPath)
+	case lastPath != "":
+		root = filepath.Dir(lastPath)
+	case statePath != "":
+		root = filepath.Join(filepath.Dir(statePath), "workspaces")
+	default:
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user cache directory: %w", err)
+		}
+		root = filepath.Join(cacheDir, "aws-billing-simulator", "workspaces")
+	}
+
+	baseName := freshWorkspaceNamePrefix + time.Now().UTC().Format("20060102-150405-000000000")
+	candidate := filepath.Join(root, baseName)
+	for suffix := 0; suffix < 100; suffix++ {
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("inspect fresh workspace path: %w", err)
+		}
+		candidate = filepath.Join(root, fmt.Sprintf("%s-%02d", baseName, suffix+1))
+	}
+	return "", fmt.Errorf("could not allocate a fresh workspace path under %s", root)
 }
 
 // normalizeWorkspacePath expands user input into a stable absolute workspace directory path.

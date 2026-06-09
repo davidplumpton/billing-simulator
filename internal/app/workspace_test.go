@@ -227,6 +227,120 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	}
 }
 
+func TestWorkspaceUIStartsFreshExperienceAndPersistsGeneratedPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	statePath := filepath.Join(root, "state", "app.json")
+
+	cfg := DefaultConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.StatePath = statePath
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server, err := Start(cfg, logger)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Close(shutdownCtx); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		if err := server.Wait(); err != nil {
+			t.Errorf("Wait() error = %v", err)
+		}
+	})
+
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Get(server.URL() + "/workspaces")
+	if err != nil {
+		t.Fatalf("GET /workspaces error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /workspaces status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Start New Experience",
+		`action="/workspaces/start"`,
+		"no scenario runs",
+		"no practice history",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /workspaces missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL()+"/workspaces/start", url.Values{})
+	if err != nil {
+		t.Fatalf("POST /workspaces/start error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /workspaces/start final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	if got := resp.Request.URL.Path; got != "/resources" {
+		t.Fatalf("POST /workspaces/start final path = %q, want /resources", got)
+	}
+	for _, want := range []string{
+		"Started new experience",
+		"Create Resource",
+		"Simulator Clock",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /workspaces/start response missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "Workspace Required") {
+		t.Fatalf("fresh experience response still requires a workspace: %s", body)
+	}
+
+	state, err := newWorkspaceStateStore(statePath).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	wantPrefix := filepath.Join(root, "state", "workspaces", freshWorkspaceNamePrefix)
+	if !strings.HasPrefix(state.LastWorkspacePath, wantPrefix) {
+		t.Fatalf("fresh workspace path = %q, want prefix %q", state.LastWorkspacePath, wantPrefix)
+	}
+	if _, err := os.Stat(persistence.WorkspaceDBPath(state.LastWorkspacePath)); err != nil {
+		t.Fatalf("fresh workspace database was not created: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", persistence.WorkspaceDBPath(state.LastWorkspacePath))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+	for _, table := range []string{"resources", "scenario_runs"} {
+		var count int
+		if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0 in fresh experience", table, count)
+		}
+	}
+}
+
+func TestFreshWorkspacePathUsesActiveWorkspaceParent(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	session := &workspaceSession{path: filepath.Join(root, "active-workspace")}
+
+	workspacePath, err := session.NewFreshWorkspacePath()
+	if err != nil {
+		t.Fatalf("NewFreshWorkspacePath() error = %v", err)
+	}
+	wantPrefix := filepath.Join(root, freshWorkspaceNamePrefix)
+	if !strings.HasPrefix(workspacePath, wantPrefix) {
+		t.Fatalf("fresh workspace path = %q, want prefix %q", workspacePath, wantPrefix)
+	}
+}
+
 func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 	t.Parallel()
 

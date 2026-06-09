@@ -541,6 +541,25 @@ button:hover {
 	margin-top: 1.25rem;
 }
 
+.workspace-start {
+	margin-top: 1rem;
+	padding-top: 1rem;
+	border-top: 1px solid var(--line);
+}
+
+.workspace-start p {
+	margin-top: 0.35rem;
+}
+
+.workspace-start-form {
+	margin-top: 0.75rem;
+}
+
+.workspace-start-form button,
+.overview-start-item button {
+	margin-top: 0;
+}
+
 .detail-list {
 	border-bottom: 1px solid var(--line);
 	display: grid;

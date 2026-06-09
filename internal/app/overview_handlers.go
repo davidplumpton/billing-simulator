@@ -29,6 +29,9 @@ var overviewPageTemplate = newPageTemplate("overview-page", `<div class="page-he
 		<p>A first stop for learning how synthetic Organizations, usage, bills, invoices, reports, and scenario labs fit together.</p>
 	</div>
 	<div class="page-actions">
+		<form method="post" action="/workspaces/start" class="page-action-form">
+			<button type="submit">Start New Experience</button>
+		</form>
 		<a class="button-link" href="/workspaces">Open Workspace</a>
 		<a class="button-link secondary" href="/scenarios">Scenario Labs</a>
 		<a class="button-link secondary" href="/resources">Resource Lab</a>
@@ -150,6 +153,13 @@ var overviewPageTemplate = newPageTemplate("overview-page", `<div class="page-he
 	</div>
 	<div class="overview-start-grid">
 		<div class="overview-start-item">
+			<strong>Start a new experience</strong>
+			<p>Create and open a clean local workspace automatically when you want the AnyCompany seed without scenario runs or practice history.</p>
+			<form method="post" action="/workspaces/start">
+				<button type="submit">Start New Experience</button>
+			</form>
+		</div>
+		<div class="overview-start-item">
 			<strong>Open or create a workspace</strong>
 			<p>Use <a href="/workspaces">Workspaces</a> when you want a local database directory for durable practice.</p>
 		</div>
@@ -164,10 +174,6 @@ var overviewPageTemplate = newPageTemplate("overview-page", `<div class="page-he
 		<div class="overview-start-item">
 			<strong>Clone before experimenting</strong>
 			<p>Workspace clone copies the active workspace and switches the session to the copy, preserving the original for comparison.</p>
-		</div>
-		<div class="overview-start-item">
-			<strong>Start from a fresh workspace</strong>
-			<p>Create a new workspace path when you want clean seed data and no scenario or practice history.</p>
 		</div>
 	</div>
 </section>

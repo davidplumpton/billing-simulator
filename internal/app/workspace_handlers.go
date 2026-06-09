@@ -19,6 +19,7 @@ type workspacePageData struct {
 	Notices              []uiNoticeView
 	WorkspacePathField   uiInputFieldView
 	SubmitButton         uiSubmitButtonView
+	FreshStartButton     uiSubmitButtonView
 }
 
 // newWorkspaceHandler builds the server-rendered workspace lifecycle page.
@@ -71,6 +72,26 @@ func (h workspaceHandler) handleOpenWorkspace(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
 }
 
+// handleStartFreshWorkspace creates a new clean workspace without requiring a typed path.
+func (h workspaceHandler) handleStartFreshWorkspace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	workspacePath, err := h.workspace.NewFreshWorkspacePath()
+	if err != nil {
+		h.renderWorkspaces(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	if err := h.workspace.Open(r.Context(), workspacePath); err != nil {
+		h.renderWorkspaces(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	flash := "Started new experience in " + h.workspace.CurrentPath()
+	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
+}
+
 // renderWorkspaces renders the workspace lifecycle page with current session state.
 func (h workspaceHandler) renderWorkspaces(w http.ResponseWriter, status int, errorMessage, flashMessage string) {
 	currentPath := h.workspace.CurrentPath()
@@ -89,6 +110,7 @@ func (h workspaceHandler) renderWorkspaces(w http.ResponseWriter, status int, er
 		Notices:              uiNotices(flashMessage, errorMessage),
 		WorkspacePathField:   uiInputField("Workspace Directory", "workspace_path", suggestedPath, true),
 		SubmitButton:         uiSubmitButton("Open or Create Workspace"),
+		FreshStartButton:     uiSubmitButton("Start New Experience"),
 	}
 
 	renderPage(w, status, pageLayoutOptions{
@@ -105,6 +127,7 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/", workspaces.handleRoot)
 	mux.HandleFunc("/workspaces", workspaces.handleWorkspaces)
 	mux.HandleFunc("/workspaces/open", workspaces.handleOpenWorkspace)
+	mux.HandleFunc("/workspaces/start", workspaces.handleStartFreshWorkspace)
 	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
 	mux.HandleFunc("/assets/app.js", serveAppScript)
 	mux.HandleFunc("/overview", overview.handleOverview)
@@ -305,6 +328,13 @@ var workspacePageTemplate = newPageTemplate("workspace-page", `<div class="page-
 					<strong>{{.LastWorkspacePath}}</strong>
 				</div>
 			{{end}}
+			<div class="workspace-start">
+				<h3>Start New Experience</h3>
+				<p>Creates and opens a clean local workspace with the AnyCompany seed, no scenario runs, and no practice history.</p>
+				<form method="post" action="/workspaces/start" class="workspace-start-form">
+					{{template "ui.submit-button" .FreshStartButton}}
+				</form>
+			</div>
 			<form method="post" action="/workspaces/open" class="workspace-form">
 				{{template "ui.input-field" .WorkspacePathField}}
 				{{template "ui.submit-button" .SubmitButton}}

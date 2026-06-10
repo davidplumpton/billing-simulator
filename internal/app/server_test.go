@@ -2835,6 +2835,7 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, "cost-explorer-report.csv") {
 		t.Fatalf("GET /cost-explorer/results.csv content disposition = %q, want report filename", disposition)
 	}
+	assertHEADDownloadMatchesGET(t, newMux(db), "/cost-explorer/results.csv?"+query.Encode(), resp.Header, "Content-Type", "Content-Disposition")
 	for _, want := range []string{
 		"date_range_start,date_range_end,granularity,metric,period_start",
 		"2026-02-01,2026-03-01,daily,unblended_cost,2026-02-01,2026-02-02,dimension,service,AmazonEC2,tag,app,storefront,0.083200,2.000000,0.083200,1,USD",
@@ -8515,6 +8516,7 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, invoiceID+"-line-items.csv") {
 		t.Fatalf("GET /invoices/{id}/line-items.csv content disposition = %q, want invoice filename", disposition)
 	}
+	assertHEADDownloadMatchesGET(t, newMux(db), invoiceCSVPath, resp.Header, "Content-Type", "Content-Disposition")
 	for _, want := range []string{
 		"invoice_id,bill_id,document_status,payment_status",
 		invoiceID,
@@ -8585,6 +8587,7 @@ func TestResourcesUIBillingPeriodWorkflowClosesFreshWorkspace(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, invoiceID+"-document.pdf") {
 		t.Fatalf("GET /invoices/{id}/document.pdf content disposition = %q, want invoice PDF filename", disposition)
 	}
+	assertHEADDownloadMatchesGET(t, newMux(db), invoicePDFPath, resp.Header, "Content-Type", "Content-Disposition", "Link")
 	if !strings.HasPrefix(body, "%PDF-1.4") ||
 		!strings.Contains(body, "Invoice "+invoiceID) ||
 		!strings.Contains(body, "AnyCompany Retail") ||
@@ -8786,6 +8789,33 @@ func readResponseBody(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read response body: %v", err)
 	}
 	return string(body)
+}
+
+// assertHEADDownloadMatchesGET verifies HEAD download routes keep GET headers without writing body bytes.
+func assertHEADDownloadMatchesGET(t *testing.T, handler http.Handler, target string, getHeader http.Header, headerNames ...string) {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodHead, target, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read HEAD %s body: %v", target, err)
+		}
+		t.Fatalf("HEAD %s status = %d, want %d; body=%s", target, resp.StatusCode, http.StatusOK, body)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("HEAD %s wrote %d response body bytes, want none", target, recorder.Body.Len())
+	}
+	for _, name := range headerNames {
+		if got, want := resp.Header.Get(name), getHeader.Get(name); got != want {
+			t.Fatalf("HEAD %s %s = %q, want GET header %q", target, name, got, want)
+		}
+	}
 }
 
 func requireCSVResponseRecord(t *testing.T, records [][]string, column, value string) []string {

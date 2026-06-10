@@ -280,6 +280,12 @@ func (h costExplorerHandler) handleCostExplorerResultsCSV(w http.ResponseWriter,
 		http.Error(w, "export Cost Explorer CSV: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+costExplorerResultsCSVFilename(builder)+`"`)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	body, err := costExplorerResultsCSVBytes(result, builder)
 	if err != nil {
 		http.Error(w, "export Cost Explorer CSV: "+err.Error(), http.StatusInternalServerError)

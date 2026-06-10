@@ -469,6 +469,12 @@ func (h billsHandler) handleInvoiceCSV(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+invoiceCSVFilename(invoiceID)+`"`)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	body, err := invoiceCSVBytes(printable)
 	if err != nil {
 		http.Error(w, "export invoice CSV: "+err.Error(), http.StatusInternalServerError)
@@ -501,13 +507,20 @@ func (h billsHandler) handleInvoicePDF(w http.ResponseWriter, r *http.Request, i
 	}
 
 	viewer := exportViewerFieldsFromBillsFilter(billsFilterFromRequest(r))
+	htmlPath := invoicePathForIDWithViewer(invoiceID, viewer)
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+invoicePDFFilename(invoiceID)+`"`)
+		w.Header().Set("Link", "<"+htmlPath+`>; rel="alternate"; type="text/html"`)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	data := invoicePageDataFromPrintable(printable, viewer)
 	body, err := invoicePDFBytes(data)
 	if err != nil {
 		http.Error(w, "render invoice PDF: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	htmlPath := invoicePathForIDWithViewer(invoiceID, viewer)
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+invoicePDFFilename(invoiceID)+`"`)
 	w.Header().Set("Link", "<"+htmlPath+`>; rel="alternate"; type="text/html"`)

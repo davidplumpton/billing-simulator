@@ -1,9 +1,6 @@
 package app
 
-import (
-	"fmt"
-	"net/http"
-)
+import "net/http"
 
 type workspaceHandler struct {
 	workspace *workspaceSession
@@ -287,10 +284,7 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/scenarios/archive", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceScenarioHandler(workspace).handleArchiveScenario(w, r)
 	})
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "ok")
-	})
+	mux.HandleFunc("/healthz", handleHealthCheck)
 	return workspaceLeaseMiddleware(workspace, mux)
 }
 

@@ -39,22 +39,7 @@ func TestStartServesHealthCheck(t *testing.T) {
 	}
 
 	client := appTestHTTPClient()
-	resp, err := client.Get(server.URL() + "/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz error = %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /healthz status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read /healthz body: %v", err)
-	}
-	if string(body) != "ok\n" {
-		t.Fatalf("GET /healthz body = %q, want %q", string(body), "ok\n")
-	}
+	assertHealthCheckMethods(t, &client, server.URL())
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -85,6 +70,12 @@ func TestMethodNotAllowedResponsesIncludeAllowHeader(t *testing.T) {
 			wantAllow: "GET, HEAD",
 		},
 		{
+			name:      "health check route",
+			method:    http.MethodPost,
+			path:      "/healthz",
+			wantAllow: "GET, HEAD",
+		},
+		{
 			name:      "POST route",
 			method:    http.MethodGet,
 			path:      "/resources/create",
@@ -111,6 +102,71 @@ func TestMethodNotAllowedResponsesIncludeAllowHeader(t *testing.T) {
 			}
 			if allow := resp.Header.Get("Allow"); allow != tt.wantAllow {
 				t.Fatalf("%s %s Allow = %q, want %q", tt.method, tt.path, allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
+func TestWorkspaceMuxHealthCheckMethodGuard(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newWorkspaceMux(&workspaceSession{}))
+	t.Cleanup(server.Close)
+
+	assertHealthCheckMethods(t, server.Client(), server.URL)
+}
+
+// assertHealthCheckMethods verifies the complete method contract for /healthz.
+func assertHealthCheckMethods(t *testing.T, client *http.Client, serverURL string) {
+	t.Helper()
+
+	tests := []struct {
+		name       string
+		method     string
+		wantStatus int
+		wantAllow  string
+		wantBody   string
+	}{
+		{
+			name:       "GET",
+			method:     http.MethodGet,
+			wantStatus: http.StatusOK,
+			wantBody:   "ok\n",
+		},
+		{
+			name:       "HEAD",
+			method:     http.MethodHead,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "POST",
+			method:     http.MethodPost,
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "GET, HEAD",
+			wantBody:   "method not allowed\n",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, serverURL+"/healthz", nil)
+			if err != nil {
+				t.Fatalf("NewRequest(%s /healthz) error = %v", tt.method, err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("%s /healthz error = %v", tt.method, err)
+			}
+			body := readResponseBody(t, resp)
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("%s /healthz status = %d, want %d; body=%s", tt.method, resp.StatusCode, tt.wantStatus, body)
+			}
+			if allow := resp.Header.Get("Allow"); allow != tt.wantAllow {
+				t.Fatalf("%s /healthz Allow = %q, want %q", tt.method, allow, tt.wantAllow)
+			}
+			if body != tt.wantBody {
+				t.Fatalf("%s /healthz body = %q, want %q", tt.method, body, tt.wantBody)
 			}
 		})
 	}

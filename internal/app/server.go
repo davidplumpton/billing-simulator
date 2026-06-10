@@ -191,9 +191,16 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/scenarios/reset", scenarios.handleResetScenario)
 	mux.HandleFunc("/scenarios/clone", scenarios.handleCloneWorkspace)
 	mux.HandleFunc("/scenarios/archive", scenarios.handleArchiveScenario)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "ok")
-	})
+	mux.HandleFunc("/healthz", handleHealthCheck)
 	return mux
+}
+
+// handleHealthCheck serves the local readiness probe for safe read methods only.
+func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, "ok")
 }

@@ -22,6 +22,12 @@ When the user asks for work with a specific label, select from `br ready --label
 
 `br stats` and `br status` are useful dashboard checks, but the installed tracker may still print a stale footer that points to `bd list`, and its Recent Activity issue counters may report zero even when `.beads/issues.jsonl` has recent issue changes. Treat those as external CLI hints only; use `br list`, `br ready`, `br show`, and `br count` for issue details in this repository.
 
+## Code Search
+
+Use `cs` first when searching the codebase for concepts, likely implementation areas, declarations, or cross-cutting behavior. Its ranked snippets and filters are useful for quickly finding where a topic lives.
+
+After the first `cs` pass, use `rg --files` and `rg -n` to confirm exact paths, exhaustive usages, and line-numbered evidence before editing or filing issues.
+
 ## Session Completion
 
 **MANDATORY WORKFLOW**

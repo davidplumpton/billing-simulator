@@ -2998,6 +2998,74 @@ func TestCURCSVExportFilenameIncludesRequestVariantDimensions(t *testing.T) {
 	}
 }
 
+func TestDirectCSVExportHEADSkipsCSVRendering(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	query := url.Values{
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"payer_account_id":     {persistence.AnyCompanyRetailManagementAccountID},
+	}
+	tests := []struct {
+		name         string
+		target       string
+		handle       func(exportsHandler, http.ResponseWriter, *http.Request)
+		wantFilename string
+	}{
+		{
+			name:         "CUR CSV",
+			target:       "/exports/cur.csv?" + query.Encode(),
+			handle:       exportsHandler.handleCURCSV,
+			wantFilename: "cur-2026-02-01-2026-03-01-payer-999988887777-usage-all-accounts-status-all-statuses-limit-default.csv",
+		},
+		{
+			name:         "FOCUS CSV",
+			target:       "/exports/focus.csv?" + query.Encode(),
+			handle:       exportsHandler.handleFOCUSCSV,
+			wantFilename: "focus-2026-02-01-2026-03-01-payer-999988887777-usage-all-accounts-status-all-statuses-limit-default.csv",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newExportsHandler(db)
+			handler.cur = failingCSVExportRepository{t: t}
+			req := httptest.NewRequest(http.MethodHead, tc.target, nil)
+			recorder := httptest.NewRecorder()
+			tc.handle(handler, recorder, req)
+			resp := recorder.Result()
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatalf("read HEAD %s body: %v", tc.target, err)
+				}
+				t.Fatalf("HEAD %s status = %d, want %d; body=%s", tc.target, resp.StatusCode, http.StatusOK, body)
+			}
+			if recorder.Body.Len() != 0 {
+				t.Fatalf("HEAD %s wrote %d response body bytes, want none", tc.target, recorder.Body.Len())
+			}
+			if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+				t.Fatalf("HEAD %s content type = %q, want text/csv", tc.target, contentType)
+			}
+			if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, tc.wantFilename) {
+				t.Fatalf("HEAD %s content disposition = %q, want filename %q", tc.target, disposition, tc.wantFilename)
+			}
+		})
+	}
+}
+
 func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 	t.Parallel()
 
@@ -3097,6 +3165,10 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, exportFilename) {
 		t.Fatalf("GET /exports/focus.csv content disposition = %q, want FOCUS filename", disposition)
 	}
+	assertHEADDownloadMatchesGET(t, newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}), "/exports/focus.csv?"+query.Encode(), resp.Header, "Content-Type", "Content-Disposition")
 	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
 	if err != nil {
 		t.Fatalf("read FOCUS CSV response: %v\n%s", err, body)
@@ -3370,6 +3442,10 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, exportFilename) {
 		t.Fatalf("GET /exports/cur.csv content disposition = %q, want CUR filename", disposition)
 	}
+	assertHEADDownloadMatchesGET(t, newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}), "/exports/cur.csv?"+query.Encode(), resp.Header, "Content-Type", "Content-Disposition")
 	if storedFilename := resp.Header.Get("X-Simulator-Export-Filename"); storedFilename != "" {
 		t.Fatalf("GET /exports/cur.csv stored filename header = %q, want no persisted export header", storedFilename)
 	}
@@ -8778,6 +8854,29 @@ func readCostAllocationTagDiscoveryCounts(t *testing.T, ctx context.Context, db 
 		t.Fatalf("count cost_allocation_tag_inventory: %v", err)
 	}
 	return keyCount, valueCount
+}
+
+// failingCSVExportRepository fails tests if a direct HEAD handler reaches CSV rendering.
+type failingCSVExportRepository struct {
+	t *testing.T
+}
+
+func (r failingCSVExportRepository) WriteCSVExport(context.Context, io.Writer, persistence.CURCSVExportRequest) (persistence.CURCSVExportResult, error) {
+	r.t.Helper()
+	r.t.Fatal("WriteCSVExport was called for a HEAD request")
+	return persistence.CURCSVExportResult{}, nil
+}
+
+func (r failingCSVExportRepository) WriteFOCUSCSVExport(context.Context, io.Writer, persistence.CURCSVExportRequest) (persistence.CURCSVExportResult, error) {
+	r.t.Helper()
+	r.t.Fatal("WriteFOCUSCSVExport was called for a HEAD request")
+	return persistence.CURCSVExportResult{}, nil
+}
+
+func (r failingCSVExportRepository) GetReconciliationReport(context.Context, persistence.CURExportReconciliationRequest) (persistence.CURExportReconciliationReport, error) {
+	r.t.Helper()
+	r.t.Fatal("GetReconciliationReport was called by a direct CSV handler")
+	return persistence.CURExportReconciliationReport{}, nil
 }
 
 func readResponseBody(t *testing.T, resp *http.Response) string {

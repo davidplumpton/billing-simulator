@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,8 +20,14 @@ import (
 type exportsHandler struct {
 	db            *sql.DB
 	workspacePath string
-	cur           persistence.CURLineItemRepository
+	cur           curExportRepository
 	exportFiles   persistence.ExportFileRepository
+}
+
+type curExportRepository interface {
+	WriteCSVExport(context.Context, io.Writer, persistence.CURCSVExportRequest) (persistence.CURCSVExportResult, error)
+	WriteFOCUSCSVExport(context.Context, io.Writer, persistence.CURCSVExportRequest) (persistence.CURCSVExportResult, error)
+	GetReconciliationReport(context.Context, persistence.CURExportReconciliationRequest) (persistence.CURExportReconciliationReport, error)
 }
 
 type exportsPageData struct {
@@ -476,19 +483,22 @@ func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	filename := curCSVExportFilename(request)
+	if r.Method == http.MethodHead {
+		writeCSVDownloadHeaders(w, filename)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	var body bytes.Buffer
 	_, err = h.cur.WriteCSVExport(r.Context(), &body, request)
 	if err != nil {
 		http.Error(w, "export CUR CSV: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+curCSVExportFilename(request)+`"`)
+	writeCSVDownloadHeaders(w, filename)
 	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(body.Bytes())
-	}
+	_, _ = w.Write(body.Bytes())
 }
 
 // handleFOCUSCSV exports payer-period bill line items in a FOCUS-like CSV schema.
@@ -518,19 +528,22 @@ func (h exportsHandler) handleFOCUSCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	filename := focusCSVExportFilename(request)
+	if r.Method == http.MethodHead {
+		writeCSVDownloadHeaders(w, filename)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	var body bytes.Buffer
 	_, err = h.cur.WriteFOCUSCSVExport(r.Context(), &body, request)
 	if err != nil {
 		http.Error(w, "export FOCUS CSV: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+focusCSVExportFilename(request)+`"`)
+	writeCSVDownloadHeaders(w, filename)
 	w.WriteHeader(http.StatusOK)
-	if r.Method != http.MethodHead {
-		_, _ = w.Write(body.Bytes())
-	}
+	_, _ = w.Write(body.Bytes())
 }
 
 // handleCURReconciliation renders a payer-period reconciliation report for CUR-like export rows.
@@ -659,6 +672,12 @@ func (h exportsHandler) persistCURCSVExportFile(ctx context.Context, request per
 		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, exportStorageError{err: err}
 	}
 	return record, result, nil
+}
+
+// writeCSVDownloadHeaders sets the shared headers for direct CSV downloads.
+func writeCSVDownloadHeaders(w http.ResponseWriter, filename string) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 }
 
 func (h exportsHandler) writeCURCSVExportFile(ctx context.Context, request persistence.CURCSVExportRequest, content []byte, result persistence.CURCSVExportResult) (persistence.ExportFile, error) {

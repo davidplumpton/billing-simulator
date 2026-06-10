@@ -254,7 +254,7 @@ func newCostExplorerHandler(db *sql.DB) costExplorerHandler {
 // handleCostExplorer renders the report builder and runs the current query definition.
 func (h costExplorerHandler) handleCostExplorer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderCostExplorer(w, r, http.StatusOK, "", flashFromQuery(r))
@@ -263,7 +263,7 @@ func (h costExplorerHandler) handleCostExplorer(w http.ResponseWriter, r *http.R
 // handleCostExplorerResultsCSV exports the current aggregate report rows as CSV.
 func (h costExplorerHandler) handleCostExplorerResultsCSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	if h.db == nil {
@@ -294,7 +294,7 @@ func (h costExplorerHandler) handleCostExplorerResultsCSV(w http.ResponseWriter,
 // handleCostExplorerLineItems renders the source bill line items for one aggregate row.
 func (h costExplorerHandler) handleCostExplorerLineItems(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderCostExplorerLineItems(w, r, http.StatusOK, "")
@@ -303,7 +303,7 @@ func (h costExplorerHandler) handleCostExplorerLineItems(w http.ResponseWriter, 
 // handleSaveCostExplorerReport creates or updates a saved report from the builder fields.
 func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -381,7 +381,7 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 // handleRunCostExplorerReport executes a persisted saved report and records its latest run metadata.
 func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {

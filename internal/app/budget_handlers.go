@@ -113,7 +113,7 @@ func newBudgetHandler(db *sql.DB) budgetHandler {
 // handleBudgets renders current monthly budget threshold checks.
 func (h budgetHandler) handleBudgets(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderBudgets(w, r, http.StatusOK, budgetFormView{}, "", flashFromQuery(r))
@@ -122,7 +122,7 @@ func (h budgetHandler) handleBudgets(w http.ResponseWriter, r *http.Request) {
 // handleCreateBudget persists one monthly budget definition from the browser form.
 func (h budgetHandler) handleCreateBudget(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -150,7 +150,7 @@ func (h budgetHandler) handleCreateBudget(w http.ResponseWriter, r *http.Request
 // handleRefreshBudgets rebuilds forecast summaries and alert notifications after an explicit learner action.
 func (h budgetHandler) handleRefreshBudgets(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {

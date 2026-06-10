@@ -148,7 +148,7 @@ func newWorkspaceScenarioHandler(workspace *workspaceSession) scenarioHandler {
 // handleScenarios renders packaged scenario definitions and recent run attempts.
 func (h scenarioHandler) handleScenarios(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderScenarios(w, r, http.StatusOK, "", flashFromQuery(r))
@@ -157,7 +157,7 @@ func (h scenarioHandler) handleScenarios(w http.ResponseWriter, r *http.Request)
 // handleScenarioEditor renders the local draft editor for scenario definitions.
 func (h scenarioHandler) handleScenarioEditor(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderScenarioEditor(w, http.StatusOK, "", "", scenarioEditorDefaultDraft(), scenarioEditorPreviewView{})
@@ -166,7 +166,7 @@ func (h scenarioHandler) handleScenarioEditor(w http.ResponseWriter, r *http.Req
 // handleValidateScenarioEditor validates a draft scenario without launching it.
 func (h scenarioHandler) handleValidateScenarioEditor(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -190,7 +190,7 @@ func (h scenarioHandler) handleValidateScenarioEditor(w http.ResponseWriter, r *
 // handleLaunchScenario runs one packaged scenario seed and records its durable audit rows.
 func (h scenarioHandler) handleLaunchScenario(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {

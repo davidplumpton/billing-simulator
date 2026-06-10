@@ -66,6 +66,56 @@ func TestStartServesHealthCheck(t *testing.T) {
 	}
 }
 
+func TestMethodNotAllowedResponsesIncludeAllowHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(newMux(nil))
+	t.Cleanup(server.Close)
+
+	tests := []struct {
+		name      string
+		method    string
+		path      string
+		wantAllow string
+	}{
+		{
+			name:      "GET and HEAD route",
+			method:    http.MethodPost,
+			path:      "/overview",
+			wantAllow: "GET, HEAD",
+		},
+		{
+			name:      "POST route",
+			method:    http.MethodGet,
+			path:      "/resources/create",
+			wantAllow: "POST",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(tt.method, server.URL+tt.path, nil)
+			if err != nil {
+				t.Fatalf("NewRequest(%s %s) error = %v", tt.method, tt.path, err)
+			}
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatalf("%s %s error = %v", tt.method, tt.path, err)
+			}
+			body := readResponseBody(t, resp)
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s status = %d, want %d; body=%s", tt.method, tt.path, resp.StatusCode, http.StatusMethodNotAllowed, body)
+			}
+			if allow := resp.Header.Get("Allow"); allow != tt.wantAllow {
+				t.Fatalf("%s %s Allow = %q, want %q", tt.method, tt.path, allow, tt.wantAllow)
+			}
+		})
+	}
+}
+
 func TestStartOpensBrowserAtDashboardURL(t *testing.T) {
 	originalOpenBrowserURL := openBrowserURL
 	t.Cleanup(func() {

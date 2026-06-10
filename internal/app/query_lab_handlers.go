@@ -31,7 +31,7 @@ func newQueryLabHandler() queryLabHandler {
 // handleQueryLab renders example SQL that learners can run against downloaded CUR CSV exports.
 func (h queryLabHandler) handleQueryLab(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 

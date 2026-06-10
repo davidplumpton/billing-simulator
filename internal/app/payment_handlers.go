@@ -143,7 +143,7 @@ func newPaymentsHandler(db *sql.DB) paymentsHandler {
 // handlePayments serves the payment operations workspace.
 func (h paymentsHandler) handlePayments(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderPaymentsForValues(w, r, http.StatusOK, "", flashFromQuery(r), r.URL.Query())
@@ -152,7 +152,7 @@ func (h paymentsHandler) handlePayments(w http.ResponseWriter, r *http.Request) 
 // handlePaymentAction applies one simulated invoice or profile payment action.
 func (h paymentsHandler) handlePaymentAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {

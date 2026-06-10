@@ -75,7 +75,7 @@ type scenarioFeedbackCheckView struct {
 // handleScenarioFeedback renders the learner-facing evidence report for one scenario run.
 func (h scenarioHandler) handleScenarioFeedback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	runID := strings.TrimSpace(r.URL.Query().Get("scenario_run_id"))

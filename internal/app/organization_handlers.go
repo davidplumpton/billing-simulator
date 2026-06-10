@@ -135,7 +135,7 @@ func newOrganizationHandler(db *sql.DB) organizationHandler {
 // handleOrganization serves the read-only organization hierarchy and account detail view.
 func (h organizationHandler) handleOrganization(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderOrganization(w, r, http.StatusOK, "", flashFromQuery(r))
@@ -144,7 +144,7 @@ func (h organizationHandler) handleOrganization(w http.ResponseWriter, r *http.R
 // handleCreateAccount creates a member account in the selected OU.
 func (h organizationHandler) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -178,7 +178,7 @@ func (h organizationHandler) handleCreateAccount(w http.ResponseWriter, r *http.
 // handleMoveAccount moves a member account to another OU.
 func (h organizationHandler) handleMoveAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -209,7 +209,7 @@ func (h organizationHandler) handleMoveAccount(w http.ResponseWriter, r *http.Re
 // handleSuspendAccount suspends an active member account.
 func (h organizationHandler) handleSuspendAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -239,7 +239,7 @@ func (h organizationHandler) handleSuspendAccount(w http.ResponseWriter, r *http
 // handleCloseAccount closes a member account and stores the effective left_at time.
 func (h organizationHandler) handleCloseAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {

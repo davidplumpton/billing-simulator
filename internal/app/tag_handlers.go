@@ -131,7 +131,7 @@ func newCostAllocationTagsHandler(db *sql.DB) costAllocationTagsHandler {
 // handleTags renders discovered resource-tag keys and billing activation state.
 func (h costAllocationTagsHandler) handleTags(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderTags(w, r, http.StatusOK, "", flashFromQuery(r))
@@ -140,7 +140,7 @@ func (h costAllocationTagsHandler) handleTags(w http.ResponseWriter, r *http.Req
 // handleRefreshDiscovery rebuilds tag discovery after an explicit learner action.
 func (h costAllocationTagsHandler) handleRefreshDiscovery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -164,7 +164,7 @@ func (h costAllocationTagsHandler) handleRefreshDiscovery(w http.ResponseWriter,
 // handleActivateTag marks a discovered resource tag key active for billing reports.
 func (h costAllocationTagsHandler) handleActivateTag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -188,7 +188,7 @@ func (h costAllocationTagsHandler) handleActivateTag(w http.ResponseWriter, r *h
 // handleDeactivateTag removes one active tag key from billing report visibility.
 func (h costAllocationTagsHandler) handleDeactivateTag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {

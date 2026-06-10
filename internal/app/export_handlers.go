@@ -197,7 +197,7 @@ func newWorkspaceExportsHandler(db *sql.DB, workspacePath string) exportsHandler
 // handleExports renders the generated export file inventory for the current workspace.
 func (h exportsHandler) handleExports(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderExports(w, r, http.StatusOK, "", flashFromQuery(r))
@@ -206,7 +206,7 @@ func (h exportsHandler) handleExports(w http.ResponseWriter, r *http.Request) {
 // handleExportFileDownload serves one generated export from the workspace exports directory.
 func (h exportsHandler) handleExportFileDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	if h.db == nil {
@@ -261,7 +261,7 @@ func (h exportsHandler) handleExportFileDownload(w http.ResponseWriter, r *http.
 // handleRegenerateExport rewrites a stored export from its recorded generation parameters.
 func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -305,7 +305,7 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 // handleGenerateCURCSVExport writes a new persisted CUR-like CSV export from explicit form input.
 func (h exportsHandler) handleGenerateCURCSVExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -350,7 +350,7 @@ func (h exportsHandler) handleGenerateCURCSVExport(w http.ResponseWriter, r *htt
 // handleGenerateFOCUSCSVExport writes a new persisted FOCUS-like CSV export from explicit form input.
 func (h exportsHandler) handleGenerateFOCUSCSVExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -452,7 +452,7 @@ func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, st
 // handleCURCSV exports payer-period bill line items in the simulator's CUR-like CSV schema.
 func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	if h.db == nil {
@@ -494,7 +494,7 @@ func (h exportsHandler) handleCURCSV(w http.ResponseWriter, r *http.Request) {
 // handleFOCUSCSV exports payer-period bill line items in a FOCUS-like CSV schema.
 func (h exportsHandler) handleFOCUSCSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	if h.db == nil {
@@ -536,7 +536,7 @@ func (h exportsHandler) handleFOCUSCSV(w http.ResponseWriter, r *http.Request) {
 // handleCURReconciliation renders a payer-period reconciliation report for CUR-like export rows.
 func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 

@@ -12,7 +12,7 @@ func newOverviewHandler() overviewHandler {
 // handleOverview renders the first-stop guide without requiring workspace data.
 func (h overviewHandler) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 

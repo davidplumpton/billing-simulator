@@ -282,7 +282,7 @@ func (h resourceLabHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	http.Redirect(w, r, "/resources", http.StatusSeeOther)
@@ -290,7 +290,7 @@ func (h resourceLabHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (h resourceLabHandler) handleResources(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderResources(w, r, http.StatusOK, "", flashFromQuery(r))
@@ -298,7 +298,7 @@ func (h resourceLabHandler) handleResources(w http.ResponseWriter, r *http.Reque
 
 func (h resourceLabHandler) handleCreateResource(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -325,7 +325,7 @@ func (h resourceLabHandler) handleCreateResource(w http.ResponseWriter, r *http.
 
 func (h resourceLabHandler) handleAddTag(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -350,7 +350,7 @@ func (h resourceLabHandler) handleAddTag(w http.ResponseWriter, r *http.Request)
 
 func (h resourceLabHandler) handleRecordUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -377,7 +377,7 @@ func (h resourceLabHandler) handleRecordUsage(w http.ResponseWriter, r *http.Req
 
 func (h resourceLabHandler) handleGenerateUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -420,7 +420,7 @@ func usageGenerationFlash(result persistence.UsageGenerationResult) string {
 // handleRunBillingPipeline converts pending usage into metering records and priced bill line items.
 func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -469,7 +469,7 @@ func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *h
 // handleRunDailyMeteringJob runs clock-bounded metering and refreshes current-period summaries.
 func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -503,7 +503,7 @@ func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *
 // handleRunMonthEndClose finalizes the completed billing period before the current simulator clock.
 func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -537,7 +537,7 @@ func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *htt
 // handleAdvanceClock applies a learner-triggered deterministic time change.
 func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if h.db == nil {
@@ -1545,8 +1545,11 @@ func divideAndRoundInt64(value, divisor int64) int64 {
 	return quotient
 }
 
-func methodNotAllowed(w http.ResponseWriter) {
+func methodNotAllowed(w http.ResponseWriter, allowedMethods ...string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if len(allowedMethods) > 0 {
+		w.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+	}
 	w.WriteHeader(http.StatusMethodNotAllowed)
 	fmt.Fprintln(w, "method not allowed")
 }

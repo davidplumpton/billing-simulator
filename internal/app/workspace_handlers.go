@@ -34,7 +34,7 @@ func (h workspaceHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	if h.workspace.DB() == nil {
@@ -47,7 +47,7 @@ func (h workspaceHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 // handleWorkspaces renders the create/open workspace form.
 func (h workspaceHandler) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
 	}
 	h.renderWorkspaces(w, http.StatusOK, "", flashFromQuery(r))
@@ -56,7 +56,7 @@ func (h workspaceHandler) handleWorkspaces(w http.ResponseWriter, r *http.Reques
 // handleOpenWorkspace opens an existing workspace or creates a fresh one at the submitted path.
 func (h workspaceHandler) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -75,7 +75,7 @@ func (h workspaceHandler) handleOpenWorkspace(w http.ResponseWriter, r *http.Req
 // handleStartFreshWorkspace creates a new clean workspace without requiring a typed path.
 func (h workspaceHandler) handleStartFreshWorkspace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 

@@ -58,6 +58,14 @@ type CostExplorerLineItemRequest struct {
 	Limit           int
 }
 
+// CostExplorerLineItemResult separates complete drilldown totals from the displayed line-item page.
+type CostExplorerLineItemResult struct {
+	Items                    []BillLineItem
+	TotalLineItemCount       int
+	TotalUsageQuantityMicros int64
+	TotalUnblendedCostMicros int64
+}
+
 // CostExplorerGroupValue names one grouping value on an aggregate row.
 type CostExplorerGroupValue struct {
 	Type  string
@@ -104,30 +112,30 @@ func (r CostExplorerRepository) Query(ctx context.Context, request CostExplorerQ
 	return result, nil
 }
 
-// ListLineItems returns the source bill line items for a Cost Explorer aggregate row.
-func (r CostExplorerRepository) ListLineItems(ctx context.Context, request CostExplorerLineItemRequest) ([]BillLineItem, error) {
+// ListLineItems returns a displayed page and complete totals for a Cost Explorer aggregate row.
+func (r CostExplorerRepository) ListLineItems(ctx context.Context, request CostExplorerLineItemRequest) (CostExplorerLineItemResult, error) {
 	if r.db == nil {
-		return nil, fmt.Errorf("database handle is required")
+		return CostExplorerLineItemResult{}, fmt.Errorf("database handle is required")
 	}
 	request.Query = normalizeCostExplorerQueryRequest(request.Query)
 	resolved, err := r.resolveQuery(ctx, request.Query)
 	if err != nil {
-		return nil, err
+		return CostExplorerLineItemResult{}, err
 	}
 	startUTC, endUTC, err := costExplorerLineItemWindow(request.TimePeriodStart, request.TimePeriodEnd)
 	if err != nil {
-		return nil, err
+		return CostExplorerLineItemResult{}, err
 	}
 	if len(request.GroupValues) != len(resolved.groupings) {
-		return nil, fmt.Errorf("cost explorer drilldown group count %d does not match report grouping count %d", len(request.GroupValues), len(resolved.groupings))
+		return CostExplorerLineItemResult{}, fmt.Errorf("cost explorer drilldown group count %d does not match report grouping count %d", len(request.GroupValues), len(resolved.groupings))
 	}
 	for i, value := range request.GroupValues {
 		grouping := resolved.groupings[i]
 		if value.Type != grouping.Type || value.Key != grouping.Key {
-			return nil, fmt.Errorf("cost explorer drilldown group %d is %s:%s, want %s:%s", i+1, value.Type, value.Key, grouping.Type, grouping.Key)
+			return CostExplorerLineItemResult{}, fmt.Errorf("cost explorer drilldown group %d is %s:%s, want %s:%s", i+1, value.Type, value.Key, grouping.Type, grouping.Key)
 		}
 		if strings.TrimSpace(value.Value) == "" {
-			return nil, fmt.Errorf("cost explorer drilldown group %d value is required", i+1)
+			return CostExplorerLineItemResult{}, fmt.Errorf("cost explorer drilldown group %d value is required", i+1)
 		}
 	}
 	limit := request.Limit
@@ -447,7 +455,7 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 	return resultRows, nil
 }
 
-func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExplorerResolvedQuery, startUTC, endUTC string, groupValues []CostExplorerGroupValue, limit int) ([]BillLineItem, error) {
+func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExplorerResolvedQuery, startUTC, endUTC string, groupValues []CostExplorerGroupValue, limit int) (CostExplorerLineItemResult, error) {
 	whereClauses := []string{
 		"bli.usage_start_time >= ?",
 		"bli.usage_start_time < ?",
@@ -461,7 +469,7 @@ func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExp
 	for _, filter := range query.filters {
 		condition, args, err := costExplorerFilterCondition(filter)
 		if err != nil {
-			return nil, err
+			return CostExplorerLineItemResult{}, err
 		}
 		whereClauses = append(whereClauses, condition)
 		whereArgs = append(whereArgs, args...)
@@ -469,14 +477,33 @@ func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExp
 	for i, grouping := range query.groupings {
 		expression, args, err := costExplorerGroupingExpression(grouping)
 		if err != nil {
-			return nil, err
+			return CostExplorerLineItemResult{}, err
 		}
 		whereClauses = append(whereClauses, expression+" = ?")
 		whereArgs = append(whereArgs, args...)
 		whereArgs = append(whereArgs, groupValues[i].Value)
 	}
 
-	args := append(whereArgs, limit)
+	whereSQL := strings.Join(whereClauses, "\n   AND ")
+	var result CostExplorerLineItemResult
+	if err := r.db.QueryRowContext(
+		ctx,
+		`SELECT
+			COUNT(*),
+			COALESCE(SUM(bli.usage_quantity_micros), 0),
+			COALESCE(SUM(bli.unblended_cost_micros), 0)
+		 FROM bill_line_items bli
+		 WHERE `+whereSQL,
+		whereArgs...,
+	).Scan(
+		&result.TotalLineItemCount,
+		&result.TotalUsageQuantityMicros,
+		&result.TotalUnblendedCostMicros,
+	); err != nil {
+		return CostExplorerLineItemResult{}, fmt.Errorf("summarize cost explorer drilldown line items: %w", err)
+	}
+
+	args := append(append([]any{}, whereArgs...), limit)
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -512,28 +539,27 @@ func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExp
 			bli.description,
 			bli.created_at
 		 FROM bill_line_items bli
-		 WHERE `+strings.Join(whereClauses, "\n   AND ")+`
+		 WHERE `+whereSQL+`
 		 ORDER BY bli.usage_start_time, bli.id
 		 LIMIT ?`,
 		args...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list cost explorer drilldown line items: %w", err)
+		return CostExplorerLineItemResult{}, fmt.Errorf("list cost explorer drilldown line items: %w", err)
 	}
 	defer rows.Close()
 
-	var items []BillLineItem
 	for rows.Next() {
 		item, err := scanBillLineItem(rows)
 		if err != nil {
-			return nil, err
+			return CostExplorerLineItemResult{}, err
 		}
-		items = append(items, item)
+		result.Items = append(result.Items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate cost explorer drilldown line items: %w", err)
+		return CostExplorerLineItemResult{}, fmt.Errorf("iterate cost explorer drilldown line items: %w", err)
 	}
-	return items, nil
+	return result, nil
 }
 
 func costExplorerLineItemWindow(periodStart, periodEnd string) (string, string, error) {

@@ -7769,6 +7769,67 @@ func TestBillsUIShowsBillStatesAndTotals(t *testing.T) {
 	}
 }
 
+func TestBillsUIShowsCompleteStateCardsPastSummaryDisplayLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	var wantTotal int64
+	for i := 0; i < 60; i++ {
+		start := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
+		end := start.AddDate(0, 1, 0)
+		usageMicros := int64(i+1) * 1_000_000
+		wantTotal += usageMicros
+		insertBillsUIStoredBillState(
+			t,
+			ctx,
+			db,
+			start.Format(time.DateOnly),
+			end.Format(time.DateOnly),
+			"111122223333",
+			"paid",
+			"paid",
+			usageMicros,
+			0,
+			0,
+			0,
+		)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	resp, err := server.Client().Get(server.URL + "/bills")
+	if err != nil {
+		t.Fatalf("GET /bills error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /bills status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"51 of 61 summaries shown",
+		"50 of 60 bills shown",
+		"60 bills",
+		formatUSDMicros(wantTotal),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /bills over limit body missing %q: %s", want, body)
+		}
+	}
+	if oldLimitedTotal := formatUSDMicros(1_775_000_000); strings.Contains(body, oldLimitedTotal) {
+		t.Fatalf("GET /bills over limit body includes old limited-card total %q: %s", oldLimitedTotal, body)
+	}
+}
+
 func TestBillsUIFiltersAndPartialRefresh(t *testing.T) {
 	t.Parallel()
 

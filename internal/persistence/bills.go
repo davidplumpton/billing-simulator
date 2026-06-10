@@ -24,7 +24,9 @@ const (
 // BillStateSummaryRequest configures the bill-period state rows returned for the UI.
 type BillStateSummaryRequest struct {
 	Limit                 int
+	AllRows               bool
 	DefaultPayerAccountID string
+	PayerAccountID        string
 	Visibility            BillingVisibilityFilter
 }
 
@@ -59,8 +61,12 @@ type BillStateSummary struct {
 
 // BillChargeBreakdownRequest configures service/account charge breakdown rows.
 type BillChargeBreakdownRequest struct {
-	Limit      int
-	Visibility BillingVisibilityFilter
+	Limit          int
+	AllRows        bool
+	PayerAccountID string
+	UsageAccountID string
+	ServiceCode    string
+	Visibility     BillingVisibilityFilter
 }
 
 // BillChargeBreakdowns groups service/account totals and resource drilldown rows.
@@ -117,8 +123,10 @@ type BillResourceChargeSummary struct {
 
 // BillReconciliationRequest configures persisted-bill to source-line-item reconciliation rows.
 type BillReconciliationRequest struct {
-	Limit      int
-	Visibility BillingVisibilityFilter
+	Limit          int
+	AllRows        bool
+	PayerAccountID string
+	Visibility     BillingVisibilityFilter
 }
 
 // BillReconciliation compares one persisted bill with a fresh aggregate of its final source line items.
@@ -184,7 +192,7 @@ func (r BillsRepository) ListBillStateSummaries(ctx context.Context, request Bil
 	if err != nil {
 		return nil, err
 	}
-	if len(openSummaries) == 0 && request.DefaultPayerAccountID != "" && request.Visibility.allowsPayerAccount(request.DefaultPayerAccountID) {
+	if len(openSummaries) == 0 && request.defaultOpenSummaryAllowed() {
 		openSummaries = append(openSummaries, emptyOpenBillStateSummary(clock, request.DefaultPayerAccountID))
 	}
 
@@ -236,12 +244,17 @@ func (r BillsRepository) ListBillReconciliations(ctx context.Context, request Bi
 	}
 
 	clauses, args := billPayerVisibilityClauses("b", request.Visibility)
+	if request.PayerAccountID != "" {
+		clauses = append(clauses, "b.payer_account_id = ?")
+		args = append(args, request.PayerAccountID)
+	}
 	whereSQL := ""
 	if len(clauses) > 0 {
 		whereSQL = " WHERE " + strings.Join(clauses, "\n   AND ")
 	}
 	args = append([]any{billLineItemStatusFinal}, args...)
-	args = append(args, request.Limit)
+	limitSQL, limitArgs := billLimitSQL(request.Limit, request.AllRows)
+	args = append(args, limitArgs...)
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -287,8 +300,7 @@ func (r BillsRepository) ListBillReconciliations(ctx context.Context, request Bi
 			AND src.payer_account_id = b.payer_account_id
 			AND src.currency_code = b.currency_code
 		`+whereSQL+`
-		 ORDER BY b.billing_period_start DESC, b.issued_at DESC, b.id DESC
-		 LIMIT ?`,
+		 ORDER BY b.billing_period_start DESC, b.issued_at DESC, b.id DESC`+limitSQL,
 		args...,
 	)
 	if err != nil {
@@ -312,11 +324,15 @@ func (r BillsRepository) ListBillReconciliations(ctx context.Context, request Bi
 
 func (r BillsRepository) listBillChargeSummaries(ctx context.Context, request BillChargeBreakdownRequest) ([]BillChargeSummary, error) {
 	clauses, args := billLineItemVisibilityClauses("li", request.Visibility)
+	filterClauses, filterArgs := billChargeBreakdownFilterClauses("li", request)
+	clauses = append(clauses, filterClauses...)
+	args = append(args, filterArgs...)
 	whereSQL := ""
 	if len(clauses) > 0 {
 		whereSQL = " WHERE " + strings.Join(clauses, "\n   AND ")
 	}
-	args = append(args, request.Limit)
+	limitSQL, limitArgs := billLimitSQL(request.Limit, request.AllRows)
+	args = append(args, limitArgs...)
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -361,8 +377,7 @@ func (r BillsRepository) listBillChargeSummaries(ctx context.Context, request Bi
 			li.region_code,
 			li.usage_type,
 			li.line_item_status,
-			li.currency_code
-		 LIMIT ?`,
+			li.currency_code`+limitSQL,
 		args...,
 	)
 	if err != nil {
@@ -386,11 +401,15 @@ func (r BillsRepository) listBillChargeSummaries(ctx context.Context, request Bi
 
 func (r BillsRepository) listBillResourceChargeSummaries(ctx context.Context, request BillChargeBreakdownRequest) ([]BillResourceChargeSummary, error) {
 	clauses, args := billLineItemVisibilityClauses("li", request.Visibility)
+	filterClauses, filterArgs := billChargeBreakdownFilterClauses("li", request)
+	clauses = append(clauses, filterClauses...)
+	args = append(args, filterArgs...)
 	whereSQL := ""
 	if len(clauses) > 0 {
 		whereSQL = " WHERE " + strings.Join(clauses, "\n   AND ")
 	}
-	args = append(args, request.Limit)
+	limitSQL, limitArgs := billLimitSQL(request.Limit, request.AllRows)
+	args = append(args, limitArgs...)
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -438,8 +457,7 @@ func (r BillsRepository) listBillResourceChargeSummaries(ctx context.Context, re
 			li.usage_type,
 			li.resource_id,
 			li.line_item_status,
-			li.currency_code
-		 LIMIT ?`,
+			li.currency_code`+limitSQL,
 		args...,
 	)
 	if err != nil {
@@ -504,6 +522,11 @@ func (r BillsRepository) listLineItemBillStateSummaries(ctx context.Context, sta
 	visibilityClauses, visibilityArgs := billLineItemVisibilityClauses("li", request.Visibility)
 	clauses = append(clauses, visibilityClauses...)
 	args = append(args, visibilityArgs...)
+	if request.PayerAccountID != "" {
+		clauses = append(clauses, "li.payer_account_id = ?")
+		args = append(args, request.PayerAccountID)
+	}
+	limitSQL, limitArgs := billLimitSQL(request.Limit, request.AllRows)
 	query := `SELECT
 			li.billing_period_start,
 			li.billing_period_end,
@@ -523,8 +546,8 @@ func (r BillsRepository) listLineItemBillStateSummaries(ctx context.Context, sta
 			li.payer_account_id,
 			li.currency_code
 		 ORDER BY li.billing_period_start DESC, li.payer_account_id, li.currency_code
-		 LIMIT ?`
-	args = append(args, request.Limit)
+		` + limitSQL
+	args = append(args, limitArgs...)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list %s bill summaries: %w", state, err)
@@ -564,11 +587,16 @@ func (r BillsRepository) listIssuedBillStateSummaries(ctx context.Context, reque
 		)
 	}
 	clauses, args := billPayerVisibilityClauses("b", request.Visibility)
+	if request.PayerAccountID != "" {
+		clauses = append(clauses, "b.payer_account_id = ?")
+		args = append(args, request.PayerAccountID)
+	}
 	whereSQL := ""
 	if len(clauses) > 0 {
 		whereSQL = " WHERE " + strings.Join(clauses, "\n   AND ")
 	}
-	args = append(args, request.Limit)
+	limitSQL, limitArgs := billLimitSQL(request.Limit, request.AllRows)
+	args = append(args, limitArgs...)
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
@@ -595,8 +623,7 @@ func (r BillsRepository) listIssuedBillStateSummaries(ctx context.Context, reque
 		 JOIN invoice_obligations o ON o.bill_id = b.id
 		 LEFT JOIN invoice_payment_states ps ON ps.invoice_obligation_id = o.id
 		`+whereSQL+`
-		 ORDER BY b.billing_period_start DESC, b.issued_at DESC, b.id DESC
-		 LIMIT ?`,
+		 ORDER BY b.billing_period_start DESC, b.issued_at DESC, b.id DESC`+limitSQL,
 		args...,
 	)
 	if err != nil {
@@ -744,6 +771,7 @@ func normalizeBillStateSummaryRequest(request BillStateSummaryRequest) BillState
 		request.Limit = maxBillStateSummaryLimit
 	}
 	request.DefaultPayerAccountID = strings.TrimSpace(request.DefaultPayerAccountID)
+	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
 	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	return request
 }
@@ -755,6 +783,9 @@ func normalizeBillChargeBreakdownRequest(request BillChargeBreakdownRequest) Bil
 	if request.Limit > maxBillChargeLimit {
 		request.Limit = maxBillChargeLimit
 	}
+	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
+	request.UsageAccountID = strings.TrimSpace(request.UsageAccountID)
+	request.ServiceCode = strings.TrimSpace(request.ServiceCode)
 	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	return request
 }
@@ -766,8 +797,48 @@ func normalizeBillReconciliationRequest(request BillReconciliationRequest) BillR
 	if request.Limit > maxBillReconcileLimit {
 		request.Limit = maxBillReconcileLimit
 	}
+	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
 	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
 	return request
+}
+
+func (request BillStateSummaryRequest) defaultOpenSummaryAllowed() bool {
+	if request.DefaultPayerAccountID == "" {
+		return false
+	}
+	if request.PayerAccountID != "" && request.PayerAccountID != request.DefaultPayerAccountID {
+		return false
+	}
+	return request.Visibility.allowsPayerAccount(request.DefaultPayerAccountID)
+}
+
+func billChargeBreakdownFilterClauses(alias string, request BillChargeBreakdownRequest) ([]string, []any) {
+	prefix := strings.TrimSpace(alias)
+	if prefix != "" {
+		prefix += "."
+	}
+	clauses := []string{}
+	args := []any{}
+	if request.PayerAccountID != "" {
+		clauses = append(clauses, prefix+"payer_account_id = ?")
+		args = append(args, request.PayerAccountID)
+	}
+	if request.UsageAccountID != "" {
+		clauses = append(clauses, prefix+"usage_account_id = ?")
+		args = append(args, request.UsageAccountID)
+	}
+	if request.ServiceCode != "" {
+		clauses = append(clauses, prefix+"service_code = ?")
+		args = append(args, request.ServiceCode)
+	}
+	return clauses, args
+}
+
+func billLimitSQL(limit int, allRows bool) (string, []any) {
+	if allRows {
+		return "", nil
+	}
+	return "\n LIMIT ?", []any{limit}
 }
 
 func normalizeBillingVisibilityFilter(filter BillingVisibilityFilter) BillingVisibilityFilter {

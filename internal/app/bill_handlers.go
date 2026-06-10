@@ -32,9 +32,13 @@ type billsPageData struct {
 	ClockBillingPeriod       string
 	StateCards               []billStateCardView
 	BillSummaries            []billSummaryView
+	BillSummariesLabel       string
 	BillReconciliations      []billReconciliationView
+	BillReconciliationsLabel string
 	ChargeBreakdowns         []billChargeBreakdownView
+	ChargeBreakdownsLabel    string
 	ResourceChargeBreakdowns []billResourceChargeBreakdownView
+	ResourceBreakdownsLabel  string
 	Tables                   billsTablesView
 }
 
@@ -532,41 +536,82 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 	if err != nil {
 		return err
 	}
+	allSummaries, err := h.bills.ListBillStateSummaries(ctx, persistence.BillStateSummaryRequest{
+		AllRows:               true,
+		DefaultPayerAccountID: defaultPayerAccountID,
+		PayerAccountID:        data.Filters.PayerAccountID,
+		Visibility:            visibility,
+	})
+	if err != nil {
+		return err
+	}
+	allSummaries = filterBillStateSummaries(allSummaries, data.Filters)
+	data.StateCards = billStateCards(allSummaries)
+
 	summaries, err := h.bills.ListBillStateSummaries(ctx, persistence.BillStateSummaryRequest{
 		Limit:                 50,
 		DefaultPayerAccountID: defaultPayerAccountID,
+		PayerAccountID:        data.Filters.PayerAccountID,
 		Visibility:            visibility,
 	})
 	if err != nil {
 		return err
 	}
 	summaries = filterBillStateSummaries(summaries, data.Filters)
-	data.StateCards = billStateCards(summaries)
+	data.BillSummariesLabel = limitedTableLabel(len(summaries), len(allSummaries), "summary", "summaries")
 	for _, summary := range summaries {
 		data.BillSummaries = append(data.BillSummaries, billSummaryViewFromSummary(summary, data.Filters, canViewInvoice(summary.PayerAccountID)))
 	}
 
+	allReconciliations, err := h.bills.ListBillReconciliations(ctx, persistence.BillReconciliationRequest{
+		AllRows:        true,
+		PayerAccountID: data.Filters.PayerAccountID,
+		Visibility:     visibility,
+	})
+	if err != nil {
+		return err
+	}
+	allReconciliations = filterBillReconciliations(allReconciliations, data.Filters)
 	reconciliations, err := h.bills.ListBillReconciliations(ctx, persistence.BillReconciliationRequest{
-		Limit:      50,
-		Visibility: visibility,
+		Limit:          50,
+		PayerAccountID: data.Filters.PayerAccountID,
+		Visibility:     visibility,
 	})
 	if err != nil {
 		return err
 	}
 	reconciliations = filterBillReconciliations(reconciliations, data.Filters)
+	data.BillReconciliationsLabel = limitedTableLabel(len(reconciliations), len(allReconciliations), "bill", "bills")
 	for _, reconciliation := range reconciliations {
 		data.BillReconciliations = append(data.BillReconciliations, billReconciliationViewFromSummary(reconciliation))
 	}
 
+	allBreakdowns, err := h.bills.ListChargeBreakdowns(ctx, persistence.BillChargeBreakdownRequest{
+		AllRows:        true,
+		PayerAccountID: data.Filters.PayerAccountID,
+		UsageAccountID: data.Filters.UsageAccountID,
+		ServiceCode:    data.Filters.ServiceCode,
+		Visibility:     visibility,
+	})
+	if err != nil {
+		return err
+	}
+	allBreakdowns.Summaries = filterBillChargeSummaries(allBreakdowns.Summaries, data.Filters)
+	allBreakdowns.Resources = filterBillResourceChargeSummaries(allBreakdowns.Resources, data.Filters)
 	breakdowns, err := h.bills.ListChargeBreakdowns(ctx, persistence.BillChargeBreakdownRequest{
-		Limit:      75,
-		Visibility: visibility,
+		Limit:          75,
+		PayerAccountID: data.Filters.PayerAccountID,
+		UsageAccountID: data.Filters.UsageAccountID,
+		ServiceCode:    data.Filters.ServiceCode,
+		Visibility:     visibility,
 	})
 	if err != nil {
 		return err
 	}
 	breakdowns.Summaries = filterBillChargeSummaries(breakdowns.Summaries, data.Filters)
 	breakdowns.Resources = filterBillResourceChargeSummaries(breakdowns.Resources, data.Filters)
+	data.ChargeBreakdownsLabel = limitedTableLabel(len(breakdowns.Summaries), len(allBreakdowns.Summaries), "group", "groups")
+	data.ResourceBreakdownsLabel = limitedTableLabel(len(breakdowns.Resources), len(allBreakdowns.Resources), "row", "rows")
 	for _, summary := range breakdowns.Summaries {
 		data.ChargeBreakdowns = append(data.ChargeBreakdowns, billChargeBreakdownViewFromSummary(summary))
 	}
@@ -700,6 +745,20 @@ func filterBillResourceChargeSummaries(rows []persistence.BillResourceChargeSumm
 		}
 	}
 	return filtered
+}
+
+func limitedTableLabel(displayed, total int, singular, plural string) string {
+	if total < displayed {
+		total = displayed
+	}
+	if total > displayed {
+		return fmt.Sprintf("%d of %d %s shown", displayed, total, plural)
+	}
+	noun := plural
+	if displayed == 1 {
+		noun = singular
+	}
+	return fmt.Sprintf("%d %s", displayed, noun)
 }
 
 func billSummaryViewFromSummary(summary persistence.BillStateSummary, filter billsFilterView, canViewInvoice bool) billSummaryView {
@@ -1246,7 +1305,7 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 			<section>
 				<div class="section-heading">
 					<h2>Bill Reconciliation</h2>
-					<span>{{len .BillReconciliations}} bills</span>
+					<span>{{.BillReconciliationsLabel}}</span>
 				</div>
 				<div class="table-wrap">
 					<table class="dense-table">
@@ -1282,7 +1341,7 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 			<section>
 				<div class="section-heading">
 					<h2>Charges by Service and Account</h2>
-					<span>{{len .ChargeBreakdowns}} groups</span>
+					<span>{{.ChargeBreakdownsLabel}}</span>
 				</div>
 				<div class="table-wrap">
 					<table class="dense-table">
@@ -1317,7 +1376,7 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 			<section>
 				<div class="section-heading">
 					<h2>Resource Charge Drilldown</h2>
-					<span>{{len .ResourceChargeBreakdowns}} rows</span>
+					<span>{{.ResourceBreakdownsLabel}}</span>
 				</div>
 				<div class="table-wrap">
 					<table class="dense-table">
@@ -1351,7 +1410,7 @@ var billsPageTemplate = newPageTemplate("bills-page", `<div class="page-heading"
 			<section>
 				<div class="section-heading">
 					<h2>Bill States</h2>
-					<span>{{len .BillSummaries}} summaries</span>
+					<span>{{.BillSummariesLabel}}</span>
 				</div>
 				<div class="table-wrap">
 					<table class="dense-table">

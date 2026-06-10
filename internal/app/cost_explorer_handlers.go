@@ -175,6 +175,7 @@ type costExplorerLineItemsPageData struct {
 	Groups              []string
 	StateCards          []costExplorerStateCardView
 	LineItems           []costExplorerLineItemView
+	LineItemsLabel      string
 	Tables              costExplorerLineItemsTablesView
 }
 
@@ -527,7 +528,7 @@ func (h costExplorerHandler) loadCostExplorerLineItemsPageData(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	items, err := h.explorer.ListLineItems(ctx, persistence.CostExplorerLineItemRequest{
+	result, err := h.explorer.ListLineItems(ctx, persistence.CostExplorerLineItemRequest{
 		Query:           queryRequest,
 		TimePeriodStart: periodStart,
 		TimePeriodEnd:   periodEnd,
@@ -544,16 +545,14 @@ func (h costExplorerHandler) loadCostExplorerLineItemsPageData(ctx context.Conte
 	for _, group := range groupValues {
 		data.Groups = append(data.Groups, costExplorerGroupLabel(group))
 	}
-	var usageMicros, costMicros int64
-	for _, item := range items {
-		usageMicros += item.UsageQuantityMicros
-		costMicros += item.UnblendedCostMicros
+	for _, item := range result.Items {
 		data.LineItems = append(data.LineItems, costExplorerLineItemViewFromItem(item))
 	}
+	data.LineItemsLabel = limitedTableLabel(len(result.Items), result.TotalLineItemCount, "item", "items")
 	data.StateCards = []costExplorerStateCardView{
-		{Label: "Line Items", Value: fmt.Sprintf("%d", len(items))},
-		{Label: "Unblended Cost", Value: formatUSDMicros(costMicros)},
-		{Label: "Usage Quantity", Value: formatQuantityMicros(usageMicros)},
+		{Label: "Line Items", Value: fmt.Sprintf("%d", result.TotalLineItemCount)},
+		{Label: "Unblended Cost", Value: formatUSDMicros(result.TotalUnblendedCostMicros)},
+		{Label: "Usage Quantity", Value: formatQuantityMicros(result.TotalUsageQuantityMicros)},
 		{Label: "Period", Value: periodStart},
 	}
 	return nil
@@ -2127,7 +2126,7 @@ var costExplorerLineItemsPageTemplate = newPageTemplate("cost-explorer-line-item
 			<section>
 				<div class="section-heading">
 					<h2>Source Line Items</h2>
-					<span>{{len .LineItems}} items</span>
+					<span>{{.LineItemsLabel}}</span>
 				</div>
 				<div class="table-wrap">
 					<table class="dense-table">

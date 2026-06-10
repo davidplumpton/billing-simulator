@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 )
 
 func TestBillsRepositoryListsOpenPendingAndStoredBillStates(t *testing.T) {
@@ -92,6 +93,63 @@ func TestBillsRepositoryListsOpenPendingAndStoredBillStates(t *testing.T) {
 	pastDue := requireBillStateSummary(t, summaries, "past_due", "2026-01-01")
 	if pastDue.InvoiceStatus != "past_due" || pastDue.TotalMicros != 5_000_000 {
 		t.Fatalf("past-due summary = %+v, want past-due bill", pastDue)
+	}
+}
+
+func TestBillsRepositoryCanReadAllBillStatesPastDisplayLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	var wantTotal int64
+	for i := 0; i < 60; i++ {
+		start := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
+		end := start.AddDate(0, 1, 0)
+		usageMicros := int64(i+1) * 1_000_000
+		wantTotal += usageMicros
+		insertStoredBillState(
+			t,
+			ctx,
+			db,
+			start.Format(time.DateOnly),
+			end.Format(time.DateOnly),
+			"111122223333",
+			"paid",
+			"paid",
+			usageMicros,
+			0,
+			0,
+			0,
+		)
+	}
+
+	repo := NewBillsRepository(db)
+	limited, err := repo.ListBillStateSummaries(ctx, BillStateSummaryRequest{
+		Limit:          50,
+		PayerAccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("ListBillStateSummaries(limited) error = %v", err)
+	}
+	if len(limited) != 50 {
+		t.Fatalf("limited summaries = %d, want display limit 50", len(limited))
+	}
+
+	allRows, err := repo.ListBillStateSummaries(ctx, BillStateSummaryRequest{
+		Limit:          50,
+		AllRows:        true,
+		PayerAccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("ListBillStateSummaries(all rows) error = %v", err)
+	}
+	var gotTotal int64
+	for _, summary := range allRows {
+		gotTotal += summary.TotalMicros
+	}
+	if len(allRows) != 60 || gotTotal != wantTotal {
+		t.Fatalf("all summaries = %d total %d, want 60 total %d", len(allRows), gotTotal, wantTotal)
 	}
 }
 

@@ -2,8 +2,11 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCostExplorerRepositoryFiltersAndGroupsBillLineItems(t *testing.T) {
@@ -207,7 +210,7 @@ func TestCostExplorerRepositoryListsAggregateSourceLineItems(t *testing.T) {
 	if untaggedRow.TimePeriodStart == "" {
 		t.Fatalf("query rows = %+v, want missing-tag aggregate row", result.Rows)
 	}
-	items, err := repo.ListLineItems(ctx, CostExplorerLineItemRequest{
+	lineItems, err := repo.ListLineItems(ctx, CostExplorerLineItemRequest{
 		Query:           request,
 		TimePeriodStart: untaggedRow.TimePeriodStart,
 		TimePeriodEnd:   untaggedRow.TimePeriodEnd,
@@ -216,11 +219,14 @@ func TestCostExplorerRepositoryListsAggregateSourceLineItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListLineItems(missing tag row) error = %v", err)
 	}
-	if len(items) != 1 ||
-		items[0].UsageEventID != "usage-cost-explorer-drilldown-untagged" ||
-		items[0].ResourceID != "resource-cost-explorer-drilldown-untagged" ||
-		items[0].UnblendedCostMicros != 41_600 {
-		t.Fatalf("missing-tag drilldown items = %+v, want the untagged EC2 line item", items)
+	if len(lineItems.Items) != 1 ||
+		lineItems.TotalLineItemCount != 1 ||
+		lineItems.TotalUsageQuantityMicros != 1_000_000 ||
+		lineItems.TotalUnblendedCostMicros != 41_600 ||
+		lineItems.Items[0].UsageEventID != "usage-cost-explorer-drilldown-untagged" ||
+		lineItems.Items[0].ResourceID != "resource-cost-explorer-drilldown-untagged" ||
+		lineItems.Items[0].UnblendedCostMicros != 41_600 {
+		t.Fatalf("missing-tag drilldown result = %+v, want the untagged EC2 line item and complete totals", lineItems)
 	}
 
 	_, err = repo.ListLineItems(ctx, CostExplorerLineItemRequest{
@@ -230,6 +236,40 @@ func TestCostExplorerRepositoryListsAggregateSourceLineItems(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "group count") {
 		t.Fatalf("ListLineItems(missing group values) error = %v, want group count validation", err)
+	}
+}
+
+func TestCostExplorerRepositorySummarizesDrilldownPastDisplayLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	insertCostExplorerDrilldownLineItems(t, ctx, db, 105)
+
+	request := CostExplorerQueryRequest{
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "monthly",
+	}
+	result, err := NewCostExplorerRepository(db).ListLineItems(ctx, CostExplorerLineItemRequest{
+		Query:           request,
+		TimePeriodStart: "2026-02-01",
+		TimePeriodEnd:   "2026-03-01",
+		Limit:           100,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItems(over display limit) error = %v", err)
+	}
+	if len(result.Items) != 100 ||
+		result.TotalLineItemCount != 105 ||
+		result.TotalUsageQuantityMicros != 105_000_000 ||
+		result.TotalUnblendedCostMicros != 105_000 {
+		t.Fatalf("drilldown result = items %d count %d usage %d cost %d, want 100 displayed with complete 105-row totals",
+			len(result.Items),
+			result.TotalLineItemCount,
+			result.TotalUsageQuantityMicros,
+			result.TotalUnblendedCostMicros,
+		)
 	}
 }
 
@@ -728,5 +768,177 @@ func TestCostExplorerRepositoryValidatesQueries(t *testing.T) {
 				t.Fatalf("Query() error = %v, want containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// insertCostExplorerDrilldownLineItems creates many homogeneous source rows for drilldown pagination tests.
+func insertCostExplorerDrilldownLineItems(t *testing.T, ctx context.Context, db *sql.DB, count int) {
+	t.Helper()
+
+	if _, err := db.ExecContext(
+		ctx,
+		`INSERT INTO resources (
+			id,
+			account_id,
+			region_code,
+			service_code,
+			resource_type,
+			resource_name,
+			status,
+			started_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"resource-cost-explorer-over-limit",
+		"111122223333",
+		"us-east-1",
+		serviceAmazonEC2,
+		"ec2_instance",
+		"Cost Explorer over-limit fixture",
+		"active",
+		"2026-02-01T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert drilldown resource: %v", err)
+	}
+
+	for i := 0; i < count; i++ {
+		suffix := fmt.Sprintf("%03d", i)
+		usageID := "usage-cost-explorer-over-limit-" + suffix
+		meteringID := "metering-cost-explorer-over-limit-" + suffix
+		lineItemID := "line-cost-explorer-over-limit-" + suffix
+		start := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Hour)
+		end := start.Add(time.Hour)
+		startText := start.Format(time.RFC3339)
+		endText := end.Format(time.RFC3339)
+
+		if _, err := db.ExecContext(
+			ctx,
+			`INSERT INTO usage_events (
+				id,
+				resource_id,
+				account_id,
+				service_code,
+				usage_type,
+				operation,
+				region_code,
+				usage_start_time,
+				usage_end_time,
+				usage_quantity_micros,
+				usage_unit,
+				tag_snapshot_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			usageID,
+			"resource-cost-explorer-over-limit",
+			"111122223333",
+			serviceAmazonEC2,
+			"instance-hours:t3.medium",
+			"RunInstances",
+			"us-east-1",
+			startText,
+			endText,
+			1_000_000,
+			"Hours",
+			"{}",
+		); err != nil {
+			t.Fatalf("insert drilldown usage event %d: %v", i, err)
+		}
+		if _, err := db.ExecContext(
+			ctx,
+			`INSERT INTO metering_records (
+				id,
+				usage_event_id,
+				resource_id,
+				account_id,
+				service_code,
+				usage_type,
+				operation,
+				region_code,
+				usage_start_time,
+				usage_end_time,
+				usage_quantity_micros,
+				usage_unit,
+				tag_snapshot_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			meteringID,
+			usageID,
+			"resource-cost-explorer-over-limit",
+			"111122223333",
+			serviceAmazonEC2,
+			"instance-hours:t3.medium",
+			"RunInstances",
+			"us-east-1",
+			startText,
+			endText,
+			1_000_000,
+			"Hours",
+			"{}",
+		); err != nil {
+			t.Fatalf("insert drilldown metering record %d: %v", i, err)
+		}
+		if _, err := db.ExecContext(
+			ctx,
+			`INSERT INTO bill_line_items (
+				id,
+				metering_record_id,
+				usage_event_id,
+				resource_id,
+				billing_period_start,
+				billing_period_end,
+				billing_period_days,
+				payer_account_id,
+				usage_account_id,
+				service_code,
+				service_name,
+				product_family,
+				usage_type,
+				operation,
+				region_code,
+				line_item_type,
+				line_item_status,
+				usage_start_time,
+				usage_end_time,
+				usage_quantity_micros,
+				usage_unit,
+				pricing_unit,
+				pricing_quantity_micros,
+				unblended_rate_micros,
+				unblended_cost_micros,
+				currency_code,
+				price_catalog_sku,
+				price_effective_date,
+				tag_snapshot_json,
+				description
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			lineItemID,
+			meteringID,
+			usageID,
+			"resource-cost-explorer-over-limit",
+			"2026-02-01",
+			"2026-03-01",
+			28,
+			AnyCompanyRetailManagementAccountID,
+			"111122223333",
+			serviceAmazonEC2,
+			"Amazon EC2",
+			"Compute Instance",
+			"instance-hours:t3.medium",
+			"RunInstances",
+			"us-east-1",
+			"Usage",
+			billLineItemStatusEstimated,
+			startText,
+			endText,
+			1_000_000,
+			"Hours",
+			"InstanceHour",
+			1_000_000,
+			1_000,
+			1_000,
+			defaultBillCurrencyCode,
+			"SIM-EC2-T3-MEDIUM-HR",
+			"2026-01-01",
+			"{}",
+			"Synthetic over-limit Cost Explorer fixture",
+		); err != nil {
+			t.Fatalf("insert drilldown bill line item %d: %v", i, err)
+		}
 	}
 }

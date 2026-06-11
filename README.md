@@ -118,6 +118,8 @@ go test ./...
 go build ./...
 ```
 
+When changing the AnyCompany Retail seed organization, update the reset template in `internal/persistence/organization_templates.go` and the migration-created seed rows together. The lifecycle baseline is derived from seeded accounts, account tags are seeded separately, and existing workspaces may need a forward migration. Run `go test ./internal/persistence -run TestAnyCompanyRetailMigrationSeedMatchesResetTemplate` before broader gates.
+
 This project uses `br` for issue tracking and `jj` for version control. Common tracker commands:
 
 ```bash

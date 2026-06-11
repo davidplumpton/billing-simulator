@@ -321,6 +321,8 @@ func organizationTemplateSeedForKey(templateKey string) (organizationTemplateSee
 	return anyCompanyRetailTemplateSeed(), true
 }
 
+// anyCompanyRetailTemplateSeed is the reset-template copy of the AnyCompany fixture.
+// When changing it, update the seed migrations and TestAnyCompanyRetailMigrationSeedMatchesResetTemplate together.
 func anyCompanyRetailTemplateSeed() organizationTemplateSeed {
 	organization := Organization{
 		ID:                  AnyCompanyRetailOrganizationID,

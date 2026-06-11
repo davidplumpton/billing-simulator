@@ -106,6 +106,23 @@ func TestAnyCompanyRetailOrganizationFixtureSeeded(t *testing.T) {
 	assertSeedAccountMetadata(t, storefrontProd, "storefront-team", "4100-storefront", "storefront", "production", "active")
 }
 
+func TestAnyCompanyRetailMigrationSeedMatchesResetTemplate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+
+	got, err := anyCompanyRetailFixtureSnapshotFromDB(ctx, db)
+	if err != nil {
+		t.Fatalf("read migrated AnyCompany fixture: %v", err)
+	}
+	want := anyCompanyRetailFixtureSnapshotFromTemplate(anyCompanyRetailTemplateSeed())
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("migrated AnyCompany fixture snapshot does not match reset template\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
 func TestAnyCompanyRetailAccountReferencesMatchFixture(t *testing.T) {
 	t.Parallel()
 
@@ -636,6 +653,143 @@ func accountLifecycleEventsByAccount(events []AccountLifecycleEvent) map[string]
 		byAccount[event.AccountID] = append(byAccount[event.AccountID], event)
 	}
 	return byAccount
+}
+
+type anyCompanyRetailFixtureSnapshot struct {
+	Organization    Organization
+	Units           []OrganizationUnit
+	Accounts        []OrganizationAccount
+	AccountTags     []AccountTag
+	LifecycleEvents []AccountLifecycleEvent
+}
+
+// anyCompanyRetailFixtureSnapshotFromDB reads the migration-created fixture through repository APIs.
+func anyCompanyRetailFixtureSnapshotFromDB(ctx context.Context, db *sql.DB) (anyCompanyRetailFixtureSnapshot, error) {
+	repo := NewOrganizationRepository(db)
+
+	organization, err := repo.GetOrganizationByTemplate(ctx, AnyCompanyRetailTemplateKey)
+	if err != nil {
+		return anyCompanyRetailFixtureSnapshot{}, err
+	}
+	units, err := repo.ListUnits(ctx, organization.ID)
+	if err != nil {
+		return anyCompanyRetailFixtureSnapshot{}, err
+	}
+	accounts, err := repo.ListAccounts(ctx, organization.ID)
+	if err != nil {
+		return anyCompanyRetailFixtureSnapshot{}, err
+	}
+	tags, err := repo.ListAccountTags(ctx, organization.ID)
+	if err != nil {
+		return anyCompanyRetailFixtureSnapshot{}, err
+	}
+	events, err := repo.ListAccountLifecycleEvents(ctx, organization.ID, 200)
+	if err != nil {
+		return anyCompanyRetailFixtureSnapshot{}, err
+	}
+
+	return normalizeAnyCompanyRetailFixtureSnapshot(anyCompanyRetailFixtureSnapshot{
+		Organization:    organization,
+		Units:           units,
+		Accounts:        accounts,
+		AccountTags:     tags,
+		LifecycleEvents: events,
+	}), nil
+}
+
+// anyCompanyRetailFixtureSnapshotFromTemplate derives the expected migrated rows from the reset template.
+func anyCompanyRetailFixtureSnapshotFromTemplate(seed organizationTemplateSeed) anyCompanyRetailFixtureSnapshot {
+	unitPaths := make(map[string]string, len(seed.Units))
+	for _, unit := range seed.Units {
+		unitPaths[unit.ID] = unit.Path
+	}
+
+	tagsByAccount := map[string]map[string]string{}
+	accountTags := make([]AccountTag, 0, len(seed.AccountTags))
+	for _, tag := range seed.AccountTags {
+		if _, ok := tagsByAccount[tag.AccountID]; !ok {
+			tagsByAccount[tag.AccountID] = map[string]string{}
+		}
+		tagsByAccount[tag.AccountID][tag.Key] = tag.Value
+		accountTags = append(accountTags, AccountTag{
+			ID:        organizationTemplateAccountTagID(tag),
+			AccountID: tag.AccountID,
+			Key:       tag.Key,
+			Value:     tag.Value,
+			AppliedAt: anyCompanyRetailSeedTimestamp,
+		})
+	}
+
+	accounts := make([]OrganizationAccount, 0, len(seed.Accounts))
+	events := make([]AccountLifecycleEvent, 0, len(seed.Accounts))
+	for _, account := range seed.Accounts {
+		payerAccountID := seed.Organization.ManagementAccountID
+		billingVisibilityRole := "member-account"
+		isManagementAccount := false
+		if account.AccountType == accountTypeManagement {
+			payerAccountID = account.ID
+			billingVisibilityRole = "management-account"
+			isManagementAccount = true
+		}
+		expectedAccount := OrganizationAccount{
+			ID:                    account.ID,
+			OrganizationID:        seed.Organization.ID,
+			ParentUnitID:          account.ParentUnitID,
+			OUPath:                unitPaths[account.ParentUnitID],
+			Name:                  account.Name,
+			Email:                 account.Email,
+			AccountType:           account.AccountType,
+			Status:                account.Status,
+			CreatedAt:             anyCompanyRetailSeedTimestamp,
+			JoinedAt:              anyCompanyRetailSeedTimestamp,
+			PaymentResponsibility: "management_account",
+			PayerAccountID:        payerAccountID,
+			BillingVisibilityRole: billingVisibilityRole,
+			IsManagementAccount:   isManagementAccount,
+			SortOrder:             account.SortOrder,
+		}
+		applyOrganizationAccountTags(&expectedAccount, tagsByAccount[account.ID])
+		accounts = append(accounts, expectedAccount)
+		events = append(events, AccountLifecycleEvent{
+			ID:              "acctevt_" + account.ID + "_created",
+			OrganizationID:  seed.Organization.ID,
+			AccountID:       account.ID,
+			EventType:       AccountLifecycleEventCreated,
+			NewParentUnitID: account.ParentUnitID,
+			NewStatus:       account.Status,
+			EffectiveAt:     anyCompanyRetailSeedTimestamp,
+			CreatedAt:       anyCompanyRetailSeedTimestamp,
+			EventSource:     "system",
+		})
+	}
+
+	return normalizeAnyCompanyRetailFixtureSnapshot(anyCompanyRetailFixtureSnapshot{
+		Organization:    seed.Organization,
+		Units:           seed.Units,
+		Accounts:        accounts,
+		AccountTags:     accountTags,
+		LifecycleEvents: events,
+	})
+}
+
+// normalizeAnyCompanyRetailFixtureSnapshot makes fixture comparisons independent of read ordering.
+func normalizeAnyCompanyRetailFixtureSnapshot(snapshot anyCompanyRetailFixtureSnapshot) anyCompanyRetailFixtureSnapshot {
+	sort.Slice(snapshot.Units, func(i, j int) bool {
+		return snapshot.Units[i].ID < snapshot.Units[j].ID
+	})
+	sort.Slice(snapshot.Accounts, func(i, j int) bool {
+		return snapshot.Accounts[i].ID < snapshot.Accounts[j].ID
+	})
+	sort.Slice(snapshot.AccountTags, func(i, j int) bool {
+		if snapshot.AccountTags[i].AccountID == snapshot.AccountTags[j].AccountID {
+			return snapshot.AccountTags[i].Key < snapshot.AccountTags[j].Key
+		}
+		return snapshot.AccountTags[i].AccountID < snapshot.AccountTags[j].AccountID
+	})
+	sort.Slice(snapshot.LifecycleEvents, func(i, j int) bool {
+		return snapshot.LifecycleEvents[i].ID < snapshot.LifecycleEvents[j].ID
+	})
+	return snapshot
 }
 
 func countRows(t *testing.T, db *sql.DB, query string, args ...any) int {

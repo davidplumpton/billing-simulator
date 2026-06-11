@@ -747,38 +747,17 @@ func (h exportsHandler) regenerateExportFile(ctx context.Context, file persisten
 }
 
 func (h exportsHandler) exportPolicyFromValues(ctx context.Context, values url.Values) (billingvisibility.Policy, error) {
-	viewer := exportViewerFieldsFromValues(values)
-	if viewer.Role == "" && viewer.AccountID != "" {
-		return billingvisibility.Policy{}, fmt.Errorf("viewer role is required when viewer account ID is set")
-	}
-	roleValue := viewer.Role
-	if roleValue == "" {
-		roleValue = billingvisibility.RoleManagementAccount.String()
-	}
-	role, err := billingvisibility.ParseRole(roleValue)
-	if err != nil {
-		return billingvisibility.Policy{}, err
-	}
-	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
-	if err != nil {
-		return billingvisibility.Policy{}, err
-	}
-	accountID := viewer.AccountID
-	if (role == billingvisibility.RoleManagementAccount || role == billingvisibility.RoleFinance) && accountID == "" {
-		accountID = managementAccountID
-	}
-	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
-		Role:                role,
-		AccountID:           accountID,
-		ManagementAccountID: managementAccountID,
+	resolution, err := resolveViewerPolicy(ctx, h.db, exportViewerFieldsFromValues(values), viewerPolicyResolveOptions{
+		DefaultRole:  billingvisibility.RoleManagementAccount,
+		RequiredView: billingvisibility.ViewExports,
+		PermissionErr: func(policy billingvisibility.Policy) error {
+			return exportAccessError{err: fmt.Errorf("billing role %q cannot view exports", policy.Role)}
+		},
 	})
 	if err != nil {
 		return billingvisibility.Policy{}, err
 	}
-	if !policy.AllowsView(billingvisibility.ViewExports) {
-		return billingvisibility.Policy{}, exportAccessError{err: fmt.Errorf("billing role %q cannot view exports", policy.Role)}
-	}
-	return policy, nil
+	return resolution.Policy, nil
 }
 
 func (h exportsHandler) scopedExportFileListRequest(ctx context.Context, request persistence.ExportFileListRequest, policy billingvisibility.Policy) (persistence.ExportFileListRequest, error) {
@@ -958,8 +937,8 @@ func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
 		ClearPath:          "/exports",
 	}
 	filter.ExportTypeField = exportFileTypeSelect(filter.ExportType)
-	filter.ViewerRoleField = exportsViewerRoleSelect(filter.ViewerRole)
-	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
+	filter.ViewerRoleField = viewerRoleSelectField(filter.ViewerRole, "Default viewer")
+	filter.ViewerAccountField = viewerAccountIDField(filter.ViewerAccountID)
 	filter.HasFilters = filter.ExportType != "" ||
 		filter.BillingPeriodStart != "" ||
 		filter.BillingPeriodEnd != "" ||
@@ -984,8 +963,8 @@ func curCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
 		Limit:              query.Get("limit"),
 		GenerateButton:     uiSubmitButton("Generate CUR Export"),
 	}
-	form.ViewerRoleField = exportsViewerRoleSelect(form.ViewerRole)
-	form.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", form.ViewerAccountID, false)
+	form.ViewerRoleField = viewerRoleSelectField(form.ViewerRole, "Default viewer")
+	form.ViewerAccountField = viewerAccountIDField(form.ViewerAccountID)
 	form.LineItemStatusField = exportReconciliationLineItemStatusSelect(form.LineItemStatus)
 	return form
 }
@@ -1202,8 +1181,8 @@ func exportReconciliationFilterFromRequest(r *http.Request) exportReconciliation
 		ApplyButton:        uiSubmitButton("Run Report"),
 		ClearPath:          "/exports/reconciliation",
 	}
-	filter.ViewerRoleField = exportsViewerRoleSelect(filter.ViewerRole)
-	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
+	filter.ViewerRoleField = viewerRoleSelectField(filter.ViewerRole, "Default viewer")
+	filter.ViewerAccountField = viewerAccountIDField(filter.ViewerAccountID)
 	filter.LineItemStatusField = exportReconciliationLineItemStatusSelect(filter.LineItemStatus)
 	filter.HasFilters = filter.BillingPeriodStart != "" ||
 		filter.BillingPeriodEnd != "" ||

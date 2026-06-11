@@ -355,8 +355,8 @@ func billsFilterFromRequest(r *http.Request) billsFilterView {
 		ApplyButton:     uiSubmitButton("Apply Filters"),
 		ClearPath:       "/bills",
 	}
-	filter.ViewerRoleSelect = billsViewerRoleSelect(filter.ViewerRole)
-	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
+	filter.ViewerRoleSelect = viewerRoleSelectField(filter.ViewerRole, "All viewers")
+	filter.ViewerAccountField = viewerAccountIDField(filter.ViewerAccountID)
 	filter.HasFilters = filter.PayerAccountID != "" ||
 		filter.UsageAccountID != "" ||
 		filter.ServiceCode != "" ||
@@ -618,66 +618,31 @@ func (h billsHandler) loadBillsPageData(ctx context.Context, data *billsPageData
 
 // billingVisibilityFilter resolves optional simulated-viewer controls into repository account constraints.
 func (h billsHandler) billingVisibilityFilter(ctx context.Context, filter billsFilterView) (persistence.BillingVisibilityFilter, error) {
-	policy, scoped, err := h.billingPolicyFromFilter(ctx, filter)
-	if err != nil || !scoped {
+	resolution, err := h.billingPolicyFromFilter(ctx, filter, billingvisibility.ViewBills)
+	if err != nil || !resolution.Scoped {
 		return persistence.BillingVisibilityFilter{}, err
 	}
-	if !policy.AllowsView(billingvisibility.ViewBills) {
-		return persistence.BillingVisibilityFilter{}, fmt.Errorf("billing role %q cannot view bills", policy.Role)
-	}
-	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
-		return persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}, nil
-	}
-	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
-		return persistence.BillingVisibilityFilter{UsageAccountID: usageAccountID}, nil
-	}
-	return persistence.BillingVisibilityFilter{}, nil
+	return billingVisibilityFilterFromPolicy(resolution.Policy), nil
 }
 
 // billingPolicyFromFilter builds the domain visibility policy from explicit viewer query fields.
-func (h billsHandler) billingPolicyFromFilter(ctx context.Context, filter billsFilterView) (billingvisibility.Policy, bool, error) {
-	roleValue := strings.TrimSpace(filter.ViewerRole)
-	accountID := strings.TrimSpace(filter.ViewerAccountID)
-	if roleValue == "" && accountID == "" {
-		return billingvisibility.Policy{}, false, nil
-	}
-	if roleValue == "" {
-		return billingvisibility.Policy{}, false, fmt.Errorf("viewer role is required when viewer account ID is set")
-	}
-	role, err := billingvisibility.ParseRole(roleValue)
-	if err != nil {
-		return billingvisibility.Policy{}, false, err
-	}
-	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
-	if err != nil {
-		return billingvisibility.Policy{}, false, err
-	}
-	if role == billingvisibility.RoleManagementAccount && accountID == "" {
-		accountID = managementAccountID
-	}
-	if role == billingvisibility.RoleFinance && accountID == "" {
-		accountID = managementAccountID
-	}
-	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
-		Role:                role,
-		AccountID:           accountID,
-		ManagementAccountID: managementAccountID,
+func (h billsHandler) billingPolicyFromFilter(ctx context.Context, filter billsFilterView, requiredView billingvisibility.View) (viewerPolicyResolution, error) {
+	return resolveViewerPolicy(ctx, h.db, exportViewerFieldsFromBillsFilter(filter), viewerPolicyResolveOptions{
+		AllowUnscoped: true,
+		RequiredView:  requiredView,
 	})
-	if err != nil {
-		return billingvisibility.Policy{}, false, err
-	}
-	return policy, true, nil
 }
 
 // invoiceAccessPredicate separates bill-row visibility from financial document access.
 func (h billsHandler) invoiceAccessPredicate(ctx context.Context, filter billsFilterView) (func(string) bool, error) {
-	policy, scoped, err := h.billingPolicyFromFilter(ctx, filter)
+	resolution, err := h.billingPolicyFromFilter(ctx, filter, "")
 	if err != nil {
 		return nil, err
 	}
-	if !scoped {
+	if !resolution.Scoped {
 		return func(string) bool { return true }, nil
 	}
+	policy := resolution.Policy
 	return func(payerAccountID string) bool {
 		return policy.AllowsView(billingvisibility.ViewInvoices) && policy.AllowsPayerAccount(strings.TrimSpace(payerAccountID))
 	}, nil
@@ -685,13 +650,11 @@ func (h billsHandler) invoiceAccessPredicate(ctx context.Context, filter billsFi
 
 // ensureInvoiceViewerAccess enforces financial-document access when a simulated viewer is selected.
 func (h billsHandler) ensureInvoiceViewerAccess(ctx context.Context, r *http.Request, payerAccountID string) error {
-	policy, scoped, err := h.billingPolicyFromFilter(ctx, billsFilterFromRequest(r))
-	if err != nil || !scoped {
+	resolution, err := h.billingPolicyFromFilter(ctx, billsFilterFromRequest(r), billingvisibility.ViewInvoices)
+	if err != nil || !resolution.Scoped {
 		return err
 	}
-	if !policy.AllowsView(billingvisibility.ViewInvoices) {
-		return fmt.Errorf("billing role %q cannot view invoices", policy.Role)
-	}
+	policy := resolution.Policy
 	if payerAccountID != "" && !policy.AllowsPayerAccount(payerAccountID) {
 		return fmt.Errorf("billing role %q cannot view invoice for payer account %q", policy.Role, payerAccountID)
 	}

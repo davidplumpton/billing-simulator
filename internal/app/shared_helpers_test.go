@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"aws-billing-simulator/internal/billingvisibility"
 	"aws-billing-simulator/internal/persistence"
 )
 
@@ -130,16 +132,16 @@ func TestViewerHelpersPreserveScope(t *testing.T) {
 		t.Fatalf("exportViewerFieldsFromValues = %#v", viewer)
 	}
 
-	billsSelect := billsViewerRoleSelect("")
+	billsSelect := viewerRoleSelectField("", "All viewers")
 	if len(billsSelect.Options) == 0 || billsSelect.Options[0].Label != "All viewers" {
-		t.Fatalf("billsViewerRoleSelect first option = %#v", billsSelect.Options)
+		t.Fatalf("viewerRoleSelectField bills first option = %#v", billsSelect.Options)
 	}
-	exportsSelect := exportsViewerRoleSelect("member-account")
+	exportsSelect := viewerRoleSelectField("member-account", "Default viewer")
 	if len(exportsSelect.Options) == 0 || exportsSelect.Options[0].Label != "Default viewer" {
-		t.Fatalf("exportsViewerRoleSelect first option = %#v", exportsSelect.Options)
+		t.Fatalf("viewerRoleSelectField exports first option = %#v", exportsSelect.Options)
 	}
 	if !selectHasSelectedValue(exportsSelect, "member-account") {
-		t.Fatalf("exportsViewerRoleSelect did not select member-account: %#v", exportsSelect.Options)
+		t.Fatalf("viewerRoleSelectField did not select member-account: %#v", exportsSelect.Options)
 	}
 
 	assertPathQuery(t, exportsPathWithViewer(viewer, "Done saved"), "/exports", map[string]string{
@@ -156,6 +158,116 @@ func TestViewerHelpersPreserveScope(t *testing.T) {
 		"viewer_role":       "member-account",
 		"viewer_account_id": "111122223333",
 	})
+}
+
+func TestSharedViewerPolicyResolverPreservesWorkflowDefaults(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	bills := billsHandler{db: db}
+	billsResolution, err := bills.billingPolicyFromFilter(ctx, billsFilterView{}, billingvisibility.ViewBills)
+	if err != nil {
+		t.Fatalf("billingPolicyFromFilter(empty) error = %v", err)
+	}
+	if billsResolution.Scoped {
+		t.Fatalf("billingPolicyFromFilter(empty) scoped = true, want unscoped bills")
+	}
+
+	exports := exportsHandler{db: db}
+	exportPolicy, err := exports.exportPolicyFromValues(ctx, url.Values{})
+	if err != nil {
+		t.Fatalf("exportPolicyFromValues(empty) error = %v", err)
+	}
+	if exportPolicy.Role != billingvisibility.RoleManagementAccount ||
+		exportPolicy.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID {
+		t.Fatalf("exportPolicyFromValues(empty) = %+v, want default management payer", exportPolicy)
+	}
+
+	payments := paymentsHandler{db: db}
+	paymentPolicy, err := payments.paymentPolicyFromValues(ctx, url.Values{})
+	if err != nil {
+		t.Fatalf("paymentPolicyFromValues(empty) error = %v", err)
+	}
+	if paymentPolicy.Role != billingvisibility.RoleManagementAccount ||
+		paymentPolicy.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		!paymentPolicy.AllowsView(billingvisibility.ViewPayments) {
+		t.Fatalf("paymentPolicyFromValues(empty) = %+v, want default management payment policy", paymentPolicy)
+	}
+
+	explorer := costExplorerHandler{db: db}
+	financeVisibility, err := explorer.costExplorerVisibilityFilter(ctx, costExplorerBuilderView{OwnerRole: "finance"})
+	if err != nil {
+		t.Fatalf("costExplorerVisibilityFilter(finance blank account) error = %v", err)
+	}
+	if financeVisibility.PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		financeVisibility.UsageAccountID != "" {
+		t.Fatalf("costExplorerVisibilityFilter(finance blank account) = %+v, want payer default", financeVisibility)
+	}
+	memberVisibility, err := explorer.costExplorerVisibilityFilter(ctx, costExplorerBuilderView{
+		OwnerRole:      "member-account",
+		OwnerAccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("costExplorerVisibilityFilter(member) error = %v", err)
+	}
+	if memberVisibility.UsageAccountID != "111122223333" || memberVisibility.PayerAccountID != "" {
+		t.Fatalf("costExplorerVisibilityFilter(member) = %+v, want usage-account scope", memberVisibility)
+	}
+}
+
+func TestSharedViewerPolicyResolverPreservesWorkflowDenials(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	bills := billsHandler{db: db}
+	_, err = bills.billingPolicyFromFilter(ctx, billsFilterView{
+		ViewerRole:      "member-account",
+		ViewerAccountID: "111122223333",
+	}, billingvisibility.ViewInvoices)
+	if err == nil || !strings.Contains(err.Error(), `billing role "member-account" cannot view invoices`) {
+		t.Fatalf("billingPolicyFromFilter(member invoice) error = %v, want invoice denial", err)
+	}
+
+	exports := exportsHandler{db: db}
+	_, err = exports.exportPolicyFromValues(ctx, url.Values{"viewer_account_id": {"111122223333"}})
+	if err == nil || !strings.Contains(err.Error(), "viewer role is required when viewer account ID is set") {
+		t.Fatalf("exportPolicyFromValues(account without role) error = %v, want role-required error", err)
+	}
+
+	payments := paymentsHandler{db: db}
+	_, err = payments.paymentPolicyFromValues(ctx, url.Values{
+		"viewer_role":       {"member-account"},
+		"viewer_account_id": {"111122223333"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `billing role "member-account" cannot manage payments`) {
+		t.Fatalf("paymentPolicyFromValues(member) error = %v, want payment denial", err)
+	}
+
+	explorer := costExplorerHandler{db: db}
+	_, err = explorer.costExplorerVisibilityFilter(ctx, costExplorerBuilderView{OwnerRole: "member-account"})
+	if err == nil || !strings.Contains(err.Error(), "member-account billing role requires account_id") {
+		t.Fatalf("costExplorerVisibilityFilter(member without account) error = %v, want account-required error", err)
+	}
 }
 
 func TestExportPathHelpersPreserveRequestAndViewerScope(t *testing.T) {

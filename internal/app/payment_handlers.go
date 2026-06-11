@@ -418,38 +418,17 @@ func (h paymentsHandler) transitionRequestFromForm(ctx context.Context, r *http.
 
 // paymentPolicyFromValues resolves viewer controls into the policy allowed to manage payments.
 func (h paymentsHandler) paymentPolicyFromValues(ctx context.Context, values url.Values) (billingvisibility.Policy, error) {
-	viewer := exportViewerFieldsFromValues(values)
-	if viewer.Role == "" && viewer.AccountID != "" {
-		return billingvisibility.Policy{}, fmt.Errorf("viewer role is required when viewer account ID is set")
-	}
-	roleValue := viewer.Role
-	if roleValue == "" {
-		roleValue = billingvisibility.RoleManagementAccount.String()
-	}
-	role, err := billingvisibility.ParseRole(roleValue)
-	if err != nil {
-		return billingvisibility.Policy{}, err
-	}
-	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
-	if err != nil {
-		return billingvisibility.Policy{}, err
-	}
-	accountID := viewer.AccountID
-	if (role == billingvisibility.RoleManagementAccount || role == billingvisibility.RoleFinance) && accountID == "" {
-		accountID = managementAccountID
-	}
-	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
-		Role:                role,
-		AccountID:           accountID,
-		ManagementAccountID: managementAccountID,
+	resolution, err := resolveViewerPolicy(ctx, h.db, exportViewerFieldsFromValues(values), viewerPolicyResolveOptions{
+		DefaultRole:  billingvisibility.RoleManagementAccount,
+		RequiredView: billingvisibility.ViewPayments,
+		PermissionErr: func(policy billingvisibility.Policy) error {
+			return paymentAccessError{err: fmt.Errorf("billing role %q cannot manage payments", policy.Role)}
+		},
 	})
 	if err != nil {
 		return billingvisibility.Policy{}, err
 	}
-	if !policy.AllowsView(billingvisibility.ViewPayments) {
-		return billingvisibility.Policy{}, paymentAccessError{err: fmt.Errorf("billing role %q cannot manage payments", policy.Role)}
-	}
-	return policy, nil
+	return resolution.Policy, nil
 }
 
 // paymentHTTPStatus maps payment-policy errors to user-facing HTTP statuses.
@@ -561,8 +540,8 @@ func paymentFilterFromValues(values url.Values) paymentFilterView {
 		ApplyButton:     uiSubmitButton("Apply"),
 		ClearPath:       "/payments",
 	}
-	filter.ViewerRoleField = exportsViewerRoleSelect(filter.ViewerRole)
-	filter.ViewerAccountField = uiInputField("Viewer Account ID", "viewer_account_id", filter.ViewerAccountID, false)
+	filter.ViewerRoleField = viewerRoleSelectField(filter.ViewerRole, "Default viewer")
+	filter.ViewerAccountField = viewerAccountIDField(filter.ViewerAccountID)
 	filter.HasFilters = filter.ViewerRole != "" || filter.ViewerAccountID != ""
 	return filter
 }

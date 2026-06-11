@@ -731,36 +731,19 @@ func (h costExplorerHandler) scopedCostExplorerQueryRequest(ctx context.Context,
 
 // costExplorerVisibilityFilter resolves the report owner controls into row-level billing constraints.
 func (h costExplorerHandler) costExplorerVisibilityFilter(ctx context.Context, builder costExplorerBuilderView) (persistence.BillingVisibilityFilter, error) {
-	role, err := billingvisibility.ParseRole(builder.OwnerRole)
-	if err != nil {
-		return persistence.BillingVisibilityFilter{}, err
-	}
-	managementAccountID, err := defaultBillingPayerAccountID(ctx, h.db, "")
-	if err != nil {
-		return persistence.BillingVisibilityFilter{}, err
-	}
-	accountID := strings.TrimSpace(builder.OwnerAccountID)
-	if (role == billingvisibility.RoleManagementAccount || role == billingvisibility.RoleFinance) && accountID == "" {
-		accountID = managementAccountID
-	}
-	policy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
-		Role:                role,
-		AccountID:           accountID,
-		ManagementAccountID: managementAccountID,
+	resolution, err := resolveViewerPolicy(ctx, h.db, exportViewerFields{
+		Role:      builder.OwnerRole,
+		AccountID: builder.OwnerAccountID,
+	}, viewerPolicyResolveOptions{
+		RequiredView: billingvisibility.ViewCostExplorer,
+		PermissionErr: func(policy billingvisibility.Policy) error {
+			return fmt.Errorf("billing role %q cannot view Cost Explorer", policy.Role)
+		},
 	})
 	if err != nil {
 		return persistence.BillingVisibilityFilter{}, err
 	}
-	if !policy.AllowsView(billingvisibility.ViewCostExplorer) {
-		return persistence.BillingVisibilityFilter{}, fmt.Errorf("billing role %q cannot view Cost Explorer", policy.Role)
-	}
-	if payerAccountID, ok := policy.PayerAccountFilter(); ok {
-		return persistence.BillingVisibilityFilter{PayerAccountID: payerAccountID}, nil
-	}
-	if usageAccountID, ok := policy.UsageAccountFilter(); ok {
-		return persistence.BillingVisibilityFilter{UsageAccountID: usageAccountID}, nil
-	}
-	return persistence.BillingVisibilityFilter{}, nil
+	return billingVisibilityFilterFromPolicy(resolution.Policy), nil
 }
 
 func costExplorerQueryRequestFromBuilder(builder costExplorerBuilderView) (persistence.CostExplorerQueryRequest, error) {
@@ -1774,13 +1757,7 @@ func costExplorerOwnerRoleOptions(selected string) []uiSelectOptionView {
 	if selected == "" {
 		selected = "management-account"
 	}
-	options := []uiSelectOptionView{
-		{Value: "management-account", Label: "Management"},
-		{Value: "finance", Label: "Finance"},
-		{Value: "member-account", Label: "Member"},
-		{Value: "instructor", Label: "Instructor"},
-	}
-	return selectOptionsWithSelected(options, selected)
+	return selectOptionsWithSelected(viewerRoleOptions(), selected)
 }
 
 func selectOptionsWithSelected(options []uiSelectOptionView, selected string) []uiSelectOptionView {

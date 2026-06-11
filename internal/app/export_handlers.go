@@ -1030,72 +1030,6 @@ func exportFileTypeSelect(selected string) uiSelectFieldView {
 	}
 }
 
-func exportsViewerRoleSelect(selected string) uiSelectFieldView {
-	options := []uiSelectOptionView{
-		{Value: "", Label: "Default viewer"},
-		{Value: billingvisibility.RoleManagementAccount.String(), Label: "Management"},
-		{Value: billingvisibility.RoleFinance.String(), Label: "Finance"},
-		{Value: billingvisibility.RoleMemberAccount.String(), Label: "Member"},
-		{Value: billingvisibility.RoleInstructor.String(), Label: "Instructor"},
-	}
-	for idx := range options {
-		options[idx].Selected = options[idx].Value == selected
-	}
-	return uiSelectFieldView{
-		Label:   "Viewer Role",
-		Name:    "viewer_role",
-		Options: options,
-	}
-}
-
-type exportViewerFields struct {
-	Role      string
-	AccountID string
-}
-
-func exportViewerFieldsFromValues(values url.Values) exportViewerFields {
-	return exportViewerFields{
-		Role:      strings.TrimSpace(values.Get("viewer_role")),
-		AccountID: strings.TrimSpace(values.Get("viewer_account_id")),
-	}
-}
-
-func exportViewerFieldsFromBillsFilter(filter billsFilterView) exportViewerFields {
-	return exportViewerFields{
-		Role:      strings.TrimSpace(filter.ViewerRole),
-		AccountID: strings.TrimSpace(filter.ViewerAccountID),
-	}
-}
-
-func (v exportViewerFields) appendToValues(values url.Values) {
-	if v.Role != "" {
-		values.Set("viewer_role", v.Role)
-	}
-	if v.AccountID != "" {
-		values.Set("viewer_account_id", v.AccountID)
-	}
-}
-
-func exportsPathWithViewer(viewer exportViewerFields, flash string) string {
-	values := url.Values{}
-	viewer.appendToValues(values)
-	appendQueryValue(values, "flash", flash)
-	if len(values) == 0 {
-		return "/exports"
-	}
-	return "/exports?" + values.Encode()
-}
-
-func billsPathWithExportViewer(viewer exportViewerFields) string {
-	values := url.Values{}
-	appendQueryValue(values, "viewer_role", viewer.Role)
-	appendQueryValue(values, "viewer_account_id", viewer.AccountID)
-	if len(values) == 0 {
-		return "/bills"
-	}
-	return "/bills?" + values.Encode()
-}
-
 func exportFilesTable() uiTableView {
 	return uiTable(uiTableHeaders("File", "Type", "Period", "Scope", "Provenance", "Size", "Checksum", "Updated", "Actions"), "No generated exports")
 }
@@ -1245,36 +1179,6 @@ func shortChecksum(checksum string) string {
 	return checksum[:12]
 }
 
-func exportFileDownloadPath(filename string) string {
-	return "/exports/files/" + url.PathEscape(filename)
-}
-
-func exportFileDownloadPathWithViewer(filename string, viewer exportViewerFields) string {
-	path := exportFileDownloadPath(filename)
-	values := url.Values{}
-	viewer.appendToValues(values)
-	if len(values) == 0 {
-		return path
-	}
-	return path + "?" + values.Encode()
-}
-
-func exportFileDownloadFilenameFromPath(path string) (string, bool) {
-	const prefix = "/exports/files/"
-	if !strings.HasPrefix(path, prefix) {
-		return "", false
-	}
-	raw := strings.TrimPrefix(path, prefix)
-	if raw == "" || strings.Contains(raw, "/") {
-		return "", false
-	}
-	filename, err := url.PathUnescape(raw)
-	if err != nil {
-		return "", false
-	}
-	return filename, true
-}
-
 func exportFileContentType(exportType string) string {
 	switch exportType {
 	case persistence.ExportFileTypeCURCSV, persistence.ExportFileTypeFOCUSCSV:
@@ -1380,27 +1284,6 @@ func safeCSVFilenamePart(value, fallback string) string {
 	return result
 }
 
-func curCSVExportPath(request persistence.CURCSVExportRequest) string {
-	return curCSVExportPathWithViewer(request, exportViewerFields{})
-}
-
-func curCSVExportPathWithViewer(request persistence.CURCSVExportRequest, viewer exportViewerFields) string {
-	values := url.Values{}
-	appendQueryValue(values, "billing_period_start", request.BillingPeriodStart)
-	appendQueryValue(values, "billing_period_end", request.BillingPeriodEnd)
-	appendQueryValue(values, "payer_account_id", request.PayerAccountID)
-	appendQueryValue(values, "usage_account_id", request.UsageAccountID)
-	appendQueryValue(values, "line_item_status", request.LineItemStatus)
-	if request.Limit > 0 {
-		values.Set("limit", strconv.Itoa(request.Limit))
-	}
-	viewer.appendToValues(values)
-	if len(values) == 0 {
-		return "/exports/cur.csv"
-	}
-	return "/exports/cur.csv?" + values.Encode()
-}
-
 func curCSVExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
 	visibilityScope, visibilityAccountID := curCSVExportVisibilityScope(request.Visibility)
 	parameters := csvExportGenerationParameters(request, result)
@@ -1490,34 +1373,6 @@ func exportFileVisibilityScope(file persistence.ExportFile) (string, string, err
 		accountID = ""
 	}
 	return scope, accountID, nil
-}
-
-func curExportReconciliationPath(request persistence.CURExportReconciliationRequest) string {
-	return curExportReconciliationPathWithViewer(request, exportViewerFields{})
-}
-
-func curExportReconciliationPathWithViewer(request persistence.CURExportReconciliationRequest, viewer exportViewerFields) string {
-	values := url.Values{}
-	appendQueryValue(values, "billing_period_start", request.BillingPeriodStart)
-	appendQueryValue(values, "billing_period_end", request.BillingPeriodEnd)
-	appendQueryValue(values, "payer_account_id", request.PayerAccountID)
-	appendQueryValue(values, "usage_account_id", request.UsageAccountID)
-	appendQueryValue(values, "line_item_status", request.LineItemStatus)
-	if request.Limit > 0 {
-		values.Set("limit", strconv.Itoa(request.Limit))
-	}
-	viewer.appendToValues(values)
-	if len(values) == 0 {
-		return "/exports/reconciliation"
-	}
-	return "/exports/reconciliation?" + values.Encode()
-}
-
-func appendQueryValue(values url.Values, key, value string) {
-	value = strings.TrimSpace(value)
-	if value != "" {
-		values.Set(key, value)
-	}
 }
 
 func exportReconciliationReportViewFromReport(report persistence.CURExportReconciliationReport, viewer exportViewerFields) exportReconciliationReportView {

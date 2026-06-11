@@ -661,20 +661,6 @@ func organizationBillsPath(account persistence.OrganizationAccount) string {
 	return "/bills?" + query.Encode()
 }
 
-// titleLabel converts stored enum tokens into compact human-readable labels.
-func titleLabel(value string) string {
-	value = strings.ReplaceAll(value, "_", " ")
-	value = strings.ReplaceAll(value, "-", " ")
-	words := strings.Fields(value)
-	for idx, word := range words {
-		if word == "" {
-			continue
-		}
-		words[idx] = strings.ToUpper(word[:1]) + word[1:]
-	}
-	return strings.Join(words, " ")
-}
-
 var organizationPageTemplate = newPageTemplate("organization-page", `<div class="page-heading">
 			<div>
 				<h1>Organization</h1>

@@ -365,24 +365,6 @@ func billsFilterFromRequest(r *http.Request) billsFilterView {
 	return filter
 }
 
-func billsViewerRoleSelect(selected string) uiSelectFieldView {
-	options := []uiSelectOptionView{
-		{Value: "", Label: "All viewers"},
-		{Value: billingvisibility.RoleManagementAccount.String(), Label: "Management"},
-		{Value: billingvisibility.RoleFinance.String(), Label: "Finance"},
-		{Value: billingvisibility.RoleMemberAccount.String(), Label: "Member"},
-		{Value: billingvisibility.RoleInstructor.String(), Label: "Instructor"},
-	}
-	for idx := range options {
-		options[idx].Selected = options[idx].Value == selected
-	}
-	return uiSelectFieldView{
-		Label:   "Viewer Role",
-		Name:    "viewer_role",
-		Options: options,
-	}
-}
-
 // renderInvoice builds the printable invoice page from the invoice read model.
 func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, status int, invoiceID, errorMessage string) {
 	data := invoicePageData{
@@ -1156,15 +1138,6 @@ func displayBillState(value string) string {
 		return ""
 	}
 	return strings.ReplaceAll(value, "_", "-")
-}
-
-// displayOptionalValue gives blank optional invoice profile fields a stable printable label.
-func displayOptionalValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "none"
-	}
-	return value
 }
 
 // invoiceRouteFromPath extracts the invoice ID and optional export kind from an invoice URL path.

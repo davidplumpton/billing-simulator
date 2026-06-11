@@ -567,18 +567,6 @@ func paymentFilterFromValues(values url.Values) paymentFilterView {
 	return filter
 }
 
-// paymentsPathWithViewer preserves simulated viewer fields after payment actions.
-func paymentsPathWithViewer(viewer exportViewerFields, flash string) string {
-	values := url.Values{}
-	viewer.appendToValues(values)
-	appendQueryValue(values, "flash", flash)
-	encoded := values.Encode()
-	if encoded == "" {
-		return "/payments"
-	}
-	return "/payments?" + encoded
-}
-
 func paymentsTables() paymentsTablesView {
 	return paymentsTablesView{
 		Invoices:       uiTable(uiTableHeaders("Invoice", "Period", "Payer", "Bill", "Payment State", "Due", "Paid", "Due Date", "Failure", "Actions"), "No due invoices"),

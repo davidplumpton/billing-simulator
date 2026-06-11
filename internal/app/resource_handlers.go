@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"html/template"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -256,11 +254,6 @@ type catalogItemView struct {
 	UnitRate           string
 	PeriodEstimate     string
 	BillableDimensions string
-}
-
-type keyValueView struct {
-	Key   string
-	Value string
 }
 
 func newResourceLabHandler(db *sql.DB) resourceLabHandler {
@@ -1463,22 +1456,6 @@ func parseQuantityMicros(value string) (int64, error) {
 	return int64(quantityMicros), nil
 }
 
-func keyValueViews(values map[string]string) []keyValueView {
-	if len(values) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	views := make([]keyValueView, 0, len(keys))
-	for _, key := range keys {
-		views = append(views, keyValueView{Key: key, Value: values[key]})
-	}
-	return views
-}
-
 func copyStringMap(values map[string]string) map[string]string {
 	copied := map[string]string{}
 	for key, value := range values {
@@ -1511,31 +1488,6 @@ func billableDimensions(serviceCode, usageType, operation, regionCode string) st
 	return serviceCode + " / " + usageType + " / " + operation + " / " + regionCode
 }
 
-func formatQuantityMicros(value int64) string {
-	if value%1_000_000 == 0 {
-		return strconv.FormatInt(value/1_000_000, 10)
-	}
-	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.6f", float64(value)/1_000_000), "0"), ".")
-}
-
-func formatUSDMicros(value int64) string {
-	sign := ""
-	if value < 0 {
-		sign = "-"
-		value = -value
-	}
-	whole := value / 1_000_000
-	fraction := value % 1_000_000
-	if fraction == 0 {
-		return fmt.Sprintf("%s$%d.00", sign, whole)
-	}
-	fractionText := strings.TrimRight(fmt.Sprintf("%06d", fraction), "0")
-	for len(fractionText) < 2 {
-		fractionText += "0"
-	}
-	return fmt.Sprintf("%s$%d.%s", sign, whole, fractionText)
-}
-
 func divideAndRoundInt64(value, divisor int64) int64 {
 	quotient := value / divisor
 	remainder := value % divisor
@@ -1543,23 +1495,6 @@ func divideAndRoundInt64(value, divisor int64) int64 {
 		return quotient + 1
 	}
 	return quotient
-}
-
-func methodNotAllowed(w http.ResponseWriter, allowedMethods ...string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if len(allowedMethods) > 0 {
-		w.Header().Set("Allow", strings.Join(allowedMethods, ", "))
-	}
-	w.WriteHeader(http.StatusMethodNotAllowed)
-	fmt.Fprintln(w, "method not allowed")
-}
-
-func flashFromQuery(r *http.Request) string {
-	return strings.TrimSpace(r.URL.Query().Get("flash"))
-}
-
-func urlQueryEscape(value string) string {
-	return strings.ReplaceAll(template.URLQueryEscaper(value), "+", "%20")
 }
 
 var resourcePageTemplate = newPageTemplate("resource-page", `<div class="page-heading">

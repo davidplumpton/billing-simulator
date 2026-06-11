@@ -294,121 +294,12 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 		return audit, err
 	}
 
-	switch event.Action {
-	case EventActionCreateAccount:
-		if _, err := r.createAccount(ctx, state, event, scheduledAt); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreateResource:
-		resource, err := r.createResource(ctx, state, event, scheduledAt)
-		if err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-		audit.ResourceID = resource.ID
-		audit.ResourcesCreated = 1
-	case EventActionAddUsage:
-		usageEvent, resourceCreated, err := r.addUsage(ctx, state, event, scheduledAt)
-		if err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-		audit.ResourceID = usageEvent.ResourceID
-		audit.UsageEventID = usageEvent.ID
-		audit.ResourcesCreated = boolToInt(resourceCreated)
-		audit.UsageEventsCreated = 1
-	case EventActionGenerateUsage:
-		generated, err := r.generateUsage(ctx, state, event, scheduledAt)
-		if err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-		audit.ResourceID = generated.Resource.ID
-		audit.GeneratedUsageEventCount = len(generated.Events)
-		audit.UsageEventsCreated = generated.EventsCreated
-		if len(generated.Events) > 0 {
-			audit.UsageEventID = generated.Events[0].ID
-		}
-	case EventActionAdvanceClock:
-		if _, err := r.clock.Advance(ctx, persistence.SimulatorClockAdvanceRequest{
-			Amount: event.Amount,
-			Unit:   persistence.SimulatorClockAdvanceUnit(event.Unit),
-		}); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionRunDailyMetering:
-		metering, err := r.daily.Run(ctx, persistence.DailyMeteringJobRequest{
-			Trigger:        persistence.DailyMeteringJobTriggerOnDemand,
-			PayerAccountID: state.resolveAccountID(event.PayerAccountID, event.PayerAccount),
-		})
-		if err != nil {
-			err = r.describeClosedPeriodPricingFailure(ctx, state, event, scheduledAt, err)
-			return failScenarioRunEvent(audit, err)
-		}
-		audit.MeteringRecordsCreated = metering.MeteringRecordsCreated
-		audit.BillLineItemsCreated = metering.BillLineItemsCreated
-	case EventActionCloseBillingPeriod, EventActionIssueBill:
-		closed, err := r.monthEnd.ClosePreviousPeriod(ctx, persistence.MonthEndCloseRequest{
-			PayerAccountID: state.resolveAccountID(event.PayerAccountID, event.PayerAccount),
-			PeriodStart:    event.BillingPeriodStart,
-			PeriodEnd:      event.BillingPeriodEnd,
-		})
-		if err != nil {
-			err = r.describeClosedPeriodPricingFailure(ctx, state, event, scheduledAt, err)
-			return failScenarioRunEvent(audit, err)
-		}
-		audit.MeteringRecordsCreated = closed.MeteringRecordsCreated
-		audit.BillLineItemsCreated = closed.BillLineItemsCreated
-		audit.BillID = closed.Bill.ID
-		audit.BillsIssued = boolToInt(closed.Bill.ID != "")
-		state.lastInvoiceObligationID = closed.InvoiceObligation.ID
-	case EventActionRefreshCostAllocationTags:
-		if _, err := r.refreshCostAllocationTags(ctx, scheduledAt); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionActivateCostAllocationTag:
-		if _, err := r.activateCostAllocationTag(ctx, state, event, scheduledAt); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreateCostCategory:
-		if _, err := r.createCostCategory(ctx, state, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreateCostCategoryRule:
-		if _, err := r.createCostCategoryRule(ctx, state, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreateCostCategorySplitRule:
-		if _, err := r.createCostCategorySplitRule(ctx, state, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreatePaymentMethod:
-		if _, err := r.createPaymentMethod(ctx, state, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionSchedulePayment,
-		EventActionProcessPayment,
-		EventActionFailPayment,
-		EventActionMarkPaymentDue,
-		EventActionMarkPaymentPastDue,
-		EventActionCollectPayment:
-		if _, err := r.applyPaymentLifecycleEvent(ctx, state, event, scheduledAt); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreateBudget:
-		if _, err := r.createBudget(ctx, state, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionRefreshBudgetForecasts:
-		if err := r.refreshBudgetForecasts(ctx, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	case EventActionCreateSavedReport:
-		if _, err := r.createSavedReport(ctx, state, event); err != nil {
-			return failScenarioRunEvent(audit, err)
-		}
-	default:
+	spec, ok := scenarioEventActionSpecFor(event.Action)
+	if !ok {
 		err := fmt.Errorf("scenario event action %q is not executable", event.Action)
 		return failScenarioRunEvent(audit, err)
 	}
-	return audit, nil
+	return spec.apply(ctx, r, state, event, scheduledAt, audit)
 }
 
 // preflightClosedPeriodPricing catches scenario-authored pricing conflicts before domain rows are mutated.
@@ -421,8 +312,11 @@ func (r Runner) preflightClosedPeriodPricing(ctx context.Context, runID string, 
 		resourceAliasesByKey: map[string]string{},
 		categoryAliasesByKey: map[string]string{},
 	}
-	resources := map[string]scenarioPreflightResource{}
-	var plannedUsage []scenarioPlannedUsageRef
+	preflight := scenarioEventPreflight{
+		runID:      runID,
+		definition: definition,
+		resources:  map[string]scenarioPreflightResource{},
+	}
 
 	for _, event := range definition.Events {
 		scheduledAt, err := scheduledEventTime(startTime, event)
@@ -430,49 +324,14 @@ func (r Runner) preflightClosedPeriodPricing(ctx context.Context, runID string, 
 			return scenarioClosedPeriodConflict{}, false, err
 		}
 
-		switch event.Action {
-		case EventActionCreateAccount:
-			if event.AccountID != "" {
-				state.rememberAccount(event, event.AccountID)
-			}
-		case EventActionCreateResource:
-			resourceID := scenarioResourceID(runID, event)
-			accountID := state.resolveAccountID(event.AccountID, event.Account)
-			rememberScenarioPreflightResource(&state, resources, event, resourceID, accountID)
-		case EventActionAddUsage:
-			refs, err := scenarioPreflightUsageRefsForAddUsage(&state, resources, runID, event, scheduledAt)
-			if err != nil {
-				return scenarioClosedPeriodConflict{}, false, err
-			}
-			plannedUsage = append(plannedUsage, refs...)
-		case EventActionGenerateUsage:
-			refs, err := scenarioPreflightUsageRefsForGeneratedUsage(&state, resources, event, scheduledAt)
-			if err != nil {
-				return scenarioClosedPeriodConflict{}, false, err
-			}
-			plannedUsage = append(plannedUsage, refs...)
-		case EventActionRunDailyMetering:
-			payerID := state.resolveAccountID(event.PayerAccountID, event.PayerAccount)
-			if conflict, found, err := r.closedPeriodConflictForPlannedUsage(ctx, definition, plannedUsage, event.ID, payerID, scheduledAt, "", ""); err != nil {
-				return scenarioClosedPeriodConflict{}, false, err
-			} else if found {
-				return conflict, true, nil
-			}
-		case EventActionCloseBillingPeriod, EventActionIssueBill:
-			period, err := scenarioPreflightClosePeriod(event, scheduledAt)
-			if err != nil {
-				return scenarioClosedPeriodConflict{}, false, err
-			}
-			periodEnd, err := scenarioPreflightPeriodEndTime(period)
-			if err != nil {
-				return scenarioClosedPeriodConflict{}, false, err
-			}
-			payerID := state.resolveAccountID(event.PayerAccountID, event.PayerAccount)
-			if conflict, found, err := r.closedPeriodConflictForPlannedUsage(ctx, definition, plannedUsage, event.ID, payerID, periodEnd, period.Start, period.End); err != nil {
-				return scenarioClosedPeriodConflict{}, false, err
-			} else if found {
-				return conflict, true, nil
-			}
+		spec, ok := scenarioEventActionSpecFor(event.Action)
+		if !ok {
+			continue
+		}
+		if conflict, found, err := spec.preflight(ctx, r, &state, &preflight, event, scheduledAt); err != nil {
+			return scenarioClosedPeriodConflict{}, false, err
+		} else if found {
+			return conflict, true, nil
 		}
 	}
 	return scenarioClosedPeriodConflict{}, false, nil

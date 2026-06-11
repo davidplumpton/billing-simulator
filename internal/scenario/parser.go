@@ -376,92 +376,10 @@ func normalizeAndValidate(definition Definition) (Definition, error) {
 }
 
 func normalizeEvent(event Event, index int) Event {
-	event.ID = strings.TrimSpace(event.ID)
-	if event.ID == "" {
-		event.ID = fmt.Sprintf("event-%03d", index+1)
+	event = normalizeEventEnvelope(event, index)
+	if spec, ok := scenarioEventActionSpecFor(event.Action); ok {
+		event = spec.normalize(event)
 	}
-	event.Sequence = index + 1
-	event.At = strings.TrimSpace(event.At)
-	event.Action = EventAction(strings.ToLower(strings.TrimSpace(string(event.Action))))
-	event.Account = strings.TrimSpace(event.Account)
-	event.AccountID = strings.TrimSpace(event.AccountID)
-	event.AccountEmail = strings.TrimSpace(event.AccountEmail)
-	event.OrganizationID = strings.TrimSpace(event.OrganizationID)
-	event.ParentUnitID = strings.TrimSpace(event.ParentUnitID)
-	event.PayerAccount = strings.TrimSpace(event.PayerAccount)
-	event.PayerAccountID = strings.TrimSpace(event.PayerAccountID)
-	event.Service = strings.TrimSpace(event.Service)
-	event.ServiceCode = strings.TrimSpace(event.ServiceCode)
-	event.Resource = strings.TrimSpace(event.Resource)
-	event.ResourceID = strings.TrimSpace(event.ResourceID)
-	event.ResourceType = strings.TrimSpace(event.ResourceType)
-	event.Region = strings.TrimSpace(event.Region)
-	event.Status = strings.TrimSpace(event.Status)
-	event.TagKey = strings.TrimSpace(event.TagKey)
-	event.UsageType = strings.TrimSpace(event.UsageType)
-	event.Operation = strings.TrimSpace(event.Operation)
-	event.UsageStartAt = strings.TrimSpace(event.UsageStartAt)
-	event.UsageEndAt = strings.TrimSpace(event.UsageEndAt)
-	event.Unit = strings.TrimSpace(event.Unit)
-	event.Pattern = strings.TrimSpace(event.Pattern)
-	event.BillingPeriodStart = strings.TrimSpace(event.BillingPeriodStart)
-	event.BillingPeriodEnd = strings.TrimSpace(event.BillingPeriodEnd)
-	event.Category = strings.TrimSpace(event.Category)
-	event.CategoryID = strings.TrimSpace(event.CategoryID)
-	event.DefaultValue = strings.TrimSpace(event.DefaultValue)
-	event.Description = strings.TrimSpace(event.Description)
-	event.Value = strings.TrimSpace(event.Value)
-	event.MatchType = strings.TrimSpace(event.MatchType)
-	event.Dimension = strings.TrimSpace(event.Dimension)
-	event.Operator = strings.TrimSpace(event.Operator)
-	event.ReferencedCategory = strings.TrimSpace(event.ReferencedCategory)
-	event.ReferencedCategoryID = strings.TrimSpace(event.ReferencedCategoryID)
-	event.SourceValue = strings.TrimSpace(event.SourceValue)
-	event.Method = strings.TrimSpace(event.Method)
-	event.InvoiceObligationID = strings.TrimSpace(event.InvoiceObligationID)
-	event.PaymentProfileID = strings.TrimSpace(event.PaymentProfileID)
-	event.PaymentMethodID = strings.TrimSpace(event.PaymentMethodID)
-	event.MethodType = strings.TrimSpace(event.MethodType)
-	event.DisplayName = strings.TrimSpace(event.DisplayName)
-	event.CurrencyCode = strings.ToUpper(strings.TrimSpace(event.CurrencyCode))
-	event.CardBrand = strings.TrimSpace(event.CardBrand)
-	event.AccountLast4 = strings.TrimSpace(event.AccountLast4)
-	event.BankName = strings.TrimSpace(event.BankName)
-	event.RemittanceDestination = strings.TrimSpace(event.RemittanceDestination)
-	event.FailureReason = strings.TrimSpace(event.FailureReason)
-	event.Reason = strings.TrimSpace(event.Reason)
-	event.BudgetID = strings.TrimSpace(event.BudgetID)
-	event.BudgetName = strings.TrimSpace(event.BudgetName)
-	event.ScopeType = strings.TrimSpace(event.ScopeType)
-	event.ScopeKey = strings.TrimSpace(event.ScopeKey)
-	event.ScopeValue = strings.TrimSpace(event.ScopeValue)
-	event.ReportID = strings.TrimSpace(event.ReportID)
-	event.ReportName = strings.TrimSpace(event.ReportName)
-	event.OwnerAccount = strings.TrimSpace(event.OwnerAccount)
-	event.OwnerAccountID = strings.TrimSpace(event.OwnerAccountID)
-	event.OwnerRole = strings.TrimSpace(event.OwnerRole)
-	event.DateRangeStart = strings.TrimSpace(event.DateRangeStart)
-	event.DateRangeEnd = strings.TrimSpace(event.DateRangeEnd)
-	event.Granularity = strings.TrimSpace(event.Granularity)
-	event.ChartType = strings.TrimSpace(event.ChartType)
-	event.Tags = normalizeStringMap(event.Tags)
-	event.Attributes = normalizeStringMap(event.Attributes)
-	event.Filters = normalizeStringListMap(event.Filters)
-	for i := range event.Values {
-		event.Values[i] = strings.TrimSpace(event.Values[i])
-	}
-	for i := range event.Targets {
-		event.Targets[i].Value = strings.TrimSpace(event.Targets[i].Value)
-	}
-	for i := range event.Thresholds {
-		event.Thresholds[i].ID = strings.TrimSpace(event.Thresholds[i].ID)
-		event.Thresholds[i].Type = strings.TrimSpace(event.Thresholds[i].Type)
-	}
-	for i := range event.Groupings {
-		event.Groupings[i].Type = strings.TrimSpace(event.Groupings[i].Type)
-		event.Groupings[i].Key = strings.TrimSpace(event.Groupings[i].Key)
-	}
-	event.Metrics = normalizeStringList(event.Metrics)
 	return event
 }
 
@@ -493,71 +411,17 @@ func normalizeCheck(check Check, index int) Check {
 func validateEvent(event Event, index int, problems *validationProblems) {
 	path := fmt.Sprintf("events[%d]", index)
 	validateEventSchedule(path, event, problems)
-	validateScenarioTagMap(path+".tags", event.Tags, problems)
-	validateStringMap(path+".attributes", event.Attributes, problems)
-	validateOptionalDate(path+".billing_period_start", event.BillingPeriodStart, problems)
-	validateOptionalDate(path+".billing_period_end", event.BillingPeriodEnd, problems)
-	validateOptionalDate(path+".date_range_start", event.DateRangeStart, problems)
-	validateOptionalDate(path+".date_range_end", event.DateRangeEnd, problems)
-	validateOptionalTimestamp(path+".usage_start_at", event.UsageStartAt, problems)
-	validateOptionalTimestamp(path+".usage_end_at", event.UsageEndAt, problems)
-	if event.BillingPeriodStart != "" && event.BillingPeriodEnd == "" {
-		problems.add("%s.billing_period_end is required when billing_period_start is set", path)
-	}
-	if event.BillingPeriodEnd != "" && event.BillingPeriodStart == "" {
-		problems.add("%s.billing_period_start is required when billing_period_end is set", path)
-	}
-	if event.DateRangeStart != "" && event.DateRangeEnd == "" {
-		problems.add("%s.date_range_end is required when date_range_start is set", path)
-	}
-	if event.DateRangeEnd != "" && event.DateRangeStart == "" {
-		problems.add("%s.date_range_start is required when date_range_end is set", path)
-	}
-	validateScenarioUsageWindow(path, event, problems)
 
-	switch event.Action {
-	case "":
+	if event.Action == "" {
 		problems.add("%s.action is required", path)
-	case EventActionCreateAccount:
-		validateCreateAccountEvent(path, event, problems)
-	case EventActionCreateResource:
-		validateCreateResourceEvent(path, event, problems)
-	case EventActionAddUsage:
-		validateAddUsageEvent(path, event, problems)
-	case EventActionGenerateUsage:
-		validateGenerateUsageEvent(path, event, problems)
-	case EventActionAdvanceClock:
-		validateAdvanceClockEvent(path, event, problems)
-	case EventActionRunDailyMetering, EventActionCloseBillingPeriod, EventActionIssueBill:
-		validateBillingEvent(path, event, problems)
-	case EventActionRefreshCostAllocationTags:
-		// The scheduled timestamp is enough; resource tags are discovered from workspace state.
-	case EventActionActivateCostAllocationTag:
-		validateCostAllocationTagEvent(path, event, problems)
-	case EventActionCreateCostCategory:
-		validateCreateCostCategoryEvent(path, event, problems)
-	case EventActionCreateCostCategoryRule:
-		validateCreateCostCategoryRuleEvent(path, event, problems)
-	case EventActionCreateCostCategorySplitRule:
-		validateCreateCostCategorySplitRuleEvent(path, event, problems)
-	case EventActionCreatePaymentMethod:
-		validateCreatePaymentMethodEvent(path, event, problems)
-	case EventActionSchedulePayment,
-		EventActionProcessPayment,
-		EventActionFailPayment,
-		EventActionMarkPaymentDue,
-		EventActionMarkPaymentPastDue,
-		EventActionCollectPayment:
-		validatePaymentLifecycleEvent(path, event, problems)
-	case EventActionCreateBudget:
-		validateCreateBudgetEvent(path, event, problems)
-	case EventActionRefreshBudgetForecasts:
-		// Optional billing_period_start/end narrow the refresh; otherwise the simulator clock drives it.
-	case EventActionCreateSavedReport:
-		validateCreateSavedReportEvent(path, event, problems)
-	default:
-		problems.add("%s.action %q is not supported", path, event.Action)
+		return
 	}
+	spec, ok := scenarioEventActionSpecFor(event.Action)
+	if !ok {
+		problems.add("%s.action %q is not supported", path, event.Action)
+		return
+	}
+	spec.validate(path, event, problems)
 }
 
 func validateEventSchedule(path string, event Event, problems *validationProblems) {
@@ -996,10 +860,11 @@ func validateScenarioSemantics(definition Definition, problems *validationProble
 	createdAccounts := map[string]string{}
 	for i, event := range definition.Events {
 		path := fmt.Sprintf("events[%d]", i)
-		validateScenarioEventAccountReferences(path, definition.OrganizationTemplate, event, createdAccounts, problems)
-		validateScenarioEventService(path, event, problems)
 		validateScenarioEventTimeWindow(path, startTime, hasStart, event, problems)
 		validateScenarioBillingPeriodWindow(path, event, problems)
+		if spec, ok := scenarioEventActionSpecFor(event.Action); ok {
+			spec.validateSemantics(path, definition.OrganizationTemplate, event, createdAccounts, problems)
+		}
 		rememberScenarioCreatedAccount(createdAccounts, event)
 	}
 
@@ -1009,20 +874,6 @@ func validateScenarioSemantics(definition Definition, problems *validationProble
 		validateScenarioAccountReference(path+".payer_account", definition.OrganizationTemplate, check.PayerAccountID, check.PayerAccount, createdAccounts, problems)
 		validateScenarioCheckService(path+".expected_service", check.ExpectedService, problems)
 		validateScenarioCheckService(path+".service", check.Service, problems)
-	}
-}
-
-func validateScenarioEventAccountReferences(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
-	switch event.Action {
-	case EventActionCreateResource, EventActionAddUsage:
-		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, createdAccounts, problems)
-	case EventActionRunDailyMetering, EventActionCloseBillingPeriod, EventActionIssueBill:
-		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
-	case EventActionCreateSavedReport:
-		validateScenarioAccountReference(path+".owner_account", organizationTemplate, event.OwnerAccountID, event.OwnerAccount, createdAccounts, problems)
-	default:
-		validateScenarioAccountReference(path+".account", organizationTemplate, event.AccountID, event.Account, createdAccounts, problems)
-		validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
 	}
 }
 
@@ -1056,11 +907,6 @@ func rememberScenarioCreatedAccount(createdAccounts map[string]string, event Eve
 }
 
 func validateScenarioEventService(path string, event Event, problems *validationProblems) {
-	switch event.Action {
-	case EventActionCreateResource, EventActionAddUsage:
-	default:
-		return
-	}
 	if event.Service == "" && event.ServiceCode == "" {
 		return
 	}

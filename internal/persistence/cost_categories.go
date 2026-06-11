@@ -1076,7 +1076,7 @@ func scanCostCategory(row costCategoryRow) (CostCategory, error) {
 		&category.UpdatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return CostCategory{}, fmt.Errorf("cost category not found")
+			return CostCategory{}, domainErrorf(ErrCostCategoryNotFound, "cost category not found")
 		}
 		return CostCategory{}, fmt.Errorf("scan cost category: %w", err)
 	}
@@ -1097,7 +1097,7 @@ func scanCostCategoryRule(row costCategoryRow) (CostCategoryRule, error) {
 		&rule.UpdatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return CostCategoryRule{}, fmt.Errorf("cost category rule not found")
+			return CostCategoryRule{}, domainErrorf(ErrCostCategoryRuleNotFound, "cost category rule not found")
 		}
 		return CostCategoryRule{}, fmt.Errorf("scan cost category rule: %w", err)
 	}
@@ -1173,7 +1173,7 @@ func resolveCostCategoryID(ctx context.Context, q costCategoryQueryable, id, nam
 	case id != "":
 		if err := q.QueryRowContext(ctx, `SELECT id, name FROM cost_categories WHERE id = ?`, id).Scan(&resolvedID, &resolvedName); err != nil {
 			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("cost category %q does not exist", id)
+				return "", domainErrorf(ErrCostCategoryNotFound, "cost category %q does not exist", id)
 			}
 			return "", fmt.Errorf("resolve cost category %q: %w", id, err)
 		}
@@ -1183,7 +1183,7 @@ func resolveCostCategoryID(ctx context.Context, q costCategoryQueryable, id, nam
 	default:
 		if err := q.QueryRowContext(ctx, `SELECT id, name FROM cost_categories WHERE lower(name) = lower(?)`, name).Scan(&resolvedID, &resolvedName); err != nil {
 			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("cost category %q does not exist", name)
+				return "", domainErrorf(ErrCostCategoryNotFound, "cost category %q does not exist", name)
 			}
 			return "", fmt.Errorf("resolve cost category %q: %w", name, err)
 		}

@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -442,6 +443,9 @@ func upsertSupportBillLineItem(ctx context.Context, tx supportChargeStore, item 
 		tagSnapshotJSON,
 		item.Description,
 	); err != nil {
+		if closedErr := closedBillingPeriodMutationError(ctx, tx, item.BillingPeriodStart, item.BillingPeriodEnd, item.PayerAccountID, err); errors.Is(closedErr, ErrClosedBillingPeriod) {
+			return false, closedErr
+		}
 		return false, fmt.Errorf("upsert support bill line item %q: %w", item.ID, err)
 	}
 	return !exists, nil
@@ -525,14 +529,49 @@ func deleteStaleSupportCharges(ctx context.Context, tx supportChargeStore, reque
 	}
 
 	for _, id := range ids {
+		periodStart, periodEnd, payerAccountID := request.PeriodStart, request.PeriodEnd, request.PayerAccountID
+		if strings.TrimSpace(payerAccountID) == "" {
+			itemPeriodStart, itemPeriodEnd, itemPayerAccountID, err := billLineItemBillingPeriodRef(ctx, tx, id)
+			if err != nil {
+				return 0, err
+			}
+			periodStart = itemPeriodStart
+			periodEnd = itemPeriodEnd
+			payerAccountID = itemPayerAccountID
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM support_charge_sources WHERE support_bill_line_item_id = ?`, id); err != nil {
+			if closedErr := closedBillingPeriodMutationError(ctx, tx, periodStart, periodEnd, payerAccountID, err); errors.Is(closedErr, ErrClosedBillingPeriod) {
+				return 0, closedErr
+			}
 			return 0, fmt.Errorf("delete stale support charge sources for %q: %w", id, err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM bill_line_items WHERE id = ?`, id); err != nil {
+			if closedErr := closedBillingPeriodMutationError(ctx, tx, periodStart, periodEnd, payerAccountID, err); errors.Is(closedErr, ErrClosedBillingPeriod) {
+				return 0, closedErr
+			}
 			return 0, fmt.Errorf("delete stale support charge %q: %w", id, err)
 		}
 	}
 	return len(ids), nil
+}
+
+// billLineItemBillingPeriodRef returns the close-table keys for classifying protected mutations.
+func billLineItemBillingPeriodRef(ctx context.Context, q supportChargeStore, id string) (string, string, string, error) {
+	var periodStart, periodEnd, payerAccountID string
+	err := q.QueryRowContext(
+		ctx,
+		`SELECT billing_period_start, billing_period_end, payer_account_id
+		 FROM bill_line_items
+		 WHERE id = ?`,
+		id,
+	).Scan(&periodStart, &periodEnd, &payerAccountID)
+	if err == nil {
+		return periodStart, periodEnd, payerAccountID, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", fmt.Errorf("bill line item %q not found", id)
+	}
+	return "", "", "", fmt.Errorf("read bill line item %q billing period: %w", id, err)
 }
 
 func normalizeSupportChargeGenerationRequest(request SupportChargeGenerationRequest) SupportChargeGenerationRequest {

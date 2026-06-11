@@ -547,6 +547,9 @@ func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (boo
 		item.Description,
 	)
 	if err != nil {
+		if closedErr := closedBillingPeriodMutationError(ctx, tx, item.BillingPeriodStart, item.BillingPeriodEnd, item.PayerAccountID, err); errors.Is(closedErr, ErrClosedBillingPeriod) {
+			return false, closedErr
+		}
 		return false, fmt.Errorf("insert bill line item for metering record %q: %w", item.MeteringRecordID, err)
 	}
 	rowsAffected, err := result.RowsAffected()

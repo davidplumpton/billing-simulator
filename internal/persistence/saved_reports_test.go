@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -144,8 +145,46 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 	if err := repo.Delete(ctx, report.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
-	if _, err := repo.Get(ctx, report.ID); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("Get(deleted) error = %v, want not found", err)
+	if _, err := repo.Get(ctx, report.ID); !errors.Is(err, ErrSavedReportNotFound) || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Get(deleted) error = %v, want ErrSavedReportNotFound with compatible message", err)
+	}
+}
+
+func TestSavedReportRepositoryReturnsSentinelNotFoundErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewSavedReportRepository(db)
+
+	if _, err := repo.Get(ctx, "missing-report"); !errors.Is(err, ErrSavedReportNotFound) {
+		t.Fatalf("Get(missing) error = %v, want ErrSavedReportNotFound", err)
+	}
+	if _, err := repo.GetForOwner(ctx, "missing-report", "999988887777", "finance"); !errors.Is(err, ErrSavedReportNotFound) {
+		t.Fatalf("GetForOwner(missing) error = %v, want ErrSavedReportNotFound", err)
+	}
+	if _, err := repo.GetByName(ctx, "999988887777", "finance", "Missing report"); !errors.Is(err, ErrSavedReportNotFound) {
+		t.Fatalf("GetByName(missing) error = %v, want ErrSavedReportNotFound", err)
+	}
+	if _, err := repo.Update(ctx, SavedReportUpdateRequest{
+		ID:             "missing-report",
+		Name:           "Missing report",
+		OwnerAccountID: "999988887777",
+		OwnerRole:      "finance",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+	}); !errors.Is(err, ErrSavedReportNotFound) {
+		t.Fatalf("Update(missing) error = %v, want ErrSavedReportNotFound", err)
+	}
+	if _, err := repo.RecordLastRun(ctx, SavedReportRunUpdate{
+		ID:     "missing-report",
+		RunAt:  "2026-02-01T00:00:00Z",
+		Status: savedReportStatusSucceeded,
+	}); !errors.Is(err, ErrSavedReportNotFound) {
+		t.Fatalf("RecordLastRun(missing) error = %v, want ErrSavedReportNotFound", err)
+	}
+	if err := repo.Delete(ctx, "missing-report"); !errors.Is(err, ErrSavedReportNotFound) {
+		t.Fatalf("Delete(missing) error = %v, want ErrSavedReportNotFound", err)
 	}
 }
 

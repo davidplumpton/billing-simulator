@@ -3,11 +3,30 @@ package scenario
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"aws-billing-simulator/internal/persistence"
 )
+
+func TestRunnerErrorClassificationUsesDomainSentinels(t *testing.T) {
+	t.Parallel()
+
+	if !isClosedPeriodPricingFailure(fmt.Errorf("daily metering failed: %w", persistence.ErrClosedBillingPeriod)) {
+		t.Fatal("isClosedPeriodPricingFailure(wrapped sentinel) = false, want true")
+	}
+	if isClosedPeriodPricingFailure(errors.New("billing period is closed for payer")) {
+		t.Fatal("isClosedPeriodPricingFailure(raw trigger text) = true, want false")
+	}
+	if !isMissingCostCategory(fmt.Errorf("load category: %w", persistence.ErrCostCategoryNotFound)) {
+		t.Fatal("isMissingCostCategory(wrapped sentinel) = false, want true")
+	}
+	if isMissingCostCategory(errors.New("cost category not found")) {
+		t.Fatal("isMissingCostCategory(plain text) = true, want false")
+	}
+}
 
 func TestRunnerAppliesScenarioEventsDeterministically(t *testing.T) {
 	t.Parallel()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -242,7 +243,7 @@ func (r SavedReportRepository) Update(ctx context.Context, request SavedReportUp
 		return SavedReport{}, fmt.Errorf("read saved report update result for %q: %w", request.ID, err)
 	}
 	if affected == 0 {
-		return SavedReport{}, fmt.Errorf("saved report %q not found", request.ID)
+		return SavedReport{}, domainErrorf(ErrSavedReportNotFound, "saved report %q not found", request.ID)
 	}
 	return r.Get(ctx, request.ID)
 }
@@ -286,7 +287,7 @@ func (r SavedReportRepository) RecordLastRun(ctx context.Context, request SavedR
 		return SavedReport{}, fmt.Errorf("read saved report run update result for %q: %w", request.ID, err)
 	}
 	if affected == 0 {
-		return SavedReport{}, fmt.Errorf("saved report %q not found", request.ID)
+		return SavedReport{}, domainErrorf(ErrSavedReportNotFound, "saved report %q not found", request.ID)
 	}
 	return r.Get(ctx, request.ID)
 }
@@ -304,8 +305,8 @@ func (r SavedReportRepository) Get(ctx context.Context, id string) (SavedReport,
 	row := r.db.QueryRowContext(ctx, savedReportSelectSQL+` WHERE id = ?`, id)
 	report, err := scanSavedReport(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return SavedReport{}, fmt.Errorf("saved report %q not found", id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return SavedReport{}, domainErrorf(ErrSavedReportNotFound, "saved report %q not found", id)
 		}
 		return SavedReport{}, fmt.Errorf("get saved report %q: %w", id, err)
 	}
@@ -342,8 +343,8 @@ func (r SavedReportRepository) GetForOwner(ctx context.Context, id, ownerAccount
 	)
 	report, err := scanSavedReport(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return SavedReport{}, fmt.Errorf("saved report %q not found for owner %q/%q", id, ownerRole, ownerAccountID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return SavedReport{}, domainErrorf(ErrSavedReportNotFound, "saved report %q not found for owner %q/%q", id, ownerRole, ownerAccountID)
 		}
 		return SavedReport{}, fmt.Errorf("get saved report %q for owner %q/%q: %w", id, ownerRole, ownerAccountID, err)
 	}
@@ -380,8 +381,8 @@ func (r SavedReportRepository) GetByName(ctx context.Context, ownerAccountID, ow
 	)
 	report, err := scanSavedReport(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return SavedReport{}, fmt.Errorf("saved report %q for owner %q/%q not found", name, ownerRole, ownerAccountID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return SavedReport{}, domainErrorf(ErrSavedReportNotFound, "saved report %q for owner %q/%q not found", name, ownerRole, ownerAccountID)
 		}
 		return SavedReport{}, fmt.Errorf("get saved report %q for owner %q/%q: %w", name, ownerRole, ownerAccountID, err)
 	}
@@ -463,7 +464,7 @@ func (r SavedReportRepository) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("read saved report delete result for %q: %w", id, err)
 	}
 	if affected == 0 {
-		return fmt.Errorf("saved report %q not found", id)
+		return domainErrorf(ErrSavedReportNotFound, "saved report %q not found", id)
 	}
 	return nil
 }

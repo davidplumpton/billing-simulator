@@ -65,6 +65,36 @@ func TestEvaluatorEvaluatesTagActivationCheck(t *testing.T) {
 	requireAllScenarioChecksPassed(t, result)
 }
 
+func TestEvaluatorReportsMissingCostCategoryRuleCheckAsFailedEvidence(t *testing.T) {
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition := parseScenarioDefinitionForTest(t, `{
+		"name": "Missing Cost Category check",
+		"clock": {"start": "2026-02-01"},
+		"organization_template": "anycompany-retail",
+		"checks": [
+			{
+				"id": "check-missing-category",
+				"type": "cost_category_rule_created",
+				"category": "Missing Category",
+				"value": "Storefront"
+			}
+		]
+	}`)
+
+	result, err := NewEvaluator(db).Evaluate(ctx, definition)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result.ChecksTotal != 1 || result.ChecksPassed != 0 || result.ChecksFailed != 1 {
+		t.Fatalf("Evaluate() = %+v, want one failed missing-category check", result)
+	}
+	if result.Results[0].Passed || result.Results[0].Actual != "not found" ||
+		!strings.Contains(result.Results[0].Message, `cost category "Missing Category" was not found`) {
+		t.Fatalf("missing category check = %+v, want failed not-found evidence", result.Results[0])
+	}
+}
+
 func TestEvaluatorScopesSavedReportExistsByOwnerRole(t *testing.T) {
 	ctx := context.Background()
 	db := openScenarioTestWorkspace(t)

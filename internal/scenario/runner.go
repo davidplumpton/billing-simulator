@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -590,7 +591,7 @@ func (r Runner) billingPeriodClosed(ctx context.Context, periodStart, periodEnd,
 	if err == nil {
 		return true, nil
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return false, fmt.Errorf("check closed billing period %s to %s payer %s: %w", periodStart, periodEnd, payerAccountID, err)
@@ -639,14 +640,18 @@ func (r Runner) closedPeriodConflictForUnpricedMetering(ctx context.Context, eve
 		conflict.EventID = eventID
 		return conflict, true, nil
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return scenarioClosedPeriodConflict{}, false, nil
 	}
 	return scenarioClosedPeriodConflict{}, false, fmt.Errorf("find closed-period pricing conflict: %w", err)
 }
 
 func isClosedPeriodPricingFailure(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "billing period is closed for payer")
+	return errors.Is(err, persistence.ErrClosedBillingPeriod)
+}
+
+func isMissingCostCategory(err error) bool {
+	return errors.Is(err, persistence.ErrCostCategoryNotFound)
 }
 
 // createBudget prepares a budget lab guardrail and reuses matching rows so scenario reruns stay executable.
@@ -759,7 +764,7 @@ func (r Runner) existingScenarioBudget(ctx context.Context, event Event) (persis
 			event.BudgetName,
 		).Scan(&id)
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return persistence.Budget{}, false, nil
 	}
 	if err != nil {
@@ -788,7 +793,7 @@ func (r Runner) existingScenarioSavedReport(ctx context.Context, request persist
 			request.Name,
 		).Scan(&id)
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return persistence.SavedReport{}, false, nil
 	}
 	if err != nil {
@@ -933,7 +938,7 @@ func (r Runner) createCostCategory(ctx context.Context, state *scenarioExecution
 			return persistence.CostCategory{}, refreshErr
 		}
 		return existing, nil
-	} else if !strings.Contains(err.Error(), "not found") {
+	} else if !isMissingCostCategory(err) {
 		return persistence.CostCategory{}, err
 	}
 
@@ -1247,7 +1252,7 @@ func (r Runner) scenarioRunExists(ctx context.Context, runID string) (bool, erro
 	if err == nil {
 		return true, nil
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return false, fmt.Errorf("check scenario run %q: %w", runID, err)

@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -154,7 +155,7 @@ func (e Evaluator) evaluateSavedReportExists(ctx context.Context, definition Def
 		args...,
 	).Scan(&reportID, &ownerID, &ownerRole)
 	evaluation := baseCheckEvaluation(check, check.ReportName)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		evaluation.Actual = "not found"
 		evaluation.Message = fmt.Sprintf("saved report %q was not found", check.ReportName)
 		return finishCheckEvaluation(evaluation, false), nil
@@ -247,7 +248,7 @@ func (e Evaluator) evaluateCostCategoryRuleCreated(ctx context.Context, definiti
 	}
 	category, err := e.categories.GetCategoryByName(ctx, check.Category)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no rows") {
+		if isMissingCostCategory(err) {
 			evaluation := baseCheckEvaluation(check, check.Category)
 			evaluation.Actual = "not found"
 			evaluation.Message = fmt.Sprintf("cost category %q was not found", check.Category)
@@ -373,7 +374,7 @@ func (e Evaluator) resolveAccountID(ctx context.Context, definition Definition, 
 		 LIMIT 1`,
 		args...,
 	).Scan(&accountID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("scenario check account %q was not found", name)
 	}
 	if err != nil {

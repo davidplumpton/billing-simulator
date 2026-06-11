@@ -415,7 +415,7 @@ func (r CostCategorySplitChargeRepository) CompareAllocations(ctx context.Contex
 		request.CostCategoryID,
 	).Scan(&comparison.CostCategoryName); err != nil {
 		if err == sql.ErrNoRows {
-			return CostCategorySplitChargeComparison{}, fmt.Errorf("cost category %q not found", request.CostCategoryID)
+			return CostCategorySplitChargeComparison{}, domainErrorf(ErrCostCategoryNotFound, "cost category %q not found", request.CostCategoryID)
 		}
 		return CostCategorySplitChargeComparison{}, fmt.Errorf("read cost category for split comparison: %w", err)
 	}
@@ -1073,7 +1073,7 @@ func scanCostCategorySplitChargeRule(row costCategoryRow) (CostCategorySplitChar
 		&rule.UpdatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return CostCategorySplitChargeRule{}, fmt.Errorf("cost category split charge rule not found")
+			return CostCategorySplitChargeRule{}, domainErrorf(ErrCostCategoryRuleNotFound, "cost category split charge rule not found")
 		}
 		return CostCategorySplitChargeRule{}, fmt.Errorf("scan cost category split charge rule: %w", err)
 	}

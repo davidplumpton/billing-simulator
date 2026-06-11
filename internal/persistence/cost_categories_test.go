@@ -3,9 +3,28 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestCostCategoryRepositoryReturnsSentinelNotFoundErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewCostCategoryRepository(db)
+
+	if _, err := repo.GetCategory(ctx, "missing-category"); !errors.Is(err, ErrCostCategoryNotFound) {
+		t.Fatalf("GetCategory(missing) error = %v, want ErrCostCategoryNotFound", err)
+	}
+	if _, err := repo.GetCategoryByName(ctx, "Missing Category"); !errors.Is(err, ErrCostCategoryNotFound) {
+		t.Fatalf("GetCategoryByName(missing) error = %v, want ErrCostCategoryNotFound", err)
+	}
+	if _, err := repo.GetRule(ctx, "missing-rule"); !errors.Is(err, ErrCostCategoryRuleNotFound) {
+		t.Fatalf("GetRule(missing) error = %v, want ErrCostCategoryRuleNotFound", err)
+	}
+}
 
 func TestCostCategoryRepositoryCreatesOrderedRuleModel(t *testing.T) {
 	t.Parallel()

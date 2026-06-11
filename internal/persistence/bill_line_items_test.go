@@ -105,6 +105,88 @@ func TestBillLineItemRepositoryGeneratesPricedUsageLineItems(t *testing.T) {
 	}
 }
 
+func TestBillLineItemRepositoryReturnsClosedBillingPeriodSentinel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	clockRepo := NewSimulatorClockRepository(db)
+
+	initialResource, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-bill-line-closed-initial",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonEC2,
+		ResourceType: "ec2_instance",
+		ResourceName: "Initial closed-period web",
+		Status:       "active",
+		StartedAt:    "2026-02-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource(initial) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-bill-line-closed-initial",
+		ResourceID:          initialResource.ID,
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T01:00:00Z",
+		UsageQuantityMicros: 1_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(initial) error = %v", err)
+	}
+	if _, err := clockRepo.Set(ctx, "2026-03-01T00:00:00Z"); err != nil {
+		t.Fatalf("Set(clock) error = %v", err)
+	}
+	if _, err := NewMonthEndCloseRepository(db).ClosePreviousPeriod(ctx, MonthEndCloseRequest{
+		PayerAccountID: "999988887777",
+	}); err != nil {
+		t.Fatalf("ClosePreviousPeriod() error = %v", err)
+	}
+
+	lateResource, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-bill-line-closed-late",
+		AccountID:    "111122223333",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonEC2,
+		ResourceType: "ec2_instance",
+		ResourceName: "Late closed-period web",
+		Status:       "active",
+		StartedAt:    "2026-02-02T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource(late) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-bill-line-closed-late",
+		ResourceID:          lateResource.ID,
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		UsageStartTime:      "2026-02-02T00:00:00Z",
+		UsageEndTime:        "2026-02-02T01:00:00Z",
+		UsageQuantityMicros: 1_000_000,
+		UsageUnit:           "Hours",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(late) error = %v", err)
+	}
+	if _, err := NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords(late) error = %v", err)
+	}
+
+	_, err = NewBillLineItemRepository(db).GenerateBillLineItems(ctx, BillLineItemGenerationRequest{
+		PayerAccountID: "999988887777",
+	})
+	if !errors.Is(err, ErrClosedBillingPeriod) {
+		t.Fatalf("GenerateBillLineItems(closed period) error = %v, want ErrClosedBillingPeriod", err)
+	}
+	if strings.Contains(err.Error(), "billing period is closed for payer") {
+		t.Fatalf("GenerateBillLineItems(closed period) error = %q, should not depend on raw trigger text", err.Error())
+	}
+}
+
 func TestBillLineItemRepositoryIsIdempotent(t *testing.T) {
 	t.Parallel()
 

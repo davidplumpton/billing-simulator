@@ -1,5 +1,11 @@
 # AWS Billing Simulator
 
+## Concept
+
+While doing some AWS Solutions Architecture training I noticed there were some questions about account structures, consolidated billing, and so forth. Nobody at a company ever seems to want to give people corporate credit cards or management account access. So I came up with the vague idea of vibe-coding a simulation of such things. Of course one of the fundamental problems is that I have little idea how accurate this simulation is, since I've never experienced the real thing.
+
+Now back to the AI...
+
 AWS Billing Simulator is a local-first training environment for learning AWS billing, cost allocation, consolidated billing, invoice, and FinOps workflows without using real AWS accounts, credentials, payment methods, or spend.
 
 AWS and Amazon Web Services are trademarks of Amazon.com, Inc. or its affiliates. This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services.

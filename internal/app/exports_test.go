@@ -1055,6 +1055,16 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST /exports/generate-cur member cross-account status = %d, want %d; body=%s", resp.StatusCode, http.StatusForbidden, body)
 	}
+	for _, want := range []string{
+		`<option value="member-account" selected>Member</option>`,
+		`name="viewer_account_id" value="111122223333"`,
+		`name="usage_account_id" value="444455556666"`,
+		`href="/bills?viewer_account_id=111122223333&amp;viewer_role=member-account"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST /exports/generate-cur member cross-account error body missing preserved viewer context %q: %s", want, body)
+		}
+	}
 
 	memberListQuery := url.Values{
 		"viewer_role":       {"member-account"},

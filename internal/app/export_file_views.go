@@ -3,22 +3,26 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"aws-billing-simulator/internal/persistence"
 )
 
 func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
-	query := r.URL.Query()
+	return exportFileFilterFromValues(r.URL.Query())
+}
+
+func exportFileFilterFromValues(values url.Values) exportFileFilterView {
 	filter := exportFileFilterView{
-		ExportType:         query.Get("export_type"),
-		BillingPeriodStart: query.Get("billing_period_start"),
-		BillingPeriodEnd:   query.Get("billing_period_end"),
-		PayerAccountID:     query.Get("payer_account_id"),
-		UsageAccountID:     query.Get("usage_account_id"),
-		ViewerRole:         query.Get("viewer_role"),
-		ViewerAccountID:    query.Get("viewer_account_id"),
-		Limit:              query.Get("limit"),
+		ExportType:         values.Get("export_type"),
+		BillingPeriodStart: values.Get("billing_period_start"),
+		BillingPeriodEnd:   values.Get("billing_period_end"),
+		PayerAccountID:     values.Get("payer_account_id"),
+		UsageAccountID:     values.Get("usage_account_id"),
+		ViewerRole:         values.Get("viewer_role"),
+		ViewerAccountID:    values.Get("viewer_account_id"),
+		Limit:              values.Get("limit"),
 		ApplyButton:        uiSubmitButton("Apply"),
 		ClearPath:          "/exports",
 	}
@@ -37,16 +41,19 @@ func exportFileFilterFromRequest(r *http.Request) exportFileFilterView {
 }
 
 func curCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
-	query := r.URL.Query()
+	return curCSVGenerationFormFromValues(r.URL.Query())
+}
+
+func curCSVGenerationFormFromValues(values url.Values) curCSVGenerationFormView {
 	form := curCSVGenerationFormView{
-		BillingPeriodStart: query.Get("billing_period_start"),
-		BillingPeriodEnd:   query.Get("billing_period_end"),
-		PayerAccountID:     query.Get("payer_account_id"),
-		UsageAccountID:     query.Get("usage_account_id"),
-		ViewerRole:         query.Get("viewer_role"),
-		ViewerAccountID:    query.Get("viewer_account_id"),
-		LineItemStatus:     query.Get("line_item_status"),
-		Limit:              query.Get("limit"),
+		BillingPeriodStart: values.Get("billing_period_start"),
+		BillingPeriodEnd:   values.Get("billing_period_end"),
+		PayerAccountID:     values.Get("payer_account_id"),
+		UsageAccountID:     values.Get("usage_account_id"),
+		ViewerRole:         values.Get("viewer_role"),
+		ViewerAccountID:    values.Get("viewer_account_id"),
+		LineItemStatus:     values.Get("line_item_status"),
+		Limit:              values.Get("limit"),
 		GenerateButton:     uiSubmitButton("Generate CUR Export"),
 	}
 	form.ViewerRoleField = viewerRoleSelectField(form.ViewerRole, "Default viewer")
@@ -56,7 +63,11 @@ func curCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
 }
 
 func focusCSVGenerationFormFromRequest(r *http.Request) curCSVGenerationFormView {
-	form := curCSVGenerationFormFromRequest(r)
+	return focusCSVGenerationFormFromValues(r.URL.Query())
+}
+
+func focusCSVGenerationFormFromValues(values url.Values) curCSVGenerationFormView {
+	form := curCSVGenerationFormFromValues(values)
 	form.GenerateButton = uiSubmitButton("Generate FOCUS Export")
 	return form
 }

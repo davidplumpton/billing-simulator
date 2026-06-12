@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -281,7 +282,7 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 	filename := strings.TrimSpace(r.PostForm.Get("filename"))
 	policy, err := h.exportPolicyFromValues(r.Context(), r.PostForm)
 	if err != nil {
-		h.renderExports(w, r, exportHTTPStatus(err), "regenerate export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportHTTPStatus(err), "regenerate export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	file, err := h.exportFiles.GetByFilename(r.Context(), filename)
@@ -290,16 +291,16 @@ func (h exportsHandler) handleRegenerateExport(w http.ResponseWriter, r *http.Re
 		if errors.Is(err, sql.ErrNoRows) {
 			status = http.StatusNotFound
 		}
-		h.renderExports(w, r, status, "regenerate export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, status, "regenerate export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	if err := ensureExportFileVisibleToPolicy(policy, file); err != nil {
-		h.renderExports(w, r, http.StatusForbidden, "regenerate export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, http.StatusForbidden, "regenerate export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	record, result, err := h.regenerateExportFile(r.Context(), file, policy)
 	if err != nil {
-		h.renderExports(w, r, exportGenerationHTTPStatus(err), "regenerate export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportGenerationHTTPStatus(err), "regenerate export: "+err.Error(), "", r.PostForm)
 		return
 	}
 
@@ -328,23 +329,23 @@ func (h exportsHandler) handleGenerateCURCSVExport(w http.ResponseWriter, r *htt
 
 	request, err := curCSVExportRequestFromForm(r)
 	if err != nil {
-		h.renderExports(w, r, http.StatusBadRequest, "generate CUR export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, http.StatusBadRequest, "generate CUR export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	policy, err := h.exportPolicyFromValues(r.Context(), r.PostForm)
 	if err != nil {
-		h.renderExports(w, r, exportHTTPStatus(err), "generate CUR export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportHTTPStatus(err), "generate CUR export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
 	if err != nil {
-		h.renderExports(w, r, exportHTTPStatus(err), "generate CUR export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportHTTPStatus(err), "generate CUR export: "+err.Error(), "", r.PostForm)
 		return
 	}
 
 	record, result, err := h.persistCURCSVExportFile(r.Context(), request)
 	if err != nil {
-		h.renderExports(w, r, exportGenerationHTTPStatus(err), "generate CUR export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportGenerationHTTPStatus(err), "generate CUR export: "+err.Error(), "", r.PostForm)
 		return
 	}
 
@@ -373,23 +374,23 @@ func (h exportsHandler) handleGenerateFOCUSCSVExport(w http.ResponseWriter, r *h
 
 	request, err := curCSVExportRequestFromForm(r)
 	if err != nil {
-		h.renderExports(w, r, http.StatusBadRequest, "generate FOCUS export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, http.StatusBadRequest, "generate FOCUS export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	policy, err := h.exportPolicyFromValues(r.Context(), r.PostForm)
 	if err != nil {
-		h.renderExports(w, r, exportHTTPStatus(err), "generate FOCUS export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportHTTPStatus(err), "generate FOCUS export: "+err.Error(), "", r.PostForm)
 		return
 	}
 	request, err = h.scopedCURCSVExportRequest(r.Context(), request, policy)
 	if err != nil {
-		h.renderExports(w, r, exportHTTPStatus(err), "generate FOCUS export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportHTTPStatus(err), "generate FOCUS export: "+err.Error(), "", r.PostForm)
 		return
 	}
 
 	record, result, err := h.persistFOCUSCSVExportFile(r.Context(), request)
 	if err != nil {
-		h.renderExports(w, r, exportGenerationHTTPStatus(err), "generate FOCUS export: "+err.Error(), "")
+		h.renderExportsForValues(w, r, exportGenerationHTTPStatus(err), "generate FOCUS export: "+err.Error(), "", r.PostForm)
 		return
 	}
 
@@ -398,15 +399,19 @@ func (h exportsHandler) handleGenerateFOCUSCSVExport(w http.ResponseWriter, r *h
 }
 
 func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
-	viewer := exportViewerFieldsFromValues(r.URL.Query())
+	h.renderExportsForValues(w, r, status, errorMessage, flashMessage, r.URL.Query())
+}
+
+func (h exportsHandler) renderExportsForValues(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string, values url.Values) {
+	viewer := exportViewerFieldsFromValues(values)
 	data := exportsPageData{
 		WorkspaceReady:      h.db != nil,
 		Error:               errorMessage,
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
 		Actions:             uiActionBar(uiActionLink("Query Lab", "/query-lab"), uiActionLink("Reconciliation", curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{}, viewer)), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
-		Filters:             exportFileFilterFromRequest(r),
-		GenerateCURCSV:      curCSVGenerationFormFromRequest(r),
-		GenerateFOCUSCSV:    focusCSVGenerationFormFromRequest(r),
+		Filters:             exportFileFilterFromValues(values),
+		GenerateCURCSV:      curCSVGenerationFormFromValues(values),
+		GenerateFOCUSCSV:    focusCSVGenerationFormFromValues(values),
 		Tables:              exportsTablesView{Files: exportFilesTable()},
 	}
 	if h.db != nil && data.Error == "" {
@@ -415,7 +420,7 @@ func (h exportsHandler) renderExports(w http.ResponseWriter, r *http.Request, st
 			status = http.StatusBadRequest
 			data.Error = "list exports: " + err.Error()
 		} else {
-			policy, err := h.exportPolicyFromValues(r.Context(), r.URL.Query())
+			policy, err := h.exportPolicyFromValues(r.Context(), values)
 			if err != nil {
 				status = exportHTTPStatus(err)
 				data.Error = "list exports: " + err.Error()

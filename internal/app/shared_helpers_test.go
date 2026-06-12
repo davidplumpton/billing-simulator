@@ -270,6 +270,63 @@ func TestSharedViewerPolicyResolverPreservesWorkflowDenials(t *testing.T) {
 	}
 }
 
+func TestExportStoredFileVisibilityRequiresGeneratedScope(t *testing.T) {
+	t.Parallel()
+
+	memberPolicy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:      billingvisibility.RoleMemberAccount,
+		AccountID: "111122223333",
+	})
+	if err != nil {
+		t.Fatalf("PolicyForViewer(member) error = %v", err)
+	}
+	managementPolicy, err := billingvisibility.PolicyForViewer(billingvisibility.Viewer{
+		Role:      billingvisibility.RoleManagementAccount,
+		AccountID: persistence.AnyCompanyRetailManagementAccountID,
+	})
+	if err != nil {
+		t.Fatalf("PolicyForViewer(management) error = %v", err)
+	}
+
+	memberScoped := persistence.ExportFile{
+		Filename:       "member-cur.csv",
+		ExportType:     persistence.ExportFileTypeCURCSV,
+		PayerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		UsageAccountID: "111122223333",
+		GenerationParameters: map[string]string{
+			exportVisibilityScopeKey:           exportVisibilityScopeUsageAccount,
+			exportVisibilityAccountIDParameter: "111122223333",
+		},
+	}
+	if err := ensureExportFileVisibleToPolicy(memberPolicy, memberScoped); err != nil {
+		t.Fatalf("ensureExportFileVisibleToPolicy(member scoped) error = %v", err)
+	}
+
+	rowFilteredOnly := memberScoped
+	rowFilteredOnly.Filename = "row-filtered-cur.csv"
+	rowFilteredOnly.GenerationParameters = map[string]string{}
+	if err := ensureExportFileVisibleToPolicy(memberPolicy, rowFilteredOnly); err == nil ||
+		!strings.Contains(err.Error(), "generated outside usage account scope") {
+		t.Fatalf("ensureExportFileVisibleToPolicy(row-filtered only) error = %v, want generated-scope denial", err)
+	}
+
+	allAccount := persistence.ExportFile{
+		Filename:       "all-account-cur.csv",
+		ExportType:     persistence.ExportFileTypeCURCSV,
+		PayerAccountID: persistence.AnyCompanyRetailManagementAccountID,
+		GenerationParameters: map[string]string{
+			exportVisibilityScopeKey: exportVisibilityScopeAllAccounts,
+		},
+	}
+	if err := ensureExportFileVisibleToPolicy(memberPolicy, allAccount); err == nil ||
+		!strings.Contains(err.Error(), "all-account exports") {
+		t.Fatalf("ensureExportFileVisibleToPolicy(member all-account) error = %v, want all-account denial", err)
+	}
+	if err := ensureExportFileVisibleToPolicy(managementPolicy, allAccount); err != nil {
+		t.Fatalf("ensureExportFileVisibleToPolicy(management all-account) error = %v", err)
+	}
+}
+
 func TestExportPathHelpersPreserveRequestAndViewerScope(t *testing.T) {
 	t.Parallel()
 

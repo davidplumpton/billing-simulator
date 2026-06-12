@@ -5,11 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -164,12 +162,7 @@ func (h paymentsHandler) handlePaymentAction(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	viewer := exportViewerFieldsFromValues(r.PostForm)
-	policy, err := h.paymentPolicyFromValues(r.Context(), r.PostForm)
-	if err != nil {
-		h.renderPaymentsForValues(w, r, paymentHTTPStatus(err), "payment action: "+err.Error(), "", r.PostForm)
-		return
-	}
-	flash, err := h.applyPaymentAction(r.Context(), r, policy)
+	flash, err := paymentActionRunnerFromHandler(h).Apply(r.Context(), r.PostForm)
 	if err != nil {
 		h.renderPaymentsForValues(w, r, paymentHTTPStatus(err), err.Error(), "", r.PostForm)
 		return
@@ -278,147 +271,13 @@ func (h paymentsHandler) loadPaymentsPageData(ctx context.Context, data *payment
 	return nil
 }
 
-func (h paymentsHandler) applyPaymentAction(ctx context.Context, r *http.Request, policy billingvisibility.Policy) (string, error) {
-	action := strings.TrimSpace(r.PostForm.Get("action"))
-	switch action {
-	case "schedule":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, false)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.SchedulePayment(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Scheduled payment for " + result.Obligation.InvoiceID, nil
-	case "process":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, false)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.StartProcessing(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Started payment processing for " + result.Obligation.InvoiceID, nil
-	case "fail":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, false)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.FailPayment(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Recorded failed payment for " + result.Obligation.InvoiceID, nil
-	case "mark_due":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, false)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.MarkDue(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Marked " + result.Obligation.InvoiceID + " due", nil
-	case "mark_past_due":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, false)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.MarkPastDue(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Marked " + result.Obligation.InvoiceID + " past due", nil
-	case "collect":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, true)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.ApplyPayment(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Collected payment for " + result.Obligation.InvoiceID, nil
-	case "refund":
-		request, err := h.visibleTransitionRequestFromForm(ctx, r, policy, true)
-		if err != nil {
-			return "", err
-		}
-		result, err := h.lifecycle.RefundPayment(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "Recorded refund for " + result.Obligation.InvoiceID, nil
-	case "fix_method":
-		if _, err := h.ensurePaymentMethodVisible(ctx, policy, r.PostForm.Get("method_id")); err != nil {
-			return "", err
-		}
-		method, err := h.profiles.ResolvePaymentMethodFailure(ctx, r.PostForm.Get("method_id"))
-		if err != nil {
-			return "", err
-		}
-		return "Fixed payment method " + method.DisplayName, nil
-	case "set_default_method":
-		if _, err := h.ensurePaymentMethodVisible(ctx, policy, r.PostForm.Get("method_id")); err != nil {
-			return "", err
-		}
-		method, err := h.profiles.SetDefaultPaymentMethod(ctx, r.PostForm.Get("method_id"))
-		if err != nil {
-			return "", err
-		}
-		return "Selected default payment method " + method.DisplayName, nil
-	case "set_default_profile":
-		if _, err := h.ensurePaymentProfileVisible(ctx, policy, r.PostForm.Get("profile_id")); err != nil {
-			return "", err
-		}
-		profile, err := h.profiles.SetDefaultPaymentProfile(ctx, r.PostForm.Get("profile_id"))
-		if err != nil {
-			return "", err
-		}
-		return "Selected default payment profile " + profile.ProfileName, nil
-	default:
-		return "", fmt.Errorf("unsupported payment action %q", action)
-	}
-}
-
-// visibleTransitionRequestFromForm validates one invoice transition against the active payment policy.
-func (h paymentsHandler) visibleTransitionRequestFromForm(ctx context.Context, r *http.Request, policy billingvisibility.Policy, includeAmount bool) (persistence.PaymentLifecycleTransitionRequest, error) {
-	request, err := h.transitionRequestFromForm(ctx, r, includeAmount)
-	if err != nil {
-		return persistence.PaymentLifecycleTransitionRequest{}, err
-	}
-	if err := h.ensurePaymentObligationVisible(ctx, policy, request.InvoiceObligationID); err != nil {
-		return persistence.PaymentLifecycleTransitionRequest{}, err
-	}
-	return request, nil
-}
-
-func (h paymentsHandler) transitionRequestFromForm(ctx context.Context, r *http.Request, includeAmount bool) (persistence.PaymentLifecycleTransitionRequest, error) {
-	request := persistence.PaymentLifecycleTransitionRequest{
-		InvoiceObligationID: r.PostForm.Get("invoice_obligation_id"),
-		Reason:              r.PostForm.Get("reason"),
-		OccurredAt:          strings.TrimSpace(r.PostForm.Get("occurred_at")),
-	}
-	if request.OccurredAt == "" {
-		if clock, err := h.clock.Get(ctx); err == nil {
-			request.OccurredAt = clock.CurrentTime
-		}
-	}
-	if includeAmount {
-		amount, err := parsePaymentAmountMicros(r.PostForm.Get("amount"))
-		if err != nil {
-			return persistence.PaymentLifecycleTransitionRequest{}, err
-		}
-		request.AmountMicros = amount
-	}
-	return request, nil
-}
-
 // paymentPolicyFromValues resolves viewer controls into the policy allowed to manage payments.
 func (h paymentsHandler) paymentPolicyFromValues(ctx context.Context, values url.Values) (billingvisibility.Policy, error) {
-	resolution, err := resolveViewerPolicy(ctx, h.db, exportViewerFieldsFromValues(values), viewerPolicyResolveOptions{
+	return paymentPolicyFromValues(ctx, h.db, values)
+}
+
+func paymentPolicyFromValues(ctx context.Context, db *sql.DB, values url.Values) (billingvisibility.Policy, error) {
+	resolution, err := resolveViewerPolicy(ctx, db, exportViewerFieldsFromValues(values), viewerPolicyResolveOptions{
 		DefaultRole:  billingvisibility.RoleManagementAccount,
 		RequiredView: billingvisibility.ViewPayments,
 		PermissionErr: func(policy billingvisibility.Policy) error {
@@ -438,67 +297,6 @@ func paymentHTTPStatus(err error) int {
 		return http.StatusForbidden
 	}
 	return http.StatusBadRequest
-}
-
-// ensurePaymentObligationVisible checks the payer for an invoice obligation before mutation.
-func (h paymentsHandler) ensurePaymentObligationVisible(ctx context.Context, policy billingvisibility.Policy, invoiceObligationID string) error {
-	payerAccountID, err := h.paymentObligationPayerAccountID(ctx, invoiceObligationID)
-	if err != nil {
-		return err
-	}
-	return ensurePaymentPayerVisible(policy, payerAccountID)
-}
-
-// paymentObligationPayerAccountID reads the payer account attached to an invoice obligation.
-func (h paymentsHandler) paymentObligationPayerAccountID(ctx context.Context, invoiceObligationID string) (string, error) {
-	invoiceObligationID = strings.TrimSpace(invoiceObligationID)
-	if invoiceObligationID == "" {
-		return "", fmt.Errorf("invoice obligation ID is required")
-	}
-	var payerAccountID string
-	if err := h.db.QueryRowContext(
-		ctx,
-		`SELECT b.payer_account_id
-		   FROM invoice_obligations o
-		   JOIN bills b ON b.id = o.bill_id
-		  WHERE o.id = ?`,
-		invoiceObligationID,
-	).Scan(&payerAccountID); err != nil {
-		return "", fmt.Errorf("get invoice obligation payer %q: %w", invoiceObligationID, err)
-	}
-	return payerAccountID, nil
-}
-
-// ensurePaymentMethodVisible checks a payment method's parent profile against the active policy.
-func (h paymentsHandler) ensurePaymentMethodVisible(ctx context.Context, policy billingvisibility.Policy, methodID string) (persistence.PaymentMethod, error) {
-	method, err := h.profiles.GetPaymentMethod(ctx, methodID)
-	if err != nil {
-		return persistence.PaymentMethod{}, err
-	}
-	if _, err := h.ensurePaymentProfileVisible(ctx, policy, method.PaymentProfileID); err != nil {
-		return persistence.PaymentMethod{}, err
-	}
-	return method, nil
-}
-
-// ensurePaymentProfileVisible checks a payment profile payer against the active policy.
-func (h paymentsHandler) ensurePaymentProfileVisible(ctx context.Context, policy billingvisibility.Policy, profileID string) (persistence.PaymentProfile, error) {
-	profile, err := h.profiles.GetPaymentProfile(ctx, profileID)
-	if err != nil {
-		return persistence.PaymentProfile{}, err
-	}
-	if err := ensurePaymentPayerVisible(policy, profile.PayerAccountID); err != nil {
-		return persistence.PaymentProfile{}, err
-	}
-	return profile, nil
-}
-
-// ensurePaymentPayerVisible centralizes payer-level payment authorization.
-func ensurePaymentPayerVisible(policy billingvisibility.Policy, payerAccountID string) error {
-	if policy.AllowsPayerAccount(payerAccountID) {
-		return nil
-	}
-	return paymentAccessError{err: fmt.Errorf("billing role %q cannot manage payments for payer account %q", policy.Role, strings.TrimSpace(payerAccountID))}
 }
 
 // paymentIssuedBillsVisibleToPolicy filters invoice rows to payers the policy can manage.
@@ -739,25 +537,6 @@ func matchesAny(value string, allowed ...string) bool {
 		}
 	}
 	return false
-}
-
-func parsePaymentAmountMicros(value string) (int64, error) {
-	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "$", ""), ",", ""))
-	if value == "" {
-		return 0, fmt.Errorf("payment amount is required")
-	}
-	amount, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("payment amount must be numeric: %w", err)
-	}
-	if amount <= 0 {
-		return 0, fmt.Errorf("payment amount must be greater than zero")
-	}
-	micros := math.Round(amount * 1_000_000)
-	if micros > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("payment amount is too large")
-	}
-	return int64(micros), nil
 }
 
 func paymentPastDueDate(dueDate string) string {

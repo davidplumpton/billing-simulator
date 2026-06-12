@@ -18,13 +18,6 @@ type scenarioEventActionSpec struct {
 	apply             func(context.Context, Runner, *scenarioExecutionState, Event, time.Time, ScenarioRunEvent) (ScenarioRunEvent, error)
 }
 
-type scenarioEventPreflight struct {
-	runID        string
-	definition   Definition
-	resources    map[string]scenarioPreflightResource
-	plannedUsage []scenarioPlannedUsageRef
-}
-
 // scenarioEventActionSpecFor returns the action-local behavior for a parsed scenario event.
 func scenarioEventActionSpecFor(action EventAction) (scenarioEventActionSpec, bool) {
 	spec, ok := scenarioEventActionSpecsByAction[action]

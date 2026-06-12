@@ -17,7 +17,7 @@ func (h resourceLabHandler) resourceFormDefaults(ctx context.Context) (resourceF
 	if h.db == nil {
 		return defaults, nil
 	}
-	clock, err := h.clock.Get(ctx)
+	clock, err := h.billing.clock.Get(ctx)
 	if err != nil {
 		return resourceFormDefaults{}, err
 	}
@@ -138,61 +138,6 @@ func usageGenerationRequestFromForm(r *http.Request, defaults resourceFormDefaul
 	}, nil
 }
 
-func clockAdvanceRequestFromForm(r *http.Request) (persistence.SimulatorClockAdvanceRequest, error) {
-	if err := r.ParseForm(); err != nil {
-		return persistence.SimulatorClockAdvanceRequest{}, fmt.Errorf("parse clock form: %w", err)
-	}
-	amount := defaultClockAdvanceAmount
-	if rawAmount := strings.TrimSpace(r.PostForm.Get("clock_advance_amount")); rawAmount != "" {
-		parsedAmount, err := strconv.Atoi(rawAmount)
-		if err != nil {
-			return persistence.SimulatorClockAdvanceRequest{}, fmt.Errorf("clock advance amount must be a whole number: %w", err)
-		}
-		amount = parsedAmount
-	}
-	return persistence.SimulatorClockAdvanceRequest{
-		Amount: amount,
-		Unit:   persistence.SimulatorClockAdvanceUnit(r.PostForm.Get("clock_advance_unit")),
-	}, nil
-}
-
-func billingPipelineRequestFromForm(r *http.Request) (persistence.BillLineItemGenerationRequest, error) {
-	if err := r.ParseForm(); err != nil {
-		return persistence.BillLineItemGenerationRequest{}, fmt.Errorf("parse billing pipeline form: %w", err)
-	}
-	return persistence.BillLineItemGenerationRequest{
-		PayerAccountID: r.PostForm.Get("payer_account_id"),
-	}, nil
-}
-
-func dailyMeteringJobRequestFromForm(r *http.Request, trigger persistence.DailyMeteringJobTrigger) (persistence.DailyMeteringJobRequest, error) {
-	if err := r.ParseForm(); err != nil {
-		return persistence.DailyMeteringJobRequest{}, fmt.Errorf("parse daily metering form: %w", err)
-	}
-	return persistence.DailyMeteringJobRequest{
-		Trigger:        trigger,
-		PayerAccountID: r.PostForm.Get("payer_account_id"),
-	}, nil
-}
-
-func monthEndCloseRequestFromForm(r *http.Request) (persistence.MonthEndCloseRequest, error) {
-	if err := r.ParseForm(); err != nil {
-		return persistence.MonthEndCloseRequest{}, fmt.Errorf("parse month-end close form: %w", err)
-	}
-	dueDays := 0
-	if rawDueDays := strings.TrimSpace(r.PostForm.Get("invoice_due_days")); rawDueDays != "" {
-		parsedDueDays, err := strconv.Atoi(rawDueDays)
-		if err != nil {
-			return persistence.MonthEndCloseRequest{}, fmt.Errorf("invoice due days must be a whole number: %w", err)
-		}
-		dueDays = parsedDueDays
-	}
-	return persistence.MonthEndCloseRequest{
-		PayerAccountID: r.PostForm.Get("payer_account_id"),
-		InvoiceDueDays: dueDays,
-	}, nil
-}
-
 func resourcePresets() []resourcePreset {
 	return []resourcePreset{
 		{
@@ -286,14 +231,6 @@ func usageGenerationPresets() []usageGenerationPreset {
 	return presets
 }
 
-func clockAdvanceUnitOptions() []clockAdvanceUnitView {
-	return []clockAdvanceUnitView{
-		{Key: persistence.SimulatorClockAdvanceHours, Label: "Hours"},
-		{Key: persistence.SimulatorClockAdvanceDays, Label: "Days"},
-		{Key: persistence.SimulatorClockAdvanceBillingPeriods, Label: "Billing Periods"},
-	}
-}
-
 func defaultResourceFormDefaults() resourceFormDefaults {
 	start, err := time.Parse(time.RFC3339, defaultUsageStartRFC3339)
 	if err != nil {
@@ -318,24 +255,6 @@ func resourceFormDefaultsForTime(value time.Time) resourceFormDefaults {
 		UsageEndRFC3339:     end.Format(time.RFC3339),
 		GenerationStartDate: start.Format(time.DateOnly),
 	}
-}
-
-func applyClockToResourcePageData(data *resourcePageData, clock persistence.SimulatorClock) {
-	data.ClockCurrentTime = clock.CurrentTime
-	data.ClockBillingPeriod = fmt.Sprintf(
-		"%s to %s (%d days)",
-		clock.BillingPeriodStart,
-		clock.BillingPeriodEnd,
-		clock.BillingPeriodDays,
-	)
-	parsed, err := time.Parse(time.RFC3339, clock.CurrentTime)
-	if err != nil {
-		return
-	}
-	defaults := resourceFormDefaultsForTime(parsed)
-	data.DefaultUsageStart = defaults.UsageStartLocal
-	data.DefaultUsageEnd = defaults.UsageEndLocal
-	data.DefaultGenerationStartDate = defaults.GenerationStartDate
 }
 
 func resourcePresetByKey(key string) (resourcePreset, bool) {

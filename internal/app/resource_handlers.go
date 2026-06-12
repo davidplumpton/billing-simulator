@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -24,12 +23,7 @@ const (
 type resourceLabHandler struct {
 	db        *sql.DB
 	resources persistence.ResourceUsageRepository
-	catalog   persistence.PriceCatalogRepository
-	metering  persistence.MeteringRepository
-	lineItems persistence.BillLineItemRepository
-	clock     persistence.SimulatorClockRepository
-	dailyJobs persistence.DailyMeteringJobRepository
-	monthEnd  persistence.MonthEndCloseRepository
+	billing   resourceBillingWorkflow
 }
 
 type resourcePreset struct {
@@ -257,12 +251,7 @@ func newResourceLabHandler(db *sql.DB) resourceLabHandler {
 	return resourceLabHandler{
 		db:        db,
 		resources: persistence.NewResourceUsageRepository(db),
-		catalog:   persistence.NewPriceCatalogRepository(db),
-		metering:  persistence.NewMeteringRepository(db),
-		lineItems: persistence.NewBillLineItemRepository(db),
-		clock:     persistence.NewSimulatorClockRepository(db),
-		dailyJobs: persistence.NewDailyMeteringJobRepository(db),
-		monthEnd:  persistence.NewMonthEndCloseRepository(db),
+		billing:   newResourceBillingWorkflow(db),
 	}
 }
 
@@ -407,165 +396,6 @@ func usageGenerationFlash(result persistence.UsageGenerationResult) string {
 	}
 }
 
-// handleRunBillingPipeline converts pending usage into metering records and priced bill line items.
-func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
-	if h.db == nil {
-		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before pricing usage.", "")
-		return
-	}
-	request, err := billingPipelineRequestFromForm(r)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	request.PayerAccountID, err = payerAccountIDOrDefault(r.Context(), h.db, request.PayerAccountID)
-	if err != nil {
-		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	meteringResult, err := h.metering.GenerateMeteringRecords(r.Context())
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	lineItemResult, err := h.lineItems.GenerateBillLineItems(r.Context(), request)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	clock, err := h.clock.Get(r.Context())
-	if err != nil {
-		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	summaries, err := h.dailyJobs.RefreshBillingPeriodServiceSummaries(r.Context(), clock.BillingPeriodStart, clock.BillingPeriodEnd)
-	if err != nil {
-		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	flash := fmt.Sprintf(
-		"Created %d metering records and %d bill line items; refreshed %d summaries",
-		meteringResult.RecordsCreated,
-		lineItemResult.ItemsCreated,
-		len(summaries),
-	)
-	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
-}
-
-// handleRunDailyMeteringJob runs clock-bounded metering and refreshes current-period summaries.
-func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
-	if h.db == nil {
-		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before running daily metering.", "")
-		return
-	}
-	request, err := dailyMeteringJobRequestFromForm(r, persistence.DailyMeteringJobTriggerOnDemand)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	request.PayerAccountID, err = payerAccountIDOrDefault(r.Context(), h.db, request.PayerAccountID)
-	if err != nil {
-		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	result, err := h.dailyJobs.Run(r.Context(), request)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	flash := fmt.Sprintf(
-		"Daily metering created %d metering records, %d bill line items, and refreshed %d summaries",
-		result.MeteringRecordsCreated,
-		result.BillLineItemsCreated,
-		len(result.Summaries),
-	)
-	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
-}
-
-// handleRunMonthEndClose finalizes the completed billing period before the current simulator clock.
-func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
-	if h.db == nil {
-		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before closing a billing period.", "")
-		return
-	}
-	request, err := monthEndCloseRequestFromForm(r)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	request.PayerAccountID, err = payerAccountIDOrDefault(r.Context(), h.db, request.PayerAccountID)
-	if err != nil {
-		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	result, err := h.monthEnd.ClosePreviousPeriod(r.Context(), request)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	flash := fmt.Sprintf(
-		"Month-end close finalized %d line items into bill %s for %s",
-		result.FinalizedLineItems,
-		result.Bill.ID,
-		formatUSDMicros(result.Bill.TotalMicros),
-	)
-	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
-}
-
-// handleAdvanceClock applies a learner-triggered deterministic time change.
-func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
-	if h.db == nil {
-		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before advancing the clock.", "")
-		return
-	}
-	request, err := clockAdvanceRequestFromForm(r)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	clock, err := h.clock.Advance(r.Context(), request)
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	defaultPayerAccountID, err := defaultBillingPayerAccountID(r.Context(), h.db, defaultUsageAccountID)
-	if err != nil {
-		h.renderResources(w, r, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	result, err := h.dailyJobs.Run(r.Context(), persistence.DailyMeteringJobRequest{
-		Trigger:        persistence.DailyMeteringJobTriggerClockAdvance,
-		PayerAccountID: defaultPayerAccountID,
-	})
-	if err != nil {
-		h.renderResources(w, r, http.StatusBadRequest, err.Error(), "")
-		return
-	}
-	flash := fmt.Sprintf(
-		"Advanced clock to %s; daily metering created %d metering records and %d bill line items",
-		clock.CurrentTime,
-		result.MeteringRecordsCreated,
-		result.BillLineItemsCreated,
-	)
-	http.Redirect(w, r, "/resources?flash="+urlQueryEscape(flash), http.StatusSeeOther)
-}
-
 func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	defaults := defaultResourceFormDefaults()
 	data := resourcePageData{
@@ -614,17 +444,10 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 }
 
 func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *resourcePageData) error {
-	defaultPayerAccountID, err := defaultBillingPayerAccountID(ctx, h.db, defaultUsageAccountID)
+	clock, err := h.billing.loadClockContext(ctx, data)
 	if err != nil {
 		return err
 	}
-	data.DefaultPayerAccountID = defaultPayerAccountID
-
-	clock, err := h.clock.Get(ctx)
-	if err != nil {
-		return err
-	}
-	applyClockToResourcePageData(data, clock)
 
 	resourceSummaries, err := h.resources.ListResources(ctx)
 	if err != nil {
@@ -645,62 +468,7 @@ func (h resourceLabHandler) loadResourcePageData(ctx context.Context, data *reso
 		data.UsageEvents = append(data.UsageEvents, h.usageEventView(ctx, event, resourceNames[event.ResourceID]))
 	}
 
-	meteringRecords, err := h.metering.ListMeteringRecords(ctx, 25)
-	if err != nil {
-		return err
-	}
-	for _, record := range meteringRecords {
-		data.MeteringRecords = append(data.MeteringRecords, meteringRecordViewFromRecord(record, resourceNames[record.ResourceID]))
-	}
-
-	billLineItems, err := h.lineItems.ListBillLineItems(ctx, 25)
-	if err != nil {
-		return err
-	}
-	for _, item := range billLineItems {
-		data.BillLineItems = append(data.BillLineItems, billLineItemViewFromItem(item, resourceNames[item.ResourceID]))
-	}
-
-	summaries, err := h.dailyJobs.ListBillingPeriodServiceSummaries(ctx, clock.BillingPeriodStart, clock.BillingPeriodEnd)
-	if err != nil {
-		return err
-	}
-	for _, summary := range summaries {
-		data.BillingPeriodSummaries = append(data.BillingPeriodSummaries, billingPeriodSummaryViewFromSummary(summary))
-	}
-
-	runs, err := h.dailyJobs.ListRuns(ctx, 10)
-	if err != nil {
-		return err
-	}
-	for _, run := range runs {
-		data.DailyMeteringJobRuns = append(data.DailyMeteringJobRuns, dailyMeteringJobRunViewFromRun(run))
-	}
-
-	closes, err := h.monthEnd.ListRecentCloses(ctx, 10)
-	if err != nil {
-		return err
-	}
-	for _, close := range closes {
-		data.MonthEndCloses = append(data.MonthEndCloses, monthEndCloseViewFromClose(close))
-	}
-
-	issuedBills, err := h.monthEnd.ListIssuedBills(ctx, 10)
-	if err != nil {
-		return err
-	}
-	for _, issuedBill := range issuedBills {
-		data.IssuedBills = append(data.IssuedBills, issuedBillViewFromBill(issuedBill))
-	}
-
-	catalogItems, err := h.catalog.List(ctx)
-	if err != nil {
-		return err
-	}
-	for _, item := range catalogItems {
-		data.CatalogItems = append(data.CatalogItems, catalogItemViewFromCatalog(item, clock.BillingPeriodDays))
-	}
-	return nil
+	return h.billing.loadWorkflowData(ctx, data, resourceNames, clock)
 }
 
 var resourcePageTemplate = newPageTemplate("resource-page", `<div class="page-heading">

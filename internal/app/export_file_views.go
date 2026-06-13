@@ -77,6 +77,7 @@ func exportFileTypeSelect(selected string) uiSelectFieldView {
 		{Value: "", Label: "All export types"},
 		{Value: persistence.ExportFileTypeCURCSV, Label: "CUR CSV"},
 		{Value: persistence.ExportFileTypeFOCUSCSV, Label: "FOCUS CSV"},
+		{Value: persistence.ExportFileTypeFOCUSMetadataJSON, Label: "FOCUS Metadata JSON"},
 	}
 	for idx := range options {
 		options[idx].Selected = options[idx].Value == selected
@@ -143,6 +144,8 @@ func displayExportFileType(exportType string) string {
 		return "CUR CSV"
 	case persistence.ExportFileTypeFOCUSCSV:
 		return "FOCUS CSV"
+	case persistence.ExportFileTypeFOCUSMetadataJSON:
+		return "FOCUS Metadata JSON"
 	default:
 		return displayBillState(exportType)
 	}

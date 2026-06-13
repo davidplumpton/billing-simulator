@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -201,11 +202,13 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 		"billing_period_end":   {"2026-03-01"},
 		"payer_account_id":     {persistence.AnyCompanyRetailManagementAccountID},
 	}
-	exportFilename := focusCSVExportFilename(persistence.CURCSVExportRequest{
+	focusRequest := persistence.CURCSVExportRequest{
 		BillingPeriodStart: "2026-02-01",
 		BillingPeriodEnd:   "2026-03-01",
 		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
-	})
+	}
+	exportFilename := focusCSVExportFilename(focusRequest)
+	metadataFilename := focusCSVMetadataFilename(focusRequest)
 	assertExportNotStored := func(filename string) {
 		t.Helper()
 		if _, err := exportRepo.GetByFilename(ctx, filename); !errors.Is(err, sql.ErrNoRows) {
@@ -260,6 +263,7 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 		}
 	}
 	assertExportNotStored(exportFilename)
+	assertExportNotStored(metadataFilename)
 
 	resp, err = client.PostForm(server.URL+"/exports/generate-focus", query)
 	if err != nil {
@@ -271,7 +275,8 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 	}
 	if !strings.Contains(body, "Generated "+exportFilename+" from 2 source rows") ||
 		!strings.Contains(body, "Generate FOCUS Export") ||
-		!strings.Contains(body, "FOCUS CSV") {
+		!strings.Contains(body, "FOCUS CSV") ||
+		!strings.Contains(body, "FOCUS Metadata JSON") {
 		t.Fatalf("POST /exports/generate-focus body missing stored FOCUS export state: %s", body)
 	}
 	exportRecord, err := exportRepo.GetByFilename(ctx, exportFilename)
@@ -280,6 +285,9 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 	}
 	if exportRecord.ExportType != persistence.ExportFileTypeFOCUSCSV ||
 		exportRecord.GenerationParameters["schema"] != "FOCUS-like" ||
+		exportRecord.GenerationParameters["target_focus_spec_version"] != persistence.FOCUSTargetSpecificationVersion ||
+		exportRecord.GenerationParameters["focus_dataset"] != persistence.FOCUSTargetDataset ||
+		exportRecord.GenerationParameters["conformance_claim"] != persistence.FOCUSConformanceClaim ||
 		exportRecord.GenerationParameters["source_bill_id"] != closeResult.Bill.ID ||
 		exportRecord.GenerationParameters["rows_written"] != "2" {
 		t.Fatalf("stored FOCUS export metadata = %+v, want FOCUS schema and source metadata", exportRecord)
@@ -291,6 +299,52 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 	if string(exportContent) != initialCSVBody {
 		t.Fatalf("stored FOCUS CSV export differs from direct response:\nfile=%s\nbody=%s", exportContent, initialCSVBody)
 	}
+	metadataRecord, err := exportRepo.GetByFilename(ctx, metadataFilename)
+	if err != nil {
+		t.Fatalf("GetByFilename(FOCUS metadata export) error = %v", err)
+	}
+	if metadataRecord.ExportType != persistence.ExportFileTypeFOCUSMetadataJSON ||
+		metadataRecord.GenerationParameters["source_export_filename"] != exportFilename ||
+		metadataRecord.GenerationParameters["target_focus_spec_version"] != persistence.FOCUSTargetSpecificationVersion ||
+		metadataRecord.GenerationParameters["validator_expected_result"] != persistence.FOCUSConformanceClaim ||
+		metadataRecord.GenerationParameters["source_bill_id"] != closeResult.Bill.ID {
+		t.Fatalf("stored FOCUS metadata record = %+v, want v1.4 validator sidecar metadata", metadataRecord)
+	}
+	metadataContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), metadataFilename))
+	if err != nil {
+		t.Fatalf("read stored FOCUS metadata JSON: %v", err)
+	}
+	var metadata persistence.FOCUSCSVExportMetadata
+	if err := json.Unmarshal(metadataContent, &metadata); err != nil {
+		t.Fatalf("decode stored FOCUS metadata JSON: %v\n%s", err, metadataContent)
+	}
+	if metadata.TargetFOCUSSpecVersion != persistence.FOCUSTargetSpecificationVersion ||
+		metadata.Dataset != persistence.FOCUSTargetDataset ||
+		metadata.Conformance.Claim != persistence.FOCUSConformanceClaim ||
+		metadata.Validator.ExpectedResult != persistence.FOCUSConformanceClaim ||
+		metadata.Visibility.Scope != "payer-account" ||
+		metadata.Visibility.AccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		metadata.Visibility.DocumentIdentifiersHidden ||
+		metadata.SourceBillID != closeResult.Bill.ID ||
+		metadata.SourceExportFilename != exportFilename {
+		t.Fatalf("stored FOCUS metadata JSON = %+v, want payer-scoped v1.4 conformance boundary", metadata)
+	}
+	metadataDownloadPath := exportFileDownloadPath(metadataFilename)
+	resp, err = client.Get(server.URL + metadataDownloadPath)
+	if err != nil {
+		t.Fatalf("GET %s error = %v", metadataDownloadPath, err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d; body=%s", metadataDownloadPath, resp.StatusCode, http.StatusOK, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("GET %s content type = %q, want application/json", metadataDownloadPath, contentType)
+	}
+	metadataChecksum := sha256.Sum256(metadataContent)
+	if got := resp.Header.Get("X-Simulator-Export-Checksum"); got != hex.EncodeToString(metadataChecksum[:]) {
+		t.Fatalf("GET %s checksum header = %q, want metadata checksum", metadataDownloadPath, got)
+	}
 
 	memberQuery := url.Values{
 		"billing_period_start": {"2026-02-01"},
@@ -300,14 +354,16 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 		"viewer_role":          {"member-account"},
 		"viewer_account_id":    {"111122223333"},
 	}
-	memberFilename := focusCSVExportFilename(persistence.CURCSVExportRequest{
+	memberRequest := persistence.CURCSVExportRequest{
 		BillingPeriodStart: "2026-02-01",
 		BillingPeriodEnd:   "2026-03-01",
 		PayerAccountID:     persistence.AnyCompanyRetailManagementAccountID,
 		UsageAccountID:     "111122223333",
 		LineItemStatus:     "final",
 		Visibility:         persistence.BillingVisibilityFilter{UsageAccountID: "111122223333"},
-	})
+	}
+	memberFilename := focusCSVExportFilename(memberRequest)
+	memberMetadataFilename := focusCSVMetadataFilename(memberRequest)
 	resp, err = client.Get(server.URL + "/exports/focus.csv?" + memberQuery.Encode())
 	if err != nil {
 		t.Fatalf("GET /exports/focus.csv member error = %v", err)
@@ -331,6 +387,7 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 		t.Fatalf("member FOCUS export leaked payer-scoped data: %s", memberBody)
 	}
 	assertExportNotStored(memberFilename)
+	assertExportNotStored(memberMetadataFilename)
 	resp, err = client.PostForm(server.URL+"/exports/generate-focus", memberQuery)
 	if err != nil {
 		t.Fatalf("POST /exports/generate-focus member error = %v", err)
@@ -352,6 +409,25 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 		memberRecord.GenerationParameters["source_bill_id"] != "" ||
 		memberRecord.GenerationParameters["rows_written"] != "1" {
 		t.Fatalf("member FOCUS export metadata = %+v, want member-scoped metadata without payer document", memberRecord)
+	}
+	memberMetadataContent, err := os.ReadFile(filepath.Join(persistence.WorkspaceExportsPath(workspacePath), memberMetadataFilename))
+	if err != nil {
+		t.Fatalf("read member FOCUS metadata JSON: %v", err)
+	}
+	if strings.Contains(string(memberMetadataContent), closeResult.Bill.ID) ||
+		strings.Contains(string(memberMetadataContent), closeResult.InvoiceObligation.InvoiceID) {
+		t.Fatalf("member FOCUS metadata leaked payer documents: %s", memberMetadataContent)
+	}
+	var memberMetadata persistence.FOCUSCSVExportMetadata
+	if err := json.Unmarshal(memberMetadataContent, &memberMetadata); err != nil {
+		t.Fatalf("decode member FOCUS metadata JSON: %v\n%s", err, memberMetadataContent)
+	}
+	if memberMetadata.SourceBillID != "" ||
+		memberMetadata.SourceExportFilename != memberFilename ||
+		memberMetadata.Visibility.Scope != "usage-account" ||
+		memberMetadata.Visibility.AccountID != "111122223333" ||
+		!memberMetadata.Visibility.DocumentIdentifiersHidden {
+		t.Fatalf("member FOCUS metadata JSON = %+v, want usage-scoped sidecar without payer documents", memberMetadata)
 	}
 }
 

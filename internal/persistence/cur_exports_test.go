@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -457,6 +458,83 @@ func TestCURLineItemRepositoryWritesFOCUSCSVExport(t *testing.T) {
 	}
 	if strings.Contains(memberBody.String(), "AWS Support") {
 		t.Fatalf("member FOCUS export leaked payer-scoped support row: %s", memberBody.String())
+	}
+}
+
+func TestFOCUSCSVExportMetadataDocumentsConformanceBoundary(t *testing.T) {
+	t.Parallel()
+
+	request := CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		Visibility:         BillingVisibilityFilter{PayerAccountID: AnyCompanyRetailManagementAccountID},
+	}
+	result := CURCSVExportResult{
+		GeneratedAt:  "2026-03-02T09:30:00Z",
+		SourceBillID: "bill-2026-02",
+		RowsWritten:  2,
+	}
+	var body bytes.Buffer
+	if err := WriteFOCUSCSVExportMetadata(&body, request, result, "focus-2026-02.csv"); err != nil {
+		t.Fatalf("WriteFOCUSCSVExportMetadata() error = %v", err)
+	}
+
+	var metadata FOCUSCSVExportMetadata
+	if err := json.Unmarshal(body.Bytes(), &metadata); err != nil {
+		t.Fatalf("decode FOCUS metadata: %v\n%s", err, body.String())
+	}
+	if metadata.Schema != "FOCUS-like" ||
+		metadata.SchemaVersion != focusLikeSchemaVersion ||
+		metadata.TargetFOCUSSpecVersion != FOCUSTargetSpecificationVersion ||
+		metadata.TargetFOCUSSpecURL != FOCUSTargetSpecificationURL ||
+		metadata.Dataset != FOCUSTargetDataset ||
+		metadata.Conformance.Claim != FOCUSConformanceClaim ||
+		metadata.Validator.ExpectedResult != FOCUSConformanceClaim {
+		t.Fatalf("FOCUS metadata header = %+v, want v1.4 target and explicit non-conformance boundary", metadata)
+	}
+	if metadata.Visibility.Scope != "payer-account" ||
+		metadata.Visibility.AccountID != AnyCompanyRetailManagementAccountID ||
+		metadata.Visibility.DocumentIdentifiersHidden {
+		t.Fatalf("FOCUS metadata visibility = %+v, want payer scoped with visible documents", metadata.Visibility)
+	}
+	if metadata.SourceBillID != "bill-2026-02" ||
+		metadata.SourceExportFilename != "focus-2026-02.csv" ||
+		metadata.RowsWritten != 2 {
+		t.Fatalf("FOCUS metadata provenance = %+v, want source export, bill, and row count", metadata)
+	}
+	if len(metadata.Columns) != len(FOCUSCSVExportColumns()) {
+		t.Fatalf("FOCUS metadata columns = %d, want %d", len(metadata.Columns), len(FOCUSCSVExportColumns()))
+	}
+	columns := map[string]FOCUSCSVExportColumnMetadata{}
+	for _, column := range metadata.Columns {
+		columns[column.Name] = column
+	}
+	if columns["BillingAccountId"].Classification != "focus-mapped" ||
+		columns["BillingAccountId"].Source != "bill_line_items.payer_account_id" {
+		t.Fatalf("BillingAccountId metadata = %+v, want FOCUS mapped payer source", columns["BillingAccountId"])
+	}
+	if columns["x_SimulatorCostCategories"].Classification != "simulator-extension" ||
+		columns["x_SimulatorCostCategories"].Source == "" {
+		t.Fatalf("x_SimulatorCostCategories metadata = %+v, want simulator extension source", columns["x_SimulatorCostCategories"])
+	}
+	if len(metadata.UnsupportedRequirements) == 0 ||
+		!slices.Contains(metadata.Validator.Capabilities, "TAGGING_SUPPORTED") {
+		t.Fatalf("FOCUS metadata validator details = %+v, want unsupported requirements and tagging capability", metadata)
+	}
+
+	memberMetadata := BuildFOCUSCSVExportMetadata(CURCSVExportRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+		PayerAccountID:     AnyCompanyRetailManagementAccountID,
+		UsageAccountID:     "111122223333",
+		Visibility:         BillingVisibilityFilter{UsageAccountID: "111122223333"},
+	}, CURCSVExportResult{GeneratedAt: "2026-03-02T09:30:00Z", SourceBillID: "bill-hidden", RowsWritten: 1}, "focus-member.csv")
+	if memberMetadata.SourceBillID != "" ||
+		memberMetadata.Visibility.Scope != "usage-account" ||
+		memberMetadata.Visibility.AccountID != "111122223333" ||
+		!memberMetadata.Visibility.DocumentIdentifiersHidden {
+		t.Fatalf("member FOCUS metadata = %+v, want usage scope with hidden document IDs", memberMetadata)
 	}
 }
 

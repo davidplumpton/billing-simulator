@@ -53,6 +53,9 @@ func (h exportsHandler) persistFOCUSCSVExportFile(ctx context.Context, request p
 	if err != nil {
 		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, exportStorageError{err: err}
 	}
+	if _, err := h.writeFOCUSCSVMetadataFile(ctx, request, result, record.Filename); err != nil {
+		return persistence.ExportFile{}, persistence.CURCSVExportResult{}, exportStorageError{err: err}
+	}
 	return record, result, nil
 }
 
@@ -66,6 +69,24 @@ func (h exportsHandler) writeFOCUSCSVExportFile(ctx context.Context, request per
 		UsageAccountID:       request.UsageAccountID,
 		GenerationParameters: focusCSVExportGenerationParameters(request, result),
 		Content:              content,
+	})
+}
+
+// writeFOCUSCSVMetadataFile stores the validator-oriented JSON sidecar for a generated FOCUS CSV.
+func (h exportsHandler) writeFOCUSCSVMetadataFile(ctx context.Context, request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult, sourceExportFilename string) (persistence.ExportFile, error) {
+	var body bytes.Buffer
+	if err := persistence.WriteFOCUSCSVExportMetadata(&body, request, result, sourceExportFilename); err != nil {
+		return persistence.ExportFile{}, err
+	}
+	return h.exportFiles.Write(ctx, persistence.ExportFileWriteRequest{
+		Filename:             focusCSVMetadataFilename(request),
+		ExportType:           persistence.ExportFileTypeFOCUSMetadataJSON,
+		BillingPeriodStart:   request.BillingPeriodStart,
+		BillingPeriodEnd:     request.BillingPeriodEnd,
+		PayerAccountID:       request.PayerAccountID,
+		UsageAccountID:       request.UsageAccountID,
+		GenerationParameters: focusCSVMetadataGenerationParameters(request, result, sourceExportFilename),
+		Content:              body.Bytes(),
 	})
 }
 

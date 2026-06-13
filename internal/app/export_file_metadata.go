@@ -50,6 +50,11 @@ func focusCSVExportFilename(request persistence.CURCSVExportRequest) string {
 	return csvExportFilename("focus", request)
 }
 
+// focusCSVMetadataFilename derives the sidecar JSON name from the matching FOCUS CSV request.
+func focusCSVMetadataFilename(request persistence.CURCSVExportRequest) string {
+	return strings.TrimSuffix(focusCSVExportFilename(request), ".csv") + "-metadata.json"
+}
+
 func csvExportFilename(prefix string, request persistence.CURCSVExportRequest) string {
 	limitPart := "default"
 	if request.Limit > 0 {
@@ -105,7 +110,20 @@ func curCSVExportGenerationParameters(request persistence.CURCSVExportRequest, r
 func focusCSVExportGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult) map[string]string {
 	parameters := curCSVExportGenerationParameters(request, result)
 	parameters["schema"] = "FOCUS-like"
-	parameters["schema_version"] = "2026-06-09"
+	parameters["schema_version"] = "FOCUS-like-2026-06-13-v1.4"
+	parameters["target_focus_spec_version"] = persistence.FOCUSTargetSpecificationVersion
+	parameters["target_focus_spec_url"] = persistence.FOCUSTargetSpecificationURL
+	parameters["focus_dataset"] = persistence.FOCUSTargetDataset
+	parameters["conformance_claim"] = persistence.FOCUSConformanceClaim
+	return parameters
+}
+
+// focusCSVMetadataGenerationParameters records the validator sidecar provenance and conformance boundary.
+func focusCSVMetadataGenerationParameters(request persistence.CURCSVExportRequest, result persistence.CURCSVExportResult, sourceExportFilename string) map[string]string {
+	parameters := focusCSVExportGenerationParameters(request, result)
+	parameters["source_export_filename"] = sourceExportFilename
+	parameters["validator_target"] = "FOCUS Validator"
+	parameters["validator_expected_result"] = persistence.FOCUSConformanceClaim
 	return parameters
 }
 
@@ -189,6 +207,8 @@ func exportFileContentType(exportType string) string {
 	switch exportType {
 	case persistence.ExportFileTypeCURCSV, persistence.ExportFileTypeFOCUSCSV:
 		return "text/csv; charset=utf-8"
+	case persistence.ExportFileTypeFOCUSMetadataJSON:
+		return "application/json; charset=utf-8"
 	default:
 		return "application/octet-stream"
 	}

@@ -2,13 +2,20 @@
 
 The simulator can generate a local FOCUS-like CSV export from durable bill line items. The export uses FOCUS-style PascalCase column names for common FinOps dimensions and metrics, plus simulator-specific `x_Simulator...` columns for provenance that does not belong in a standard provider-neutral column.
 
-This is a teaching export, not a FOCUS conformance claim. The public FOCUS specification is versioned and currently lists v1.4 as the latest version on the FOCUS site: https://focus.finops.org/focus-specification/v1-4/
+This is a teaching export, not a FOCUS conformance claim. The selected target specification is FOCUS v1.4: https://focus.finops.org/focus-specification/v1-4/
+
+## Conformance Boundary
+
+The simulator labels the CSV as `FOCUS-like` and stores `target_focus_spec_version=1.4` in generated export metadata. The export maps synthetic line items into FOCUS-style Cost and Usage columns where the simulator has matching concepts, and marks simulator-only provenance fields with the `x_Simulator...` extension prefix.
+
+The simulator does not claim strict FOCUS v1.4 conformance. Metadata sidecars use `conformance_claim=not_conformant` because this phase does not export every FOCUS v1.4 dataset, metadata document, conditional column, or advanced billing concept needed for formal conformance.
 
 ## Access Paths
 
 - Direct download: `/exports/focus.csv`
 - Stored generation: `POST /exports/generate-focus`
 - Stored file type: `focus_csv`
+- Stored metadata sidecar type: `focus_metadata_json`
 
 Both paths accept the same filters as the CUR-like CSV export:
 
@@ -22,6 +29,21 @@ Both paths accept the same filters as the CUR-like CSV export:
 - `viewer_account_id`
 
 Member viewers receive only their visible usage-account rows. Payer bill IDs, invoice IDs, and payer-scoped support rows are hidden from member-scoped FOCUS-like exports.
+
+## Metadata Sidecar
+
+Stored FOCUS CSV generation writes a JSON sidecar next to the CSV in the workspace export inventory. The sidecar filename is derived from the CSV filename with `-metadata.json`, and it is protected by the same export visibility rules as the CSV.
+
+The sidecar includes:
+
+- `schema`, `schema_version`, `target_focus_spec_version`, and `target_focus_spec_url`
+- `dataset=Cost and Usage`
+- source export filename, generated time, source bill ID when visible, and row count
+- visibility scope and whether document identifiers were hidden
+- an explicit `not_conformant` claim with the reason
+- validator-oriented context for external FOCUS Validator experiments
+- column classifications for FOCUS-mapped fields and simulator extension fields
+- unsupported FOCUS v1.4 requirements that remain outside the current simulator phase
 
 ## Column Mapping
 
@@ -63,4 +85,4 @@ Member viewers receive only their visible usage-account rows. Payer bill IDs, in
 - It does not include AWS account credentials, real pricing freshness, real invoices, taxes, credits, Savings Plans, Reserved Instances, or amortized cost data.
 - It maps current unblended synthetic costs into `EffectiveCost`, `ListCost`, and `ListUnitPrice` because the simulator has no discount instruments in this phase.
 - It uses simulator-specific custom columns for bill IDs, Cost Categories, schema marker, and source line-item IDs.
-- It does not include FOCUS metadata documents or validator output.
+- It includes a simulator metadata sidecar for validation context, but it does not produce formal FOCUS validator pass/fail output.

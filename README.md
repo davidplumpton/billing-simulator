@@ -47,7 +47,7 @@ The current codebase already includes these working foundations:
 - Organization tree UI with account directory, account detail panels, billing/resource drilldown links, and lifecycle forms for creating, moving, suspending, and closing accounts.
 - Versioned synthetic price catalog data for EC2, EBS, S3, Lambda, RDS, NAT Gateway, CloudWatch Logs, data transfer, AWS Support, and AWS Marketplace examples, with catalog-level source/fetch/effective metadata and scenario-run compatibility snapshots.
 - Resource lab UI for creating synthetic resources, adding tags, recording usage, generating deterministic usage, advancing the simulator clock, running daily metering, and closing billing periods.
-- Billing pipeline persistence for usage events, metering records, priced bill line items, billing-period service summaries, support charges, month-end closes, issued bills, invoice obligations, and invoice documents.
+- Billing pipeline persistence for usage events, metering records, priced bill line items, billing-period service summaries, support charges, basic EC2 Reserved Instance fee and coverage rows, month-end closes, issued bills, invoice obligations, and invoice documents.
 - Bills UI with bill state summaries, charge breakdowns, resource-level charge rows, reconciliation data, printable HTML invoice pages, invoice line-item CSV export, and bundled synthetic PDF invoice downloads at `/invoices/{invoice_id}/document.pdf`.
 - Scenario JSON/YAML parsing and execution for deterministic lab setup, including a Scenarios UI that lists and launches packaged "First consolidated bill", "Missing Tags", "Shared Networking allocation", "Payment Failure", "Forecast and Budget Alert", and "Find the untagged data-transfer spike" labs with recent run audit state, reset-to-seed actions, workspace cloning, local review archive bundles containing the workspace database plus CUR-like export evidence, and a local scenario editor with validation preview.
 - Scenario learner progress persistence for completed actions, current objective state, assessment check results, and learner feedback reports explaining changed state, evidence sources, and AWS billing concept mappings.
@@ -77,7 +77,7 @@ The broader MVP and later phases include:
 - Query-lab SQL examples target generated CUR-like exports and selected local CSV paths; the current dependency decision keeps DuckDB optional and external rather than embedded in the simulator binary. See [docs/query-lab-duckdb-decision.md](docs/query-lab-duckdb-decision.md).
 - Additional Billing Conductor-style showback lab workflows.
 - Richer instructor-authored scenarios and instructor assessment review workflows beyond current learner progress and check feedback.
-- More advanced billing fidelity such as credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized views.
+- More advanced billing fidelity such as credits, taxes, Savings Plans, richer Reserved Instance workflows, blended rates, and amortized views.
 
 ## Architecture
 

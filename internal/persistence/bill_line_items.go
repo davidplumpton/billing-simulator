@@ -144,6 +144,12 @@ func (r BillLineItemRepository) generateBillLineItems(ctx context.Context, reque
 				result.Items = append(result.Items, item)
 			}
 		}
+		reservedInstanceResult, err := NewReservedInstanceRepository(r.db).generateLineItemsInTx(ctx, tx, result.Items, request.LineItemStatus)
+		if err != nil {
+			return err
+		}
+		result.ItemsCreated += reservedInstanceResult.ItemsCreated
+		result.Items = append(result.Items, reservedInstanceResult.Items...)
 		if result.ItemsCreated > 0 {
 			if _, err := refreshCostCategoryAssignmentsInTx(ctx, tx, "", ""); err != nil {
 				return err
@@ -514,7 +520,7 @@ func insertBillLineItem(ctx context.Context, tx *sql.Tx, item BillLineItem) (boo
 			tag_snapshot_json,
 			description
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(metering_record_id) DO NOTHING`,
+		ON CONFLICT DO NOTHING`,
 		item.ID,
 		item.MeteringRecordID,
 		item.UsageEventID,

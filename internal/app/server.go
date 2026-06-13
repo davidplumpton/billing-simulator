@@ -122,92 +122,55 @@ func (s *Server) Wait() error {
 
 // newMux wires the simulator's local browser UI and smoke-testable endpoints.
 func newMux(db *sql.DB) http.Handler {
-	overview := newOverviewHandler()
 	resourceLab := newResourceLabHandler(db)
-	bills := newBillsHandler(db)
-	organization := newOrganizationHandler(db)
-	tags := newCostAllocationTagsHandler(db)
-	costCategories := newCostCategoriesHandler(db)
-	savingsPlans := newSavingsPlanHandler(db)
-	proForma := newProFormaHandler(db)
-	costExplorer := newCostExplorerHandler(db)
-	anomalies := newAnomalyHandler(db)
-	budgets := newBudgetHandler(db)
-	payments := newPaymentsHandler(db)
-	exports := newExportsHandler(db)
-	queryLab := newQueryLabHandler()
-	scenarios := newScenarioHandler(db)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", resourceLab.handleRoot)
-	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
-	mux.HandleFunc("/assets/app.js", serveAppScript)
-	mux.HandleFunc("/overview", overview.handleOverview)
-	mux.HandleFunc("/organization", organization.handleOrganization)
-	mux.HandleFunc("/organization/accounts/create", organization.handleCreateAccount)
-	mux.HandleFunc("/organization/accounts/move", organization.handleMoveAccount)
-	mux.HandleFunc("/organization/accounts/suspend", organization.handleSuspendAccount)
-	mux.HandleFunc("/organization/accounts/close", organization.handleCloseAccount)
-	mux.HandleFunc("/resources", resourceLab.handleResources)
-	mux.HandleFunc("/resources/create", resourceLab.handleCreateResource)
-	mux.HandleFunc("/resources/tags", resourceLab.handleAddTag)
-	mux.HandleFunc("/resources/usage", resourceLab.handleRecordUsage)
-	mux.HandleFunc("/resources/generate", resourceLab.handleGenerateUsage)
-	mux.HandleFunc("/resources/billing-pipeline", resourceLab.handleRunBillingPipeline)
-	mux.HandleFunc("/resources/daily-metering", resourceLab.handleRunDailyMeteringJob)
-	mux.HandleFunc("/resources/month-close", resourceLab.handleRunMonthEndClose)
-	mux.HandleFunc("/clock/advance", resourceLab.handleAdvanceClock)
-	mux.HandleFunc("/tags", tags.handleTags)
-	mux.HandleFunc("/tags/refresh", tags.handleRefreshDiscovery)
-	mux.HandleFunc("/tags/activate", tags.handleActivateTag)
-	mux.HandleFunc("/tags/deactivate", tags.handleDeactivateTag)
-	mux.HandleFunc("/cost-categories", costCategories.handleCostCategories)
-	mux.HandleFunc("/cost-categories/categories/create", costCategories.handleCreateCostCategory)
-	mux.HandleFunc("/cost-categories/rules/create", costCategories.handleCreateCostCategoryRule)
-	mux.HandleFunc("/cost-categories/splits/create", costCategories.handleCreateCostCategorySplitRule)
-	mux.HandleFunc("/savings-plans", savingsPlans.handleSavingsPlans)
-	mux.HandleFunc("/savings-plans/create", savingsPlans.handleCreateSavingsPlan)
-	mux.HandleFunc("/pro-forma", proForma.handleProForma)
-	mux.HandleFunc("/pro-forma/pricing-plans/create", proForma.handleCreatePricingPlan)
-	mux.HandleFunc("/pro-forma/pricing-rules/create", proForma.handleCreatePricingRule)
-	mux.HandleFunc("/pro-forma/billing-groups/create", proForma.handleCreateBillingGroup)
-	mux.HandleFunc("/pro-forma/accounts/assign", proForma.handleAssignAccount)
-	mux.HandleFunc("/pro-forma/refresh", proForma.handleRefreshLineItems)
-	mux.HandleFunc("/pro-forma/custom-line-items/create", proForma.handleCreateCustomLineItem)
-	mux.HandleFunc("/cost-explorer", costExplorer.handleCostExplorer)
-	mux.HandleFunc("/cost-explorer/results.csv", costExplorer.handleCostExplorerResultsCSV)
-	mux.HandleFunc("/cost-explorer/line-items", costExplorer.handleCostExplorerLineItems)
-	mux.HandleFunc("/cost-explorer/reports/save", costExplorer.handleSaveCostExplorerReport)
-	mux.HandleFunc("/cost-explorer/reports/run", costExplorer.handleRunCostExplorerReport)
-	mux.HandleFunc("/anomalies", anomalies.handleAnomalies)
-	mux.HandleFunc("/anomalies/refresh", anomalies.handleRefreshAnomalies)
-	mux.HandleFunc("/exports", exports.handleExports)
-	mux.HandleFunc("/exports/files/", exports.handleExportFileDownload)
-	mux.HandleFunc("/exports/regenerate", exports.handleRegenerateExport)
-	mux.HandleFunc("/exports/generate-cur", exports.handleGenerateCURCSVExport)
-	mux.HandleFunc("/exports/generate-focus", exports.handleGenerateFOCUSCSVExport)
-	mux.HandleFunc("/exports/cur.csv", exports.handleCURCSV)
-	mux.HandleFunc("/exports/focus.csv", exports.handleFOCUSCSV)
-	mux.HandleFunc("/exports/reconciliation", exports.handleCURReconciliation)
-	mux.HandleFunc("/query-lab", queryLab.handleQueryLab)
-	mux.HandleFunc("/budgets", budgets.handleBudgets)
-	mux.HandleFunc("/budgets/create", budgets.handleCreateBudget)
-	mux.HandleFunc("/budgets/refresh", budgets.handleRefreshBudgets)
-	mux.HandleFunc("/bills", bills.handleBills)
-	mux.HandleFunc("/invoices", bills.handleInvoiceIndex)
-	mux.HandleFunc("/invoices/", bills.handleInvoice)
-	mux.HandleFunc("/payments", payments.handlePayments)
-	mux.HandleFunc("/payments/action", payments.handlePaymentAction)
-	mux.HandleFunc("/scenarios", scenarios.handleScenarios)
-	mux.HandleFunc("/scenarios/feedback", scenarios.handleScenarioFeedback)
-	mux.HandleFunc("/scenarios/editor", scenarios.handleScenarioEditor)
-	mux.HandleFunc("/scenarios/editor/validate", scenarios.handleValidateScenarioEditor)
-	mux.HandleFunc("/scenarios/launch", scenarios.handleLaunchScenario)
-	mux.HandleFunc("/scenarios/reset", scenarios.handleResetScenario)
-	mux.HandleFunc("/scenarios/clone", scenarios.handleCloneWorkspace)
-	mux.HandleFunc("/scenarios/archive", scenarios.handleArchiveScenario)
-	mux.HandleFunc("/healthz", handleHealthCheck)
+	registerDirectWorkspaceRoutes(mux)
+	registerAppRoutes(mux, directAppRouteHandlers(db))
 	return mux
 }
+
+// registerDirectWorkspaceRoutes makes workspace-only links explicit on the direct test mux.
+func registerDirectWorkspaceRoutes(mux *http.ServeMux) {
+	workspaces := directWorkspaceUnavailableHandler{}
+	mux.HandleFunc("/workspaces", workspaces.handleWorkspaces)
+	mux.HandleFunc("/workspaces/open", workspaces.handleWorkspaceAction)
+	mux.HandleFunc("/workspaces/start", workspaces.handleWorkspaceAction)
+}
+
+type directWorkspaceUnavailableHandler struct{}
+
+// handleWorkspaces renders an intentional direct-mux placeholder for workspace links.
+func (directWorkspaceUnavailableHandler) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	renderPage(w, http.StatusOK, pageLayoutOptions{
+		Title:     "Workspaces - AWS Billing Simulator",
+		ActiveNav: "workspaces",
+	}, directWorkspaceUnavailableTemplate, nil, "render direct workspace unavailable page")
+}
+
+// handleWorkspaceAction rejects workspace mutations on the direct mux without hiding the route.
+func (directWorkspaceUnavailableHandler) handleWorkspaceAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	http.Error(w, "workspace session unavailable on direct mux\n", http.StatusNotImplemented)
+}
+
+var directWorkspaceUnavailableTemplate = newPageTemplate("direct-workspace-unavailable", `<div class="page-heading">
+	<div>
+		<h1>Workspaces</h1>
+		<p>Workspace selection is available from the runtime workspace session.</p>
+	</div>
+</div>
+<section class="empty">
+	<h2>Workspace Session Unavailable</h2>
+	<p>The direct handler surface is for focused tests and does not own workspace lifecycle state.</p>
+</section>`)
 
 // handleHealthCheck serves the local readiness probe for safe read methods only.
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {

@@ -118,207 +118,19 @@ func (h workspaceHandler) renderWorkspaces(w http.ResponseWriter, status int, er
 
 // newWorkspaceMux routes requests through the current workspace session.
 func newWorkspaceMux(workspace *workspaceSession) http.Handler {
-	workspaces := newWorkspaceHandler(workspace)
-	overview := newOverviewHandler()
 	mux := http.NewServeMux()
+	registerWorkspaceRoutes(mux, workspace)
+	registerAppRoutes(mux, workspaceAppRouteHandlers(workspace))
+	return workspaceLeaseMiddleware(workspace, mux)
+}
+
+// registerWorkspaceRoutes installs workspace lifecycle routes that do not belong to the direct app mux.
+func registerWorkspaceRoutes(mux *http.ServeMux, workspace *workspaceSession) {
+	workspaces := newWorkspaceHandler(workspace)
 	mux.HandleFunc("/", workspaces.handleRoot)
 	mux.HandleFunc("/workspaces", workspaces.handleWorkspaces)
 	mux.HandleFunc("/workspaces/open", workspaces.handleOpenWorkspace)
 	mux.HandleFunc("/workspaces/start", workspaces.handleStartFreshWorkspace)
-	mux.HandleFunc("/assets/app.css", serveAppStylesheet)
-	mux.HandleFunc("/assets/app.js", serveAppScript)
-	mux.HandleFunc("/overview", overview.handleOverview)
-	mux.HandleFunc("/organization", func(w http.ResponseWriter, r *http.Request) {
-		newOrganizationHandler(workspace.DB()).handleOrganization(w, r)
-	})
-	mux.HandleFunc("/organization/accounts/create", func(w http.ResponseWriter, r *http.Request) {
-		newOrganizationHandler(workspace.DB()).handleCreateAccount(w, r)
-	})
-	mux.HandleFunc("/organization/accounts/move", func(w http.ResponseWriter, r *http.Request) {
-		newOrganizationHandler(workspace.DB()).handleMoveAccount(w, r)
-	})
-	mux.HandleFunc("/organization/accounts/suspend", func(w http.ResponseWriter, r *http.Request) {
-		newOrganizationHandler(workspace.DB()).handleSuspendAccount(w, r)
-	})
-	mux.HandleFunc("/organization/accounts/close", func(w http.ResponseWriter, r *http.Request) {
-		newOrganizationHandler(workspace.DB()).handleCloseAccount(w, r)
-	})
-	mux.HandleFunc("/resources", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleResources(w, r)
-	}))
-	mux.HandleFunc("/resources/create", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleCreateResource(w, r)
-	}))
-	mux.HandleFunc("/resources/tags", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleAddTag(w, r)
-	}))
-	mux.HandleFunc("/resources/usage", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleRecordUsage(w, r)
-	}))
-	mux.HandleFunc("/resources/generate", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleGenerateUsage(w, r)
-	}))
-	mux.HandleFunc("/resources/billing-pipeline", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleRunBillingPipeline(w, r)
-	}))
-	mux.HandleFunc("/resources/daily-metering", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleRunDailyMeteringJob(w, r)
-	}))
-	mux.HandleFunc("/resources/month-close", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleRunMonthEndClose(w, r)
-	}))
-	mux.HandleFunc("/clock/advance", resourceRoute(workspace, func(h resourceLabHandler, w http.ResponseWriter, r *http.Request) {
-		h.handleAdvanceClock(w, r)
-	}))
-	mux.HandleFunc("/tags", func(w http.ResponseWriter, r *http.Request) {
-		newCostAllocationTagsHandler(workspace.DB()).handleTags(w, r)
-	})
-	mux.HandleFunc("/tags/refresh", func(w http.ResponseWriter, r *http.Request) {
-		newCostAllocationTagsHandler(workspace.DB()).handleRefreshDiscovery(w, r)
-	})
-	mux.HandleFunc("/tags/activate", func(w http.ResponseWriter, r *http.Request) {
-		newCostAllocationTagsHandler(workspace.DB()).handleActivateTag(w, r)
-	})
-	mux.HandleFunc("/tags/deactivate", func(w http.ResponseWriter, r *http.Request) {
-		newCostAllocationTagsHandler(workspace.DB()).handleDeactivateTag(w, r)
-	})
-	mux.HandleFunc("/cost-categories", func(w http.ResponseWriter, r *http.Request) {
-		newCostCategoriesHandler(workspace.DB()).handleCostCategories(w, r)
-	})
-	mux.HandleFunc("/cost-categories/categories/create", func(w http.ResponseWriter, r *http.Request) {
-		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategory(w, r)
-	})
-	mux.HandleFunc("/cost-categories/rules/create", func(w http.ResponseWriter, r *http.Request) {
-		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategoryRule(w, r)
-	})
-	mux.HandleFunc("/cost-categories/splits/create", func(w http.ResponseWriter, r *http.Request) {
-		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategorySplitRule(w, r)
-	})
-	mux.HandleFunc("/savings-plans", func(w http.ResponseWriter, r *http.Request) {
-		newSavingsPlanHandler(workspace.DB()).handleSavingsPlans(w, r)
-	})
-	mux.HandleFunc("/savings-plans/create", func(w http.ResponseWriter, r *http.Request) {
-		newSavingsPlanHandler(workspace.DB()).handleCreateSavingsPlan(w, r)
-	})
-	mux.HandleFunc("/pro-forma", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleProForma(w, r)
-	})
-	mux.HandleFunc("/pro-forma/pricing-plans/create", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleCreatePricingPlan(w, r)
-	})
-	mux.HandleFunc("/pro-forma/pricing-rules/create", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleCreatePricingRule(w, r)
-	})
-	mux.HandleFunc("/pro-forma/billing-groups/create", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleCreateBillingGroup(w, r)
-	})
-	mux.HandleFunc("/pro-forma/accounts/assign", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleAssignAccount(w, r)
-	})
-	mux.HandleFunc("/pro-forma/refresh", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleRefreshLineItems(w, r)
-	})
-	mux.HandleFunc("/pro-forma/custom-line-items/create", func(w http.ResponseWriter, r *http.Request) {
-		newProFormaHandler(workspace.DB()).handleCreateCustomLineItem(w, r)
-	})
-	mux.HandleFunc("/cost-explorer", func(w http.ResponseWriter, r *http.Request) {
-		newCostExplorerHandler(workspace.DB()).handleCostExplorer(w, r)
-	})
-	mux.HandleFunc("/cost-explorer/results.csv", func(w http.ResponseWriter, r *http.Request) {
-		newCostExplorerHandler(workspace.DB()).handleCostExplorerResultsCSV(w, r)
-	})
-	mux.HandleFunc("/cost-explorer/line-items", func(w http.ResponseWriter, r *http.Request) {
-		newCostExplorerHandler(workspace.DB()).handleCostExplorerLineItems(w, r)
-	})
-	mux.HandleFunc("/cost-explorer/reports/save", func(w http.ResponseWriter, r *http.Request) {
-		newCostExplorerHandler(workspace.DB()).handleSaveCostExplorerReport(w, r)
-	})
-	mux.HandleFunc("/cost-explorer/reports/run", func(w http.ResponseWriter, r *http.Request) {
-		newCostExplorerHandler(workspace.DB()).handleRunCostExplorerReport(w, r)
-	})
-	mux.HandleFunc("/anomalies", func(w http.ResponseWriter, r *http.Request) {
-		newAnomalyHandler(workspace.DB()).handleAnomalies(w, r)
-	})
-	mux.HandleFunc("/anomalies/refresh", func(w http.ResponseWriter, r *http.Request) {
-		newAnomalyHandler(workspace.DB()).handleRefreshAnomalies(w, r)
-	})
-	mux.HandleFunc("/exports", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleExports(w, r)
-	})
-	mux.HandleFunc("/exports/files/", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleExportFileDownload(w, r)
-	})
-	mux.HandleFunc("/exports/regenerate", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleRegenerateExport(w, r)
-	})
-	mux.HandleFunc("/exports/generate-cur", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleGenerateCURCSVExport(w, r)
-	})
-	mux.HandleFunc("/exports/generate-focus", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleGenerateFOCUSCSVExport(w, r)
-	})
-	mux.HandleFunc("/exports/cur.csv", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleCURCSV(w, r)
-	})
-	mux.HandleFunc("/exports/focus.csv", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleFOCUSCSV(w, r)
-	})
-	mux.HandleFunc("/exports/reconciliation", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleCURReconciliation(w, r)
-	})
-	mux.HandleFunc("/query-lab", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceQueryLabHandler(workspace.CurrentPath()).handleQueryLab(w, r)
-	})
-	mux.HandleFunc("/budgets", func(w http.ResponseWriter, r *http.Request) {
-		newBudgetHandler(workspace.DB()).handleBudgets(w, r)
-	})
-	mux.HandleFunc("/budgets/create", func(w http.ResponseWriter, r *http.Request) {
-		newBudgetHandler(workspace.DB()).handleCreateBudget(w, r)
-	})
-	mux.HandleFunc("/budgets/refresh", func(w http.ResponseWriter, r *http.Request) {
-		newBudgetHandler(workspace.DB()).handleRefreshBudgets(w, r)
-	})
-	mux.HandleFunc("/bills", func(w http.ResponseWriter, r *http.Request) {
-		newBillsHandler(workspace.DB()).handleBills(w, r)
-	})
-	mux.HandleFunc("/invoices", func(w http.ResponseWriter, r *http.Request) {
-		newBillsHandler(workspace.DB()).handleInvoiceIndex(w, r)
-	})
-	mux.HandleFunc("/invoices/", func(w http.ResponseWriter, r *http.Request) {
-		newBillsHandler(workspace.DB()).handleInvoice(w, r)
-	})
-	mux.HandleFunc("/payments", func(w http.ResponseWriter, r *http.Request) {
-		newPaymentsHandler(workspace.DB()).handlePayments(w, r)
-	})
-	mux.HandleFunc("/payments/action", func(w http.ResponseWriter, r *http.Request) {
-		newPaymentsHandler(workspace.DB()).handlePaymentAction(w, r)
-	})
-	mux.HandleFunc("/scenarios", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleScenarios(w, r)
-	})
-	mux.HandleFunc("/scenarios/feedback", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleScenarioFeedback(w, r)
-	})
-	mux.HandleFunc("/scenarios/editor", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleScenarioEditor(w, r)
-	})
-	mux.HandleFunc("/scenarios/editor/validate", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleValidateScenarioEditor(w, r)
-	})
-	mux.HandleFunc("/scenarios/launch", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleLaunchScenario(w, r)
-	})
-	mux.HandleFunc("/scenarios/reset", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleResetScenario(w, r)
-	})
-	mux.HandleFunc("/scenarios/clone", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleCloneWorkspace(w, r)
-	})
-	mux.HandleFunc("/scenarios/archive", func(w http.ResponseWriter, r *http.Request) {
-		newWorkspaceScenarioHandler(workspace).handleArchiveScenario(w, r)
-	})
-	mux.HandleFunc("/healthz", handleHealthCheck)
-	return workspaceLeaseMiddleware(workspace, mux)
 }
 
 // workspaceLeaseMiddleware keeps DB-backed request handlers from racing with workspace swaps.
@@ -337,18 +149,13 @@ func workspaceLeaseMiddleware(workspace *workspaceSession, next http.Handler) ht
 // workspaceRouteUsesActiveDB identifies routes whose handlers may keep the active DB for request work.
 func workspaceRouteUsesActiveDB(path string) bool {
 	switch path {
-	case "/", "/workspaces", "/workspaces/open", "/workspaces/start", "/assets/app.css", "/assets/app.js", "/overview", "/query-lab", "/healthz", "/scenarios/reset", "/scenarios/clone":
+	case "/", "/workspaces", "/workspaces/open", "/workspaces/start":
 		return false
-	default:
-		return true
 	}
-}
-
-// resourceRoute adapts resource handlers to the database currently open in the workspace session.
-func resourceRoute(workspace *workspaceSession, handle func(resourceLabHandler, http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		handle(newResourceLabHandler(workspace.DB()), w, r)
+	if usesActiveDB, ok := appRouteUsesActiveDB(path); ok {
+		return usesActiveDB
 	}
+	return true
 }
 
 var workspacePageTemplate = newPageTemplate("workspace-page", `<div class="page-heading">

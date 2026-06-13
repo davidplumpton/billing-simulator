@@ -100,6 +100,149 @@ func TestMethodNotAllowedResponsesIncludeAllowHeader(t *testing.T) {
 	}
 }
 
+func TestSharedAppRoutesRegisteredAcrossMuxSurfaces(t *testing.T) {
+	t.Parallel()
+
+	surfaces := []struct {
+		name    string
+		handler http.Handler
+	}{
+		{name: "direct", handler: newMux(nil)},
+		{name: "workspace", handler: newWorkspaceMux(&workspaceSession{})},
+	}
+
+	for _, surface := range surfaces {
+		surface := surface
+		t.Run(surface.name, func(t *testing.T) {
+			server := httptest.NewServer(surface.handler)
+			t.Cleanup(server.Close)
+
+			for _, route := range appRouteDefinitions {
+				route := route
+				t.Run(route.pattern, func(t *testing.T) {
+					req, err := http.NewRequest(route.disallowedMethod(), server.URL+route.probePath(), nil)
+					if err != nil {
+						t.Fatalf("NewRequest(%s %s) error = %v", route.disallowedMethod(), route.probePath(), err)
+					}
+					resp, err := server.Client().Do(req)
+					if err != nil {
+						t.Fatalf("%s %s error = %v", route.disallowedMethod(), route.probePath(), err)
+					}
+					body := readResponseBody(t, resp)
+					if resp.StatusCode != http.StatusMethodNotAllowed {
+						t.Fatalf("%s %s status = %d, want %d; body=%s", route.disallowedMethod(), route.probePath(), resp.StatusCode, http.StatusMethodNotAllowed, body)
+					}
+					if allow := resp.Header.Get("Allow"); allow != route.allowHeader() {
+						t.Fatalf("%s %s Allow = %q, want %q", route.disallowedMethod(), route.probePath(), allow, route.allowHeader())
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestWorkspaceOnlyRoutesAreExplicitAcrossMuxSurfaces(t *testing.T) {
+	t.Parallel()
+
+	direct := httptest.NewServer(newMux(nil))
+	t.Cleanup(direct.Close)
+	workspace := httptest.NewServer(newWorkspaceMux(&workspaceSession{}))
+	t.Cleanup(workspace.Close)
+
+	tests := []struct {
+		name       string
+		serverURL  string
+		method     string
+		path       string
+		wantStatus int
+		wantAllow  string
+		wantBody   string
+	}{
+		{
+			name:       "direct workspaces page resolves",
+			serverURL:  direct.URL,
+			method:     http.MethodGet,
+			path:       "/workspaces",
+			wantStatus: http.StatusOK,
+			wantBody:   "Workspace Session Unavailable",
+		},
+		{
+			name:       "direct start action is explicit",
+			serverURL:  direct.URL,
+			method:     http.MethodPost,
+			path:       "/workspaces/start",
+			wantStatus: http.StatusNotImplemented,
+			wantBody:   "workspace session unavailable on direct mux",
+		},
+		{
+			name:       "direct open action method guard",
+			serverURL:  direct.URL,
+			method:     http.MethodGet,
+			path:       "/workspaces/open",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
+		},
+		{
+			name:       "workspace page resolves",
+			serverURL:  workspace.URL,
+			method:     http.MethodGet,
+			path:       "/workspaces",
+			wantStatus: http.StatusOK,
+			wantBody:   "Open or Create Workspace",
+		},
+		{
+			name:       "workspace start method guard",
+			serverURL:  workspace.URL,
+			method:     http.MethodGet,
+			path:       "/workspaces/start",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantAllow:  "POST",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, tt.serverURL+tt.path, nil)
+			if err != nil {
+				t.Fatalf("NewRequest(%s %s) error = %v", tt.method, tt.path, err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s %s error = %v", tt.method, tt.path, err)
+			}
+			body := readResponseBody(t, resp)
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("%s %s status = %d, want %d; body=%s", tt.method, tt.path, resp.StatusCode, tt.wantStatus, body)
+			}
+			if allow := resp.Header.Get("Allow"); allow != tt.wantAllow {
+				t.Fatalf("%s %s Allow = %q, want %q", tt.method, tt.path, allow, tt.wantAllow)
+			}
+			if tt.wantBody != "" && !strings.Contains(body, tt.wantBody) {
+				t.Fatalf("%s %s body missing %q: %s", tt.method, tt.path, tt.wantBody, body)
+			}
+		})
+	}
+}
+
+func TestWorkspaceRouteLeaseMetadataMatchesSharedRoutes(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range appRouteDefinitions {
+		if got := workspaceRouteUsesActiveDB(route.probePath()); got != route.usesActiveDB {
+			t.Fatalf("workspaceRouteUsesActiveDB(%q) = %v, want %v", route.probePath(), got, route.usesActiveDB)
+		}
+	}
+	for _, path := range []string{"/", "/workspaces", "/workspaces/open", "/workspaces/start"} {
+		if workspaceRouteUsesActiveDB(path) {
+			t.Fatalf("workspaceRouteUsesActiveDB(%q) = true, want false for workspace lifecycle route", path)
+		}
+	}
+	if !workspaceRouteUsesActiveDB("/unregistered-future-route") {
+		t.Fatal("workspaceRouteUsesActiveDB() should default unknown routes to lease-protected")
+	}
+}
+
 func TestWorkspaceMuxHealthCheckMethodGuard(t *testing.T) {
 	t.Parallel()
 

@@ -209,6 +209,12 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/cost-explorer/reports/run", func(w http.ResponseWriter, r *http.Request) {
 		newCostExplorerHandler(workspace.DB()).handleRunCostExplorerReport(w, r)
 	})
+	mux.HandleFunc("/anomalies", func(w http.ResponseWriter, r *http.Request) {
+		newAnomalyHandler(workspace.DB()).handleAnomalies(w, r)
+	})
+	mux.HandleFunc("/anomalies/refresh", func(w http.ResponseWriter, r *http.Request) {
+		newAnomalyHandler(workspace.DB()).handleRefreshAnomalies(w, r)
+	})
 	mux.HandleFunc("/exports", func(w http.ResponseWriter, r *http.Request) {
 		newWorkspaceExportsHandler(workspace.DB(), workspace.CurrentPath()).handleExports(w, r)
 	})

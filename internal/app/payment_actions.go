@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"aws-billing-simulator/internal/billingvisibility"
@@ -295,19 +294,13 @@ func ensurePaymentPayerVisible(policy billingvisibility.Policy, payerAccountID s
 // parsePaymentAmountMicros converts decimal dollar inputs into micros for payment commands.
 func parsePaymentAmountMicros(value string) (int64, error) {
 	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "$", ""), ",", ""))
-	if value == "" {
-		return 0, fmt.Errorf("payment amount is required")
-	}
-	amount, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("payment amount must be numeric: %w", err)
-	}
-	if amount <= 0 {
-		return 0, fmt.Errorf("payment amount must be greater than zero")
-	}
-	micros := math.Round(amount * 1_000_000)
-	if micros > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("payment amount is too large")
-	}
-	return int64(micros), nil
+	return parsePositiveDecimalScaled(value, positiveDecimalScaleOptions{
+		RequiredMessage: "payment amount is required",
+		NumericMessage:  "payment amount must be numeric",
+		FiniteMessage:   "payment amount must be finite",
+		PositiveMessage: "payment amount must be greater than zero",
+		TooLargeMessage: "payment amount is too large",
+		Scale:           1_000_000,
+		MaxScaled:       float64(math.MaxInt64),
+	})
 }

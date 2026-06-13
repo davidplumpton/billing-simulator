@@ -477,38 +477,30 @@ func budgetScopeTypeOptions(selected string) []uiSelectOptionView {
 
 func parseBudgetAmountMicros(value string) (int64, error) {
 	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "$", ""), ",", ""))
-	if value == "" {
-		return 0, fmt.Errorf("budget amount is required")
-	}
-	amount, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("budget amount must be numeric: %w", err)
-	}
-	if amount <= 0 {
-		return 0, fmt.Errorf("budget amount must be greater than zero")
-	}
-	micros := math.Round(amount * 1_000_000)
-	if micros > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("budget amount is too large")
-	}
-	return int64(micros), nil
+	return parsePositiveDecimalScaled(value, positiveDecimalScaleOptions{
+		RequiredMessage: "budget amount is required",
+		NumericMessage:  "budget amount must be numeric",
+		FiniteMessage:   "budget amount must be finite",
+		PositiveMessage: "budget amount must be greater than zero",
+		TooLargeMessage: "budget amount is too large",
+		Scale:           1_000_000,
+		MaxScaled:       float64(math.MaxInt64),
+	})
 }
 
 func parseBudgetThresholdBasisPoints(value string) (int, error) {
 	value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
-	if value == "" {
-		return 0, fmt.Errorf("threshold percent is required")
-	}
-	percent, err := strconv.ParseFloat(value, 64)
+	basisPoints, err := parsePositiveDecimalScaled(value, positiveDecimalScaleOptions{
+		RequiredMessage: "threshold percent is required",
+		NumericMessage:  "threshold percent must be numeric",
+		FiniteMessage:   "threshold percent must be finite",
+		PositiveMessage: "threshold percent must be greater than zero",
+		TooLargeMessage: "threshold percent is too large",
+		Scale:           100,
+		MaxScaled:       100000,
+	})
 	if err != nil {
-		return 0, fmt.Errorf("threshold percent must be numeric: %w", err)
-	}
-	if percent <= 0 {
-		return 0, fmt.Errorf("threshold percent must be greater than zero")
-	}
-	basisPoints := math.Round(percent * 100)
-	if basisPoints > 100000 {
-		return 0, fmt.Errorf("threshold percent is too large")
+		return 0, err
 	}
 	return int(basisPoints), nil
 }

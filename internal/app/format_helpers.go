@@ -1,10 +1,46 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
+
+type positiveDecimalScaleOptions struct {
+	RequiredMessage string
+	NumericMessage  string
+	FiniteMessage   string
+	PositiveMessage string
+	TooLargeMessage string
+	Scale           float64
+	MaxScaled       float64
+}
+
+// parsePositiveDecimalScaled converts a normalized positive decimal form value
+// into a rounded scaled integer while rejecting non-finite floats before math.
+func parsePositiveDecimalScaled(value string, options positiveDecimalScaleOptions) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, errors.New(options.RequiredMessage)
+	}
+	decimal, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", options.NumericMessage, err)
+	}
+	if math.IsNaN(decimal) || math.IsInf(decimal, 0) {
+		return 0, errors.New(options.FiniteMessage)
+	}
+	if decimal <= 0 {
+		return 0, errors.New(options.PositiveMessage)
+	}
+	scaled := math.Round(decimal * options.Scale)
+	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled > options.MaxScaled {
+		return 0, errors.New(options.TooLargeMessage)
+	}
+	return int64(scaled), nil
+}
 
 func formatQuantityMicros(value int64) string {
 	if value%1_000_000 == 0 {

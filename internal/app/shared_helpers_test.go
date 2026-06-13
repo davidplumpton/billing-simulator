@@ -74,6 +74,103 @@ func TestSharedFormattingHelpers(t *testing.T) {
 	}
 }
 
+func TestDecimalFormParsersRejectNonFiniteAndKeepFiniteValidation(t *testing.T) {
+	t.Parallel()
+
+	parsers := []struct {
+		name        string
+		parse       func(string) (int64, error)
+		validInput  string
+		validWant   int64
+		negativeErr string
+		overflow    string
+		overflowErr string
+		finiteErr   string
+	}{
+		{
+			name:        "budget amount shared by budgets and anomalies",
+			parse:       parseBudgetAmountMicros,
+			validInput:  "$12.345678",
+			validWant:   12_345_678,
+			negativeErr: "budget amount must be greater than zero",
+			overflow:    "9223372036855",
+			overflowErr: "budget amount is too large",
+			finiteErr:   "budget amount must be finite",
+		},
+		{
+			name: "budget threshold shared by budgets and anomalies",
+			parse: func(value string) (int64, error) {
+				parsed, err := parseBudgetThresholdBasisPoints(value)
+				return int64(parsed), err
+			},
+			validInput:  "12.34%",
+			validWant:   1234,
+			negativeErr: "threshold percent must be greater than zero",
+			overflow:    "1000.01",
+			overflowErr: "threshold percent is too large",
+			finiteErr:   "threshold percent must be finite",
+		},
+		{
+			name:        "resource usage quantity",
+			parse:       parseQuantityMicros,
+			validInput:  "1.25",
+			validWant:   1_250_000,
+			negativeErr: "usage quantity must be greater than zero",
+			overflow:    "9223372036855",
+			overflowErr: "usage quantity is too large",
+			finiteErr:   "usage quantity must be finite",
+		},
+		{
+			name:        "payment amount",
+			parse:       parsePaymentAmountMicros,
+			validInput:  "$2.50",
+			validWant:   2_500_000,
+			negativeErr: "payment amount must be greater than zero",
+			overflow:    "9223372036855",
+			overflowErr: "payment amount is too large",
+			finiteErr:   "payment amount must be finite",
+		},
+	}
+
+	for _, parser := range parsers {
+		parser := parser
+		t.Run(parser.name+" valid decimal", func(t *testing.T) {
+			t.Parallel()
+			got, err := parser.parse(parser.validInput)
+			if err != nil {
+				t.Fatalf("parse(%q) error = %v, want nil", parser.validInput, err)
+			}
+			if got != parser.validWant {
+				t.Fatalf("parse(%q) = %d, want %d", parser.validInput, got, parser.validWant)
+			}
+		})
+		t.Run(parser.name+" ordinary negative", func(t *testing.T) {
+			t.Parallel()
+			_, err := parser.parse("-1")
+			if err == nil || !strings.Contains(err.Error(), parser.negativeErr) {
+				t.Fatalf("parse(-1) error = %v, want %q", err, parser.negativeErr)
+			}
+		})
+		t.Run(parser.name+" overflow", func(t *testing.T) {
+			t.Parallel()
+			_, err := parser.parse(parser.overflow)
+			if err == nil || !strings.Contains(err.Error(), parser.overflowErr) {
+				t.Fatalf("parse(%q) error = %v, want %q", parser.overflow, err, parser.overflowErr)
+			}
+		})
+		for _, input := range []string{"NaN", "+Inf", "-Inf"} {
+			input := input
+			t.Run(parser.name+" non-finite "+input, func(t *testing.T) {
+				t.Parallel()
+				_, err := parser.parse(input)
+				if err == nil || !strings.Contains(err.Error(), parser.finiteErr) {
+					t.Fatalf("parse(%q) error = %v, want %q", input, err, parser.finiteErr)
+				}
+			})
+		}
+	}
+}
+
 func TestSharedDisplayHelpers(t *testing.T) {
 	t.Parallel()
 

@@ -321,22 +321,15 @@ func parseFormTimestamp(value, defaultValue string) (string, error) {
 }
 
 func parseQuantityMicros(value string) (int64, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, fmt.Errorf("usage quantity is required")
-	}
-	quantity, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("usage quantity must be numeric: %w", err)
-	}
-	if quantity <= 0 {
-		return 0, fmt.Errorf("usage quantity must be greater than zero")
-	}
-	quantityMicros := math.Round(quantity * 1_000_000)
-	if quantityMicros > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("usage quantity is too large")
-	}
-	return int64(quantityMicros), nil
+	return parsePositiveDecimalScaled(value, positiveDecimalScaleOptions{
+		RequiredMessage: "usage quantity is required",
+		NumericMessage:  "usage quantity must be numeric",
+		FiniteMessage:   "usage quantity must be finite",
+		PositiveMessage: "usage quantity must be greater than zero",
+		TooLargeMessage: "usage quantity is too large",
+		Scale:           1_000_000,
+		MaxScaled:       float64(math.MaxInt64),
+	})
 }
 
 func copyStringMap(values map[string]string) map[string]string {

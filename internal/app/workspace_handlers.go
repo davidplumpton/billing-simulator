@@ -194,6 +194,24 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/cost-categories/splits/create", func(w http.ResponseWriter, r *http.Request) {
 		newCostCategoriesHandler(workspace.DB()).handleCreateCostCategorySplitRule(w, r)
 	})
+	mux.HandleFunc("/pro-forma", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleProForma(w, r)
+	})
+	mux.HandleFunc("/pro-forma/pricing-plans/create", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleCreatePricingPlan(w, r)
+	})
+	mux.HandleFunc("/pro-forma/pricing-rules/create", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleCreatePricingRule(w, r)
+	})
+	mux.HandleFunc("/pro-forma/billing-groups/create", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleCreateBillingGroup(w, r)
+	})
+	mux.HandleFunc("/pro-forma/accounts/assign", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleAssignAccount(w, r)
+	})
+	mux.HandleFunc("/pro-forma/refresh", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleRefreshLineItems(w, r)
+	})
 	mux.HandleFunc("/cost-explorer", func(w http.ResponseWriter, r *http.Request) {
 		newCostExplorerHandler(workspace.DB()).handleCostExplorer(w, r)
 	})

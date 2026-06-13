@@ -54,6 +54,7 @@ The current codebase already includes these working foundations:
 - Cost allocation tag manager UI with discovered key/value coverage, spend and resource coverage by tag key/account/service, untagged and case-mismatched spend, activation, deactivation, 24-hour pending visibility timing, and usage-window tag snapshots.
 - Cost Category rule persistence, preview UI, and line-item assignment snapshots for ordered account, service, region, usage-type, line-item-type, tag, and existing-category matches, including unmatched spend, rule-order effects, open-period refreshes, and finalized-period history.
 - Cost Category split-charge rule persistence and allocation comparison UI for even, fixed-share, and proportional allocation methods, with deterministic rounding, source-line audit rows, raw/category/split/total cost views, unallocated residuals, open-period refreshes, and finalized-period protection.
+- Billing Conductor-style pro forma pricing plans and billing groups with account assignments, service-level internal rate multipliers, generated showback rows, and separate source-line references that do not mutate payable bill line items.
 - Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Cost Explorer derived summary tables for daily cost, monthly account/service spend, tag coverage, and Cost Category value rollups after billing changes.
 - Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
@@ -74,7 +75,7 @@ The broader MVP and later phases include:
 - Richer past-due payment remediation teaching workflows beyond the current retry, collection, and payment-method fix flows.
 - Strict FOCUS data conformance and richer FOCUS coverage beyond the current FOCUS-like CSV export, plus richer query-lab workflows beyond the current external SQL examples.
 - Query-lab SQL examples target generated CUR-like exports and selected local CSV paths; the current dependency decision keeps DuckDB optional and external rather than embedded in the simulator binary. See [docs/query-lab-duckdb-decision.md](docs/query-lab-duckdb-decision.md).
-- Billing Conductor-style pro forma views and additional shared-cost lab workflows.
+- Additional Billing Conductor-style custom line items, markups, and showback lab workflows.
 - Richer instructor-authored scenarios and instructor assessment review workflows beyond current learner progress and check feedback.
 - More advanced billing fidelity such as credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized views.
 

@@ -56,7 +56,7 @@ var overviewPageTemplate = newPageTemplate("overview-page", `<div class="page-he
 		<div>
 			<h2 id="overview-flow-title">Core Interaction Flow</h2>
 			<p>Most labs follow the same billing chain, with reports and allocation tools reading from the line items created along the way.</p>
-			<p class="overview-flow-summary">In short: organization/accounts create visibility context; resources produce usage; metering/pricing creates bill line items; closes issue bills/invoices; payments modify invoice state; tags and Cost Categories affect reporting/allocation; exports/query lab consume generated billing data; scenarios seed repeatable labs.</p>
+			<p class="overview-flow-summary">In short: organization/accounts create visibility context; resources produce usage; metering/pricing creates bill line items; closes issue bills/invoices; payments modify invoice state; tags, Cost Categories, and Pro Forma affect reporting/allocation; exports/query lab consume generated billing data; scenarios seed repeatable labs.</p>
 		</div>
 	</div>
 	<div class="overview-flow">
@@ -91,8 +91,8 @@ var overviewPageTemplate = newPageTemplate("overview-page", `<div class="page-he
 		<div class="overview-flow-step">
 			<span>5</span>
 			<div>
-				<strong>Tags and Cost Categories change allocation.</strong>
-				<p><a href="/tags">Tags</a> and <a href="/cost-categories">Cost Categories</a> teach activation delays, missing coverage, ordered rules, and split-charge allocation.</p>
+				<strong>Tags, Cost Categories, and Pro Forma change allocation.</strong>
+				<p><a href="/tags">Tags</a>, <a href="/cost-categories">Cost Categories</a>, and <a href="/pro-forma">Pro Forma</a> teach activation delays, missing coverage, ordered rules, split-charge allocation, and internal showback.</p>
 			</div>
 		</div>
 		<div class="overview-flow-step">

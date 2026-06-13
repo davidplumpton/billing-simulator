@@ -209,6 +209,58 @@ func TestRunnerAllowsSameDefinitionRerunInOneWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunnerSnapshotsPriceCatalogManifestOnScenarioRun(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition := parseScenarioDefinitionForTest(t, `{
+		"name": "Catalog snapshot scenario",
+		"clock": {"start": "2026-02-01"},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "advance",
+				"day": 1,
+				"action": "advance_clock",
+				"amount": 1,
+				"unit": "days"
+			}
+		]
+	}`)
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	var catalogID, sourceURL, fetchDate, effectiveDate, regions, compatibilityKey, status, message string
+	if err := db.QueryRowContext(ctx, `
+		SELECT price_catalog_id,
+		       price_catalog_source_url,
+		       price_catalog_fetch_date,
+		       price_catalog_effective_date,
+		       price_catalog_supported_regions,
+		       price_catalog_compatibility_key,
+		       price_catalog_compatibility_status,
+		       price_catalog_compatibility_message
+		  FROM scenario_runs
+		 WHERE id = ?
+	`, result.Run.ID).Scan(&catalogID, &sourceURL, &fetchDate, &effectiveDate, &regions, &compatibilityKey, &status, &message); err != nil {
+		t.Fatalf("read scenario run price catalog snapshot: %v", err)
+	}
+	if catalogID != persistence.SyntheticPriceCatalogID ||
+		sourceURL != persistence.SyntheticPriceCatalogSourceURL ||
+		fetchDate != persistence.SyntheticPriceCatalogFetchDate ||
+		effectiveDate != persistence.SyntheticPriceCatalogEffectiveDate ||
+		regions != "global,us-east-1" ||
+		compatibilityKey != "scenario-v1" ||
+		status != persistence.PriceCatalogCompatibilityCompatible ||
+		!strings.Contains(message, "packaged scenario services") {
+		t.Fatalf("scenario run catalog snapshot = %q/%q/%q/%q/%q/%q/%q/%q, want synthetic compatibility", catalogID, sourceURL, fetchDate, effectiveDate, regions, compatibilityKey, status, message)
+	}
+}
+
 func TestRunnerMatchesExistingSavedReportByOwnerRole(t *testing.T) {
 	t.Parallel()
 

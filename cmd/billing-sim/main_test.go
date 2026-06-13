@@ -138,8 +138,8 @@ func TestPackagedCommandBuildsAndRunsFreshWorkspaceSmoke(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count schema_migrations in command-created workspace: %v", err)
 	}
-	if migrationCount != 34 {
-		t.Fatalf("schema_migrations count = %d, want 34", migrationCount)
+	if migrationCount != 35 {
+		t.Fatalf("schema_migrations count = %d, want 35", migrationCount)
 	}
 
 	var catalogCount int

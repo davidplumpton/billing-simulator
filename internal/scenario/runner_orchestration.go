@@ -14,15 +14,27 @@ import (
 
 // startScenarioRun reserves the audit header and learner progress row before domain mutations begin.
 func (r Runner) startScenarioRun(ctx context.Context, definition Definition, startTime time.Time) (ScenarioRun, error) {
-	run := ScenarioRun{
-		DefinitionName:       definition.Name,
-		OrganizationTemplate: definition.OrganizationTemplate,
-		RandomSeed:           definition.RandomSeed,
-		Status:               scenarioRunStatusRunning,
-		ClockStart:           startTime.Format(time.RFC3339),
-		EventsTotal:          len(definition.Events),
+	catalogCompatibility, err := persistence.NewPriceCatalogRepository(r.db).ScenarioCompatibility(ctx, startTime.Format(time.RFC3339))
+	if err != nil {
+		return ScenarioRun{}, fmt.Errorf("resolve scenario price catalog compatibility: %w", err)
 	}
-	run, err := r.createScenarioRun(ctx, run, definition)
+	run := ScenarioRun{
+		DefinitionName:                   definition.Name,
+		OrganizationTemplate:             definition.OrganizationTemplate,
+		RandomSeed:                       definition.RandomSeed,
+		Status:                           scenarioRunStatusRunning,
+		ClockStart:                       startTime.Format(time.RFC3339),
+		EventsTotal:                      len(definition.Events),
+		PriceCatalogID:                   catalogCompatibility.Catalog.ID,
+		PriceCatalogSourceURL:            catalogCompatibility.Catalog.SourceURL,
+		PriceCatalogFetchDate:            catalogCompatibility.Catalog.FetchDate,
+		PriceCatalogEffectiveDate:        catalogCompatibility.Catalog.EffectiveDate,
+		PriceCatalogSupportedRegions:     strings.Join(catalogCompatibility.Catalog.SupportedRegions, ","),
+		PriceCatalogCompatibilityKey:     catalogCompatibility.Catalog.CompatibilityKey,
+		PriceCatalogCompatibilityStatus:  catalogCompatibility.Status,
+		PriceCatalogCompatibilityMessage: catalogCompatibility.Message,
+	}
+	run, err = r.createScenarioRun(ctx, run, definition)
 	if err != nil {
 		return ScenarioRun{}, err
 	}
@@ -159,8 +171,16 @@ func (r Runner) insertScenarioRun(ctx context.Context, run ScenarioRun) error {
 			random_seed,
 			status,
 			clock_start,
-			events_total
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			events_total,
+			price_catalog_id,
+			price_catalog_source_url,
+			price_catalog_fetch_date,
+			price_catalog_effective_date,
+			price_catalog_supported_regions,
+			price_catalog_compatibility_key,
+			price_catalog_compatibility_status,
+			price_catalog_compatibility_message
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID,
 		run.DefinitionName,
 		run.OrganizationTemplate,
@@ -168,6 +188,14 @@ func (r Runner) insertScenarioRun(ctx context.Context, run ScenarioRun) error {
 		run.Status,
 		run.ClockStart,
 		run.EventsTotal,
+		run.PriceCatalogID,
+		run.PriceCatalogSourceURL,
+		run.PriceCatalogFetchDate,
+		run.PriceCatalogEffectiveDate,
+		run.PriceCatalogSupportedRegions,
+		run.PriceCatalogCompatibilityKey,
+		run.PriceCatalogCompatibilityStatus,
+		run.PriceCatalogCompatibilityMessage,
 	)
 	if err != nil {
 		return fmt.Errorf("insert scenario run %q: %w", run.ID, err)

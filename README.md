@@ -45,7 +45,7 @@ The current codebase already includes these working foundations:
 - Embedded server-rendered HTML templates, CSS, and vanilla JavaScript partial-refresh behavior.
 - An AnyCompany Retail seed organization with management account, OUs, member accounts, and a suspended account.
 - Organization tree UI with account directory, account detail panels, billing/resource drilldown links, and lifecycle forms for creating, moving, suspending, and closing accounts.
-- Synthetic price catalog data for EC2, EBS, S3, Lambda, RDS, NAT Gateway, CloudWatch Logs, data transfer, AWS Support, and AWS Marketplace examples.
+- Versioned synthetic price catalog data for EC2, EBS, S3, Lambda, RDS, NAT Gateway, CloudWatch Logs, data transfer, AWS Support, and AWS Marketplace examples, with catalog-level source/fetch/effective metadata and scenario-run compatibility snapshots.
 - Resource lab UI for creating synthetic resources, adding tags, recording usage, generating deterministic usage, advancing the simulator clock, running daily metering, and closing billing periods.
 - Billing pipeline persistence for usage events, metering records, priced bill line items, billing-period service summaries, support charges, month-end closes, issued bills, invoice obligations, and invoice documents.
 - Bills UI with bill state summaries, charge breakdowns, resource-level charge rows, reconciliation data, printable HTML invoice pages, invoice line-item CSV export, and bundled synthetic PDF invoice downloads at `/invoices/{invoice_id}/document.pdf`.

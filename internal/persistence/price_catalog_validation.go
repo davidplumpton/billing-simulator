@@ -81,7 +81,14 @@ func (r PriceCatalogRepository) Validate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return validatePriceCatalogItems(items)
+	if err := validatePriceCatalogItems(items); err != nil {
+		return err
+	}
+	manifests, err := r.ListManifests(ctx)
+	if err != nil {
+		return err
+	}
+	return validatePriceCatalogManifests(manifests, items)
 }
 
 func validatePriceCatalogItems(items []PriceCatalogItem) error {

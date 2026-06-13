@@ -125,21 +125,29 @@ type RunResult struct {
 
 // ScenarioRun is the durable audit header for one scenario execution.
 type ScenarioRun struct {
-	ID                     string
-	DefinitionName         string
-	OrganizationTemplate   string
-	RandomSeed             int64
-	Status                 string
-	ClockStart             string
-	CurrentEventID         string
-	EventsTotal            int
-	EventsSucceeded        int
-	ResourcesCreated       int
-	UsageEventsCreated     int
-	MeteringRecordsCreated int
-	BillLineItemsCreated   int
-	BillsIssued            int
-	ErrorMessage           string
+	ID                               string
+	DefinitionName                   string
+	OrganizationTemplate             string
+	RandomSeed                       int64
+	Status                           string
+	ClockStart                       string
+	CurrentEventID                   string
+	EventsTotal                      int
+	EventsSucceeded                  int
+	ResourcesCreated                 int
+	UsageEventsCreated               int
+	MeteringRecordsCreated           int
+	BillLineItemsCreated             int
+	BillsIssued                      int
+	ErrorMessage                     string
+	PriceCatalogID                   string
+	PriceCatalogSourceURL            string
+	PriceCatalogFetchDate            string
+	PriceCatalogEffectiveDate        string
+	PriceCatalogSupportedRegions     string
+	PriceCatalogCompatibilityKey     string
+	PriceCatalogCompatibilityStatus  string
+	PriceCatalogCompatibilityMessage string
 }
 
 // ScenarioRunEvent is the durable audit row for one applied scenario event.

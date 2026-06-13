@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,25 @@ func TestPriceCatalogSeededForMVPServices(t *testing.T) {
 	}
 	if len(items) != 18 {
 		t.Fatalf("price catalog item count = %d, want 18", len(items))
+	}
+	manifest, err := repo.ActiveManifest(ctx)
+	if err != nil {
+		t.Fatalf("ActiveManifest() error = %v", err)
+	}
+	if manifest.ID != SyntheticPriceCatalogID ||
+		manifest.SourceURL != SyntheticPriceCatalogSourceURL ||
+		manifest.FetchDate != SyntheticPriceCatalogFetchDate ||
+		manifest.EffectiveDate != SyntheticPriceCatalogEffectiveDate ||
+		manifest.CompatibilityKey != "scenario-v1" ||
+		!slices.Equal(manifest.SupportedRegions, []string{"global", "us-east-1"}) {
+		t.Fatalf("active catalog manifest = %+v, want synthetic catalog provenance", manifest)
+	}
+	compatibility, err := repo.ScenarioCompatibility(ctx, "2026-02-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ScenarioCompatibility() error = %v", err)
+	}
+	if compatibility.Status != PriceCatalogCompatibilityCompatible || compatibility.Catalog.ID != SyntheticPriceCatalogID {
+		t.Fatalf("ScenarioCompatibility() = %+v, want synthetic catalog compatible", compatibility)
 	}
 	seedItems, err := SyntheticPriceCatalogSeedItems()
 	if err != nil {
@@ -75,6 +95,23 @@ func TestPriceCatalogSeededForMVPServices(t *testing.T) {
 		if !seen {
 			t.Fatalf("required service %q was not seeded in the price catalog", serviceName)
 		}
+	}
+}
+
+func TestPriceCatalogScenarioCompatibilityFlagsPreEffectiveScenario(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewPriceCatalogRepository(db)
+
+	compatibility, err := repo.ScenarioCompatibility(ctx, "2025-12-31")
+	if err != nil {
+		t.Fatalf("ScenarioCompatibility() error = %v", err)
+	}
+	if compatibility.Status != PriceCatalogCompatibilityIncompatible ||
+		!strings.Contains(compatibility.Message, "before catalog synthetic-2026-01-01 becomes effective") {
+		t.Fatalf("ScenarioCompatibility() = %+v, want pre-effective incompatibility", compatibility)
 	}
 }
 
@@ -164,6 +201,26 @@ func TestPriceCatalogValidateRejectsWorkspaceInconsistency(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Validate() error = %q, want to contain %q", err.Error(), want)
 		}
+	}
+}
+
+func TestPriceCatalogValidateRejectsManifestMissingItemRegion(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewPriceCatalogRepository(db)
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM price_catalog_manifest_regions WHERE catalog_id = ? AND region_code = ?`, SyntheticPriceCatalogID, "global"); err != nil {
+		t.Fatalf("delete global catalog manifest region: %v", err)
+	}
+
+	err := repo.Validate(ctx)
+	if err == nil {
+		t.Fatal("Validate() error = nil, want manifest region validation error")
+	}
+	if want := `active catalog manifest "synthetic-2026-01-01" does not list item region "global"`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("Validate() error = %q, want to contain %q", err.Error(), want)
 	}
 }
 

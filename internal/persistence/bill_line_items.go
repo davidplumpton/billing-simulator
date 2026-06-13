@@ -150,6 +150,12 @@ func (r BillLineItemRepository) generateBillLineItems(ctx context.Context, reque
 		}
 		result.ItemsCreated += reservedInstanceResult.ItemsCreated
 		result.Items = append(result.Items, reservedInstanceResult.Items...)
+		savingsPlanResult, err := NewSavingsPlanRepository(r.db).generateLineItemsInTx(ctx, tx, result.Items, request.LineItemStatus)
+		if err != nil {
+			return err
+		}
+		result.ItemsCreated += savingsPlanResult.ItemsCreated
+		result.Items = append(result.Items, savingsPlanResult.Items...)
 		if result.ItemsCreated > 0 {
 			if _, err := refreshCostCategoryAssignmentsInTx(ctx, tx, "", ""); err != nil {
 				return err

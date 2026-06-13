@@ -171,7 +171,7 @@ func BuildFOCUSCSVExportMetadata(request CURCSVExportRequest, result CURCSVExpor
 		UnsupportedRequirements: []string{
 			"FOCUS v1.4 Billing Period, Contract Commitment, and Invoice Detail datasets are not exported.",
 			"FOCUS v1.4 Recency and Schema metadata documents are represented only by this simulator sidecar.",
-			"Credits, taxes, Savings Plans, Reserved Instances, blended rates, and amortized cost fields are not modeled in this phase.",
+			"Credits, taxes, blended rates, and FOCUS-native amortized/net cost fields are not modeled in this phase; simplified Reserved Instance and Savings Plan rows remain simulator line items rather than formal FOCUS Contract Commitment datasets.",
 		},
 	}
 }

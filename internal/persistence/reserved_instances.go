@@ -922,13 +922,17 @@ func reservedInstancePeriodTimes(period reservedInstancePeriodRef) (time.Time, t
 }
 
 func upsertReservedInstanceBillLineItem(ctx context.Context, tx reservedInstanceStore, item BillLineItem) (bool, error) {
+	return upsertGeneratedBillLineItem(ctx, tx, item, "reserved instance")
+}
+
+func upsertGeneratedBillLineItem(ctx context.Context, tx reservedInstanceStore, item BillLineItem, sourceLabel string) (bool, error) {
 	exists, err := billLineItemExists(ctx, tx, item.ID)
 	if err != nil {
 		return false, err
 	}
 	tagSnapshotJSON, err := marshalStringMap(item.TagSnapshot)
 	if err != nil {
-		return false, fmt.Errorf("marshal reserved instance line item tag snapshot for %q: %w", item.ID, err)
+		return false, fmt.Errorf("marshal %s line item tag snapshot for %q: %w", sourceLabel, item.ID, err)
 	}
 	if _, err := tx.ExecContext(
 		ctx,
@@ -1025,7 +1029,7 @@ func upsertReservedInstanceBillLineItem(ctx context.Context, tx reservedInstance
 		if closedErr := closedBillingPeriodMutationError(ctx, tx, item.BillingPeriodStart, item.BillingPeriodEnd, item.PayerAccountID, err); errors.Is(closedErr, ErrClosedBillingPeriod) {
 			return false, closedErr
 		}
-		return false, fmt.Errorf("upsert reserved instance bill line item %q: %w", item.ID, err)
+		return false, fmt.Errorf("upsert %s bill line item %q: %w", sourceLabel, item.ID, err)
 	}
 	return !exists, nil
 }

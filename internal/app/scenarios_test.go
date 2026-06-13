@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"aws-billing-simulator/internal/persistence"
+	"aws-billing-simulator/internal/scenario"
 )
 
 func TestScenariosUIRequiresWorkspace(t *testing.T) {
@@ -119,6 +120,26 @@ func TestScenariosUIRequiresWorkspace(t *testing.T) {
 		}
 		if !strings.Contains(body, action.want) {
 			t.Fatalf("POST %s without workspace missing %q: %s", action.path, action.want, body)
+		}
+	}
+}
+
+func TestScenarioCatalogUsesShortestPlausibleDurations(t *testing.T) {
+	t.Parallel()
+
+	catalog := scenarioCatalog()
+	wantDurations := map[string]string{
+		scenario.FirstConsolidatedBillSeedKey:      "5 min",
+		scenario.MissingTagsSeedKey:                "5 min",
+		scenario.SharedNetworkingAllocationSeedKey: "10 min",
+		scenario.PaymentFailureSeedKey:             "5 min",
+		scenario.ForecastBudgetAlertSeedKey:        "10 min",
+		scenario.SavingsPlanCoverageSeedKey:        "5 min",
+		scenario.UntaggedDataTransferSpikeSeedKey:  "5 min",
+	}
+	for key, want := range wantDurations {
+		if got := catalog[key].EstimatedDuration; got != want {
+			t.Fatalf("scenarioCatalog()[%q].EstimatedDuration = %q, want %q", key, got, want)
 		}
 	}
 }

@@ -18,6 +18,11 @@ import (
 	"aws-billing-simulator/internal/scenario"
 )
 
+var (
+	openWorkspaceForReset          = persistence.OpenWorkspace
+	stageWorkspaceDatabaseForReset = stageWorkspaceDatabaseReset
+)
+
 type scenarioArchiveResult struct {
 	Path        string
 	ExportCount int
@@ -253,29 +258,29 @@ func (s *workspaceSession) ResetToScenarioSeed(ctx context.Context, definition s
 	if workspacePath == "" {
 		return scenario.RunResult{}, fmt.Errorf("open workspace is required")
 	}
-	s.mu.Lock()
-	s.db = nil
-	s.path = ""
-	s.mu.Unlock()
+	s.clearActiveWorkspaceForReset()
 	if oldDB != nil {
 		if err := oldDB.Close(); err != nil {
-			return scenario.RunResult{}, fmt.Errorf("close workspace before reset: %w", err)
+			return scenario.RunResult{}, s.recoverWorkspaceAfterResetFailure(ctx, workspacePath, fmt.Errorf("close workspace before reset: %w", err))
 		}
 	}
-	if err := removeWorkspaceDatabaseFiles(workspacePath); err != nil {
-		return scenario.RunResult{}, err
+	staging, err := stageWorkspaceDatabaseForReset(workspacePath)
+	if err != nil {
+		return scenario.RunResult{}, s.recoverWorkspaceAfterResetFailure(ctx, workspacePath, err)
 	}
 
-	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	db, err := openWorkspaceForReset(ctx, workspacePath)
 	if err != nil {
-		return scenario.RunResult{}, fmt.Errorf("open reset workspace: %w", err)
+		restoreErr := staging.Restore()
+		return scenario.RunResult{}, s.recoverWorkspaceAfterResetFailure(ctx, workspacePath, appendResetRecoveryError(fmt.Errorf("open reset workspace: %w", err), restoreErr))
 	}
-	s.mu.Lock()
-	s.db = db
-	s.path = workspacePath
-	s.lastPath = workspacePath
-	s.mu.Unlock()
 	if err := s.store.Save(workspaceState{LastWorkspacePath: workspacePath}); err != nil {
+		closeErr := db.Close()
+		restoreErr := staging.Restore()
+		return scenario.RunResult{}, s.recoverWorkspaceAfterResetFailure(ctx, workspacePath, appendResetRecoveryError(err, closeErr, restoreErr))
+	}
+	s.activateWorkspaceAfterReset(db, workspacePath)
+	if err := staging.Commit(); err != nil {
 		return scenario.RunResult{}, err
 	}
 
@@ -287,6 +292,127 @@ func (s *workspaceSession) ResetToScenarioSeed(ctx context.Context, definition s
 		return result, fmt.Errorf("evaluate scenario checks: %w", err)
 	}
 	return result, nil
+}
+
+// clearActiveWorkspaceForReset prevents new request handlers from observing a handle being closed.
+func (s *workspaceSession) clearActiveWorkspaceForReset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db = nil
+	s.path = ""
+}
+
+// activateWorkspaceAfterReset publishes a reopened workspace after reset staging has completed.
+func (s *workspaceSession) activateWorkspaceAfterReset(db *sql.DB, workspacePath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db = db
+	s.path = workspacePath
+	s.lastPath = workspacePath
+}
+
+// recoverWorkspaceAfterResetFailure reopens the workspace path so reset errors leave the session usable.
+func (s *workspaceSession) recoverWorkspaceAfterResetFailure(ctx context.Context, workspacePath string, cause error) error {
+	db, err := openWorkspaceForReset(ctx, workspacePath)
+	if err != nil {
+		return appendResetRecoveryError(cause, fmt.Errorf("recover workspace session: %w", err))
+	}
+	s.activateWorkspaceAfterReset(db, workspacePath)
+	return cause
+}
+
+func appendResetRecoveryError(primary error, extras ...error) error {
+	err := primary
+	for _, extra := range extras {
+		if extra != nil {
+			if err == nil {
+				err = extra
+			} else {
+				err = fmt.Errorf("%w; %v", err, extra)
+			}
+		}
+	}
+	return err
+}
+
+type workspaceResetStaging struct {
+	backupDir string
+	files     []workspaceResetStagedFile
+}
+
+type workspaceResetStagedFile struct {
+	originalPath string
+	backupPath   string
+}
+
+// stageWorkspaceDatabaseReset moves current SQLite files aside before opening a fresh reset database.
+func stageWorkspaceDatabaseReset(workspacePath string) (workspaceResetStaging, error) {
+	staging := workspaceResetStaging{}
+	dbPath := persistence.WorkspaceDBPath(workspacePath)
+	paths := []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
+	existingPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return staging, fmt.Errorf("inspect workspace database file %q: %w", path, err)
+		}
+		existingPaths = append(existingPaths, path)
+	}
+	if len(existingPaths) == 0 {
+		return staging, nil
+	}
+
+	backupDir, err := os.MkdirTemp(workspacePath, ".reset-backup-")
+	if err != nil {
+		return staging, fmt.Errorf("create reset backup directory: %w", err)
+	}
+	staging.backupDir = backupDir
+	for _, path := range existingPaths {
+		backupPath := filepath.Join(backupDir, filepath.Base(path))
+		if err := os.Rename(path, backupPath); err != nil {
+			restoreErr := staging.Restore()
+			return staging, appendResetRecoveryError(fmt.Errorf("stage workspace database file %q: %w", path, err), restoreErr)
+		}
+		staging.files = append(staging.files, workspaceResetStagedFile{
+			originalPath: path,
+			backupPath:   backupPath,
+		})
+	}
+	return staging, nil
+}
+
+// Restore puts staged database files back after a reset setup failure.
+func (s workspaceResetStaging) Restore() error {
+	var result error
+	for i := len(s.files) - 1; i >= 0; i-- {
+		file := s.files[i]
+		if err := os.Remove(file.originalPath); err != nil && !os.IsNotExist(err) {
+			result = appendResetRecoveryError(result, fmt.Errorf("remove replacement workspace database file %q: %w", file.originalPath, err))
+			continue
+		}
+		if err := os.Rename(file.backupPath, file.originalPath); err != nil {
+			result = appendResetRecoveryError(result, fmt.Errorf("restore workspace database file %q: %w", file.originalPath, err))
+		}
+	}
+	if s.backupDir != "" {
+		if err := os.Remove(s.backupDir); err != nil && !os.IsNotExist(err) {
+			result = appendResetRecoveryError(result, fmt.Errorf("remove reset backup directory %q: %w", s.backupDir, err))
+		}
+	}
+	return result
+}
+
+// Commit discards staged backup files once the reset workspace has been safely published.
+func (s workspaceResetStaging) Commit() error {
+	if s.backupDir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(s.backupDir); err != nil {
+		return fmt.Errorf("remove reset backup directory %q: %w", s.backupDir, err)
+	}
+	return nil
 }
 
 // archiveScenarioRun creates a ZIP with a database snapshot plus run-specific export files.

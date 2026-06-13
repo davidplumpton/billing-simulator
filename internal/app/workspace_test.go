@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"aws-billing-simulator/internal/persistence"
+	"aws-billing-simulator/internal/scenario"
 )
 
 func TestWorkspaceStateStorePersistsLastWorkspacePath(t *testing.T) {
@@ -453,6 +455,175 @@ func TestWorkspaceOpenWaitsForActiveWorkspaceBackedRequest(t *testing.T) {
 	}
 	if got := session.CurrentPath(); got != nextPath {
 		t.Fatalf("CurrentPath() = %q, want %q", got, nextPath)
+	}
+}
+
+func TestResetToScenarioSeedRecoversSessionWhenStagingFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "active-workspace")
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	session := &workspaceSession{
+		store:    newWorkspaceStateStore(filepath.Join(root, "state.json")),
+		db:       db,
+		path:     workspacePath,
+		lastPath: workspacePath,
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	writeResetRecoveryMarker(t, ctx, db)
+
+	originalStage := stageWorkspaceDatabaseForReset
+	stageWorkspaceDatabaseForReset = func(path string) (workspaceResetStaging, error) {
+		if path != workspacePath {
+			t.Fatalf("stage path = %q, want %q", path, workspacePath)
+		}
+		return workspaceResetStaging{}, errors.New("forced staging failure")
+	}
+	t.Cleanup(func() {
+		stageWorkspaceDatabaseForReset = originalStage
+	})
+
+	_, err = session.ResetToScenarioSeed(ctx, scenario.Definition{Name: "unused reset scenario"})
+	if err == nil || !strings.Contains(err.Error(), "forced staging failure") {
+		t.Fatalf("ResetToScenarioSeed() error = %v, want forced staging failure", err)
+	}
+	if got := session.CurrentPath(); got != workspacePath {
+		t.Fatalf("CurrentPath() after failed reset = %q, want %q", got, workspacePath)
+	}
+	requireResetRecoveryMarker(t, ctx, session.DB())
+}
+
+func TestResetToScenarioSeedRestoresSessionWhenReplacementOpenFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "active-workspace")
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	session := &workspaceSession{
+		store:    newWorkspaceStateStore(filepath.Join(root, "state.json")),
+		db:       db,
+		path:     workspacePath,
+		lastPath: workspacePath,
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	writeResetRecoveryMarker(t, ctx, db)
+
+	openCount := 0
+	originalOpen := openWorkspaceForReset
+	openWorkspaceForReset = func(ctx context.Context, path string) (*sql.DB, error) {
+		if path != workspacePath {
+			t.Fatalf("open path = %q, want %q", path, workspacePath)
+		}
+		openCount++
+		if openCount == 1 {
+			return nil, errors.New("forced replacement open failure")
+		}
+		return persistence.OpenWorkspace(ctx, path)
+	}
+	t.Cleanup(func() {
+		openWorkspaceForReset = originalOpen
+	})
+
+	_, err = session.ResetToScenarioSeed(ctx, scenario.Definition{Name: "unused reset scenario"})
+	if err == nil || !strings.Contains(err.Error(), "forced replacement open failure") {
+		t.Fatalf("ResetToScenarioSeed() error = %v, want replacement open failure", err)
+	}
+	if openCount != 2 {
+		t.Fatalf("openWorkspaceForReset calls = %d, want failed replacement open plus recovery open", openCount)
+	}
+	if got := session.CurrentPath(); got != workspacePath {
+		t.Fatalf("CurrentPath() after failed reset = %q, want %q", got, workspacePath)
+	}
+	requireResetRecoveryMarker(t, ctx, session.DB())
+}
+
+func TestResetToScenarioSeedRestoresSessionWhenStateSaveFailsAfterReplacementOpen(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "active-workspace")
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	stateParentFile := filepath.Join(root, "state-parent")
+	if err := os.WriteFile(stateParentFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write state parent file: %v", err)
+	}
+	session := &workspaceSession{
+		store:    newWorkspaceStateStore(filepath.Join(stateParentFile, "state.json")),
+		db:       db,
+		path:     workspacePath,
+		lastPath: workspacePath,
+	}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	writeResetRecoveryMarker(t, ctx, db)
+
+	openCount := 0
+	originalOpen := openWorkspaceForReset
+	openWorkspaceForReset = func(ctx context.Context, path string) (*sql.DB, error) {
+		if path != workspacePath {
+			t.Fatalf("open path = %q, want %q", path, workspacePath)
+		}
+		openCount++
+		return persistence.OpenWorkspace(ctx, path)
+	}
+	t.Cleanup(func() {
+		openWorkspaceForReset = originalOpen
+	})
+
+	_, err = session.ResetToScenarioSeed(ctx, scenario.Definition{Name: "unused reset scenario"})
+	if err == nil || !strings.Contains(err.Error(), "create app state directory") {
+		t.Fatalf("ResetToScenarioSeed() error = %v, want app state save failure", err)
+	}
+	if openCount != 2 {
+		t.Fatalf("openWorkspaceForReset calls = %d, want replacement open plus recovery open", openCount)
+	}
+	if got := session.CurrentPath(); got != workspacePath {
+		t.Fatalf("CurrentPath() after failed reset = %q, want %q", got, workspacePath)
+	}
+	requireResetRecoveryMarker(t, ctx, session.DB())
+}
+
+func writeResetRecoveryMarker(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE reset_recovery_marker (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("create reset recovery marker table: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO reset_recovery_marker (id) VALUES ('before-reset')`); err != nil {
+		t.Fatalf("insert reset recovery marker: %v", err)
+	}
+}
+
+func requireResetRecoveryMarker(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	if db == nil {
+		t.Fatal("workspace database is nil after failed reset")
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reset_recovery_marker WHERE id = 'before-reset'`).Scan(&count); err != nil {
+		t.Fatalf("read reset recovery marker: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("reset recovery marker count = %d, want 1", count)
 	}
 }
 

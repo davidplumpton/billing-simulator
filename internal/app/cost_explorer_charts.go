@@ -95,6 +95,11 @@ type costExplorerChartSeries struct {
 	Values map[string]int64
 }
 
+type costExplorerChartDomain struct {
+	MinValue int64
+	MaxValue int64
+}
+
 // costExplorerChartViewFromResult converts aggregate report rows into server-rendered SVG primitives.
 func costExplorerChartViewFromResult(result persistence.CostExplorerQueryResult, metric, chartType string) costExplorerChartView {
 	chart := costExplorerChartView{
@@ -122,23 +127,21 @@ func costExplorerChartViewFromResult(result persistence.CostExplorerQueryResult,
 		return chart
 	}
 	stacked := chartType == "stacked_bar"
-	maxValue := costExplorerChartMaxValue(buckets, series, stacked)
-	if maxValue <= 0 {
-		maxValue = 1
-	}
+	domain := costExplorerChartDomainFor(buckets, series, stacked)
 
 	chart.HasChart = true
-	chart.YAxisLabel = "Max " + costExplorerChartValueLabel(metric, maxValue)
-	chart.Ticks = costExplorerChartTicks(maxValue, metric)
+	chart.ZeroY = costExplorerChartY(0, domain)
+	chart.YAxisLabel = costExplorerChartYAxisLabel(domain, metric)
+	chart.Ticks = costExplorerChartTicks(domain, metric)
 	chart.XLabels = costExplorerChartXLabels(buckets)
 	chart.Legend = costExplorerChartLegend(series)
 	switch chartType {
 	case "line":
-		chart.Lines = costExplorerChartLines(buckets, series, metric, maxValue)
+		chart.Lines = costExplorerChartLines(buckets, series, metric, domain)
 	case "bar":
-		chart.Bars = costExplorerChartBars(buckets, series, metric, maxValue, false)
+		chart.Bars = costExplorerChartBars(buckets, series, metric, domain, false)
 	case "stacked_bar":
-		chart.Bars = costExplorerChartBars(buckets, series, metric, maxValue, true)
+		chart.Bars = costExplorerChartBars(buckets, series, metric, domain, true)
 	}
 	return chart
 }
@@ -198,38 +201,80 @@ func costExplorerMetricMicros(metric string, row persistence.CostExplorerQueryRo
 	}
 }
 
-// costExplorerChartMaxValue finds the scale ceiling for grouped or stacked charts.
-func costExplorerChartMaxValue(buckets []string, series []costExplorerChartSeries, stacked bool) int64 {
-	var maxValue int64
+// costExplorerChartDomainFor finds the value range needed to render grouped or stacked charts around zero.
+func costExplorerChartDomainFor(buckets []string, series []costExplorerChartSeries, stacked bool) costExplorerChartDomain {
+	domain := costExplorerChartDomain{}
+	seen := false
 	for _, bucket := range buckets {
-		var bucketTotal int64
+		var positiveTotal int64
+		var negativeTotal int64
 		for _, item := range series {
 			value := item.Values[bucket]
-			if value < 0 {
-				value = 0
-			}
 			if stacked {
-				bucketTotal += value
+				if value >= 0 {
+					positiveTotal += value
+				} else {
+					negativeTotal += value
+				}
 				continue
 			}
-			if value > maxValue {
-				maxValue = value
+			if !seen || value < domain.MinValue {
+				domain.MinValue = value
 			}
+			if !seen || value > domain.MaxValue {
+				domain.MaxValue = value
+			}
+			seen = true
 		}
-		if stacked && bucketTotal > maxValue {
-			maxValue = bucketTotal
+		if stacked {
+			if !seen || negativeTotal < domain.MinValue {
+				domain.MinValue = negativeTotal
+			}
+			if !seen || positiveTotal > domain.MaxValue {
+				domain.MaxValue = positiveTotal
+			}
+			seen = true
 		}
 	}
-	return maxValue
+	if domain.MinValue > 0 {
+		domain.MinValue = 0
+	}
+	if domain.MaxValue < 0 {
+		domain.MaxValue = 0
+	}
+	if domain.MinValue == 0 && domain.MaxValue == 0 {
+		domain.MaxValue = 1
+	}
+	return domain
 }
 
-// costExplorerChartTicks renders a compact vertical scale with top, midpoint, and zero labels.
-func costExplorerChartTicks(maxValue int64, metric string) []costExplorerChartTickView {
-	mid := maxValue / 2
-	if mid == 0 && maxValue > 1 {
-		mid = 1
+// costExplorerChartYAxisLabel summarizes the positive-only ceiling or the signed chart range.
+func costExplorerChartYAxisLabel(domain costExplorerChartDomain, metric string) string {
+	if domain.MinValue >= 0 {
+		return "Max " + costExplorerChartValueLabel(metric, domain.MaxValue)
 	}
-	values := []int64{maxValue, mid, 0}
+	return fmt.Sprintf("Range %s to %s", costExplorerChartValueLabel(metric, domain.MinValue), costExplorerChartValueLabel(metric, domain.MaxValue))
+}
+
+// costExplorerChartTicks renders a compact vertical scale for positive-only and signed charts.
+func costExplorerChartTicks(domain costExplorerChartDomain, metric string) []costExplorerChartTickView {
+	values := []int64{}
+	switch {
+	case domain.MinValue >= 0:
+		mid := domain.MaxValue / 2
+		if mid == 0 && domain.MaxValue > 1 {
+			mid = 1
+		}
+		values = []int64{domain.MaxValue, mid, 0}
+	case domain.MaxValue <= 0:
+		mid := domain.MinValue / 2
+		if mid == 0 && domain.MinValue < -1 {
+			mid = -1
+		}
+		values = []int64{0, mid, domain.MinValue}
+	default:
+		values = []int64{domain.MaxValue, 0, domain.MinValue}
+	}
 	ticks := make([]costExplorerChartTickView, 0, len(values))
 	seen := map[int64]bool{}
 	for _, value := range values {
@@ -238,7 +283,7 @@ func costExplorerChartTicks(maxValue int64, metric string) []costExplorerChartTi
 		}
 		seen[value] = true
 		ticks = append(ticks, costExplorerChartTickView{
-			Y:     costExplorerChartY(value, maxValue),
+			Y:     costExplorerChartY(value, domain),
 			Label: costExplorerChartValueLabel(metric, value),
 		})
 	}
@@ -280,7 +325,7 @@ func costExplorerChartLegend(series []costExplorerChartSeries) []costExplorerCha
 }
 
 // costExplorerChartLines renders line chart polylines and point tooltips.
-func costExplorerChartLines(buckets []string, series []costExplorerChartSeries, metric string, maxValue int64) []costExplorerChartLineView {
+func costExplorerChartLines(buckets []string, series []costExplorerChartSeries, metric string, domain costExplorerChartDomain) []costExplorerChartLineView {
 	lines := make([]costExplorerChartLineView, 0, len(series))
 	for _, item := range series {
 		nodes := make([]costExplorerChartPointView, 0, len(buckets))
@@ -288,7 +333,7 @@ func costExplorerChartLines(buckets []string, series []costExplorerChartSeries, 
 		for bucketIndex, bucket := range buckets {
 			value := item.Values[bucket]
 			x := costExplorerChartX(bucketIndex, len(buckets))
-			y := costExplorerChartY(value, maxValue)
+			y := costExplorerChartY(value, domain)
 			nodes = append(nodes, costExplorerChartPointView{
 				X:          x,
 				Y:          y,
@@ -309,7 +354,7 @@ func costExplorerChartLines(buckets []string, series []costExplorerChartSeries, 
 }
 
 // costExplorerChartBars renders grouped or stacked bars with one tooltip per visible segment.
-func costExplorerChartBars(buckets []string, series []costExplorerChartSeries, metric string, maxValue int64, stacked bool) []costExplorerChartBarView {
+func costExplorerChartBars(buckets []string, series []costExplorerChartSeries, metric string, domain costExplorerChartDomain, stacked bool) []costExplorerChartBarView {
 	if len(buckets) == 0 {
 		return nil
 	}
@@ -317,35 +362,58 @@ func costExplorerChartBars(buckets []string, series []costExplorerChartSeries, m
 	if bucketWidth < 1 {
 		bucketWidth = 1
 	}
+	zeroY := costExplorerChartY(0, domain)
+	plotBottom := costExplorerChartPlotY + costExplorerChartPlotHeight
 	bars := []costExplorerChartBarView{}
 	for bucketIndex, bucket := range buckets {
 		bucketStart := costExplorerChartPlotX + bucketIndex*bucketWidth
 		if stacked {
 			barWidth := clampInt(bucketWidth-14, 8, 54)
 			x := bucketStart + (bucketWidth-barWidth)/2
-			cumulative := int64(0)
+			positiveCumulative := int64(0)
+			negativeCumulative := int64(0)
 			for _, item := range series {
 				value := item.Values[bucket]
-				if value < 0 {
-					value = 0
-				}
 				if value == 0 {
 					continue
 				}
+				cumulative := positiveCumulative
+				if value < 0 {
+					cumulative = negativeCumulative
+				}
 				next := cumulative + value
-				y := costExplorerChartY(next, maxValue)
-				previousY := costExplorerChartY(cumulative, maxValue)
+				y := costExplorerChartY(next, domain)
+				previousY := costExplorerChartY(cumulative, domain)
+				barY := y
+				height := previousY - y
+				if value < 0 {
+					barY = previousY
+					height = y - previousY
+				}
+				if value < 0 && height < 2 {
+					height = 2
+					if barY+height > plotBottom {
+						height = plotBottom - barY
+					}
+				}
+				if height < 0 {
+					height = 0
+				}
 				bars = append(bars, costExplorerChartBarView{
 					X:          x,
-					Y:          y,
+					Y:          barY,
 					Width:      barWidth,
-					Height:     previousY - y,
+					Height:     height,
 					Color:      item.Color,
 					Period:     bucket,
 					Label:      item.Label,
 					ValueLabel: costExplorerChartValueLabel(metric, value),
 				})
-				cumulative = next
+				if value >= 0 {
+					positiveCumulative = next
+				} else {
+					negativeCumulative = next
+				}
 			}
 			continue
 		}
@@ -359,18 +427,31 @@ func costExplorerChartBars(buckets []string, series []costExplorerChartSeries, m
 		x := bucketStart + (bucketWidth-totalWidth)/2
 		for seriesIndex, item := range series {
 			value := item.Values[bucket]
+			y := costExplorerChartY(value, domain)
+			barY := y
+			height := zeroY - y
 			if value < 0 {
-				value = 0
+				barY = zeroY
+				height = y - zeroY
 			}
-			y := costExplorerChartY(value, maxValue)
-			height := costExplorerChartPlotY + costExplorerChartPlotHeight - y
-			if value > 0 && height < 2 {
+			if value != 0 && height < 2 {
 				height = 2
-				y = costExplorerChartPlotY + costExplorerChartPlotHeight - height
+				if value > 0 {
+					barY = zeroY - height
+					if barY < costExplorerChartPlotY {
+						barY = costExplorerChartPlotY
+						height = zeroY - barY
+					}
+				} else if barY+height > plotBottom {
+					height = plotBottom - barY
+				}
+			}
+			if height < 0 {
+				height = 0
 			}
 			bars = append(bars, costExplorerChartBarView{
 				X:          x + seriesIndex*barWidth,
-				Y:          y,
+				Y:          barY,
 				Width:      barWidth,
 				Height:     height,
 				Color:      item.Color,
@@ -392,18 +473,38 @@ func costExplorerChartX(index, bucketCount int) int {
 }
 
 // costExplorerChartY maps a metric value to the vertical plot coordinate.
-func costExplorerChartY(value, maxValue int64) int {
-	if value < 0 {
-		value = 0
+func costExplorerChartY(value int64, domain costExplorerChartDomain) int {
+	if domain.MinValue >= 0 {
+		if value < 0 {
+			value = 0
+		}
+		if domain.MaxValue <= 0 {
+			domain.MaxValue = 1
+		}
+		scaled := int((value*int64(costExplorerChartPlotHeight) + domain.MaxValue/2) / domain.MaxValue)
+		if scaled > costExplorerChartPlotHeight {
+			scaled = costExplorerChartPlotHeight
+		}
+		return costExplorerChartPlotY + costExplorerChartPlotHeight - scaled
 	}
-	if maxValue <= 0 {
-		maxValue = 1
+	if value < domain.MinValue {
+		value = domain.MinValue
 	}
-	scaled := int((value*int64(costExplorerChartPlotHeight) + maxValue/2) / maxValue)
-	if scaled > costExplorerChartPlotHeight {
-		scaled = costExplorerChartPlotHeight
+	if value > domain.MaxValue {
+		value = domain.MaxValue
 	}
-	return costExplorerChartPlotY + costExplorerChartPlotHeight - scaled
+	span := domain.MaxValue - domain.MinValue
+	if span <= 0 {
+		span = 1
+	}
+	offset := int(((domain.MaxValue-value)*int64(costExplorerChartPlotHeight) + span/2) / span)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > costExplorerChartPlotHeight {
+		offset = costExplorerChartPlotHeight
+	}
+	return costExplorerChartPlotY + offset
 }
 
 // costExplorerChartValueLabel formats chart values with the selected metric's display rules.

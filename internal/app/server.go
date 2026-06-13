@@ -169,6 +169,7 @@ func newMux(db *sql.DB) http.Handler {
 	mux.HandleFunc("/pro-forma/billing-groups/create", proForma.handleCreateBillingGroup)
 	mux.HandleFunc("/pro-forma/accounts/assign", proForma.handleAssignAccount)
 	mux.HandleFunc("/pro-forma/refresh", proForma.handleRefreshLineItems)
+	mux.HandleFunc("/pro-forma/custom-line-items/create", proForma.handleCreateCustomLineItem)
 	mux.HandleFunc("/cost-explorer", costExplorer.handleCostExplorer)
 	mux.HandleFunc("/cost-explorer/results.csv", costExplorer.handleCostExplorerResultsCSV)
 	mux.HandleFunc("/cost-explorer/line-items", costExplorer.handleCostExplorerLineItems)

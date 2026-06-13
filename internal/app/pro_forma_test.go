@@ -173,6 +173,7 @@ func TestProFormaWorkflow(t *testing.T) {
 		"Refreshed 1 pro forma rows",
 		"Showback Summary",
 		"Generated Rows",
+		"Custom Items",
 		"Storefront Showback",
 		"Amazon EC2",
 		"150%",
@@ -182,6 +183,63 @@ func TestProFormaWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("POST refresh pro forma rows missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/pro-forma/custom-line-items/create", url.Values{
+		"billing_group_id":     {groupID},
+		"line_item_type":       {"markup"},
+		"name":                 {"Shared tooling markup"},
+		"amount_usd":           {"0.10"},
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"description":          {"Internal tooling recovery"},
+	})
+	if err != nil {
+		t.Fatalf("POST create markup custom line item error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create markup custom line item final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Added custom Markup Shared tooling markup",
+		"Shared tooling markup",
+		"Internal tooling recovery",
+		"$0.10",
+		"$0.2248",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create markup custom line item missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.PostForm(server.URL+"/pro-forma/custom-line-items/create", url.Values{
+		"billing_group_id":     {groupID},
+		"line_item_type":       {"credit"},
+		"name":                 {"Training credit"},
+		"amount_usd":           {"0.05"},
+		"billing_period_start": {"2026-02-01"},
+		"billing_period_end":   {"2026-03-01"},
+		"description":          {"Instructor approved"},
+	})
+	if err != nil {
+		t.Fatalf("POST create credit custom line item error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST create credit custom line item final status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"Added custom Credit Training credit",
+		"Training credit",
+		"Instructor approved",
+		"-$0.05",
+		"$0.1748",
+		"$0.0916",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("POST create credit custom line item missing %q: %s", want, body)
 		}
 	}
 

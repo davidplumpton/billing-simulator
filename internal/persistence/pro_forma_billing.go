@@ -18,6 +18,13 @@ const (
 	maxProFormaLineItemLimit         = 200
 )
 
+const (
+	ProFormaCustomLineItemTypeFee        = "fee"
+	ProFormaCustomLineItemTypeCredit     = "credit"
+	ProFormaCustomLineItemTypeMarkup     = "markup"
+	ProFormaCustomLineItemTypeAnnotation = "annotation"
+)
+
 // ProFormaPricingPlan groups custom internal rates used for showback views.
 type ProFormaPricingPlan struct {
 	ID           string
@@ -93,6 +100,25 @@ type ProFormaLineItem struct {
 	UpdatedAt                 string
 }
 
+// ProFormaCustomLineItem stores one manual pro forma adjustment row.
+type ProFormaCustomLineItem struct {
+	ID                 string
+	BillingGroupID     string
+	BillingGroupName   string
+	PricingPlanID      string
+	PricingPlanName    string
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	PayerAccountID     string
+	LineItemType       string
+	Name               string
+	Description        string
+	CurrencyCode       string
+	AmountMicros       int64
+	CreatedAt          string
+	UpdatedAt          string
+}
+
 // ProFormaRefreshRequest selects source bill line items for pro forma regeneration.
 type ProFormaRefreshRequest struct {
 	BillingGroupID     string
@@ -129,7 +155,9 @@ type ProFormaBillingGroupSummary struct {
 	PayerAccountID      string
 	CurrencyCode        string
 	SourceLineItemCount int
+	CustomLineItemCount int
 	SourceCostMicros    int64
+	CustomAmountMicros  int64
 	ProFormaCostMicros  int64
 	AdjustmentMicros    int64
 }
@@ -170,8 +198,29 @@ type ProFormaBillingGroupAccountCreateRequest struct {
 	AccountID      string
 }
 
+// ProFormaCustomLineItemCreateRequest describes one manual pro forma adjustment.
+type ProFormaCustomLineItemCreateRequest struct {
+	ID                 string
+	BillingGroupID     string
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	LineItemType       string
+	Name               string
+	Description        string
+	CurrencyCode       string
+	AmountMicros       int64
+}
+
 // ProFormaLineItemListRequest filters persisted pro forma rows for display.
 type ProFormaLineItemListRequest struct {
+	BillingGroupID     string
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	Limit              int
+}
+
+// ProFormaCustomLineItemListRequest filters manual custom rows for display.
+type ProFormaCustomLineItemListRequest struct {
 	BillingGroupID     string
 	BillingPeriodStart string
 	BillingPeriodEnd   string
@@ -340,6 +389,50 @@ func (r ProFormaBillingRepository) AssignAccountToGroup(ctx context.Context, req
 	return r.getBillingGroupAccount(ctx, request.ID)
 }
 
+// CreateCustomLineItem stores one manual fee, credit, markup, or annotation.
+func (r ProFormaBillingRepository) CreateCustomLineItem(ctx context.Context, request ProFormaCustomLineItemCreateRequest) (ProFormaCustomLineItem, error) {
+	if r.db == nil {
+		return ProFormaCustomLineItem{}, fmt.Errorf("database handle is required")
+	}
+	request = normalizeProFormaCustomLineItemCreateRequest(request)
+	if err := validateProFormaCustomLineItemCreateRequest(request); err != nil {
+		return ProFormaCustomLineItem{}, err
+	}
+	if request.ID == "" {
+		id, err := newRepositoryID("pfcustom")
+		if err != nil {
+			return ProFormaCustomLineItem{}, err
+		}
+		request.ID = id
+	}
+	if _, err := r.db.ExecContext(
+		ctx,
+		`INSERT INTO pro_forma_custom_line_items (
+			id,
+			billing_group_id,
+			billing_period_start,
+			billing_period_end,
+			line_item_type,
+			name,
+			description,
+			currency_code,
+			amount_micros
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		request.ID,
+		request.BillingGroupID,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+		request.LineItemType,
+		request.Name,
+		request.Description,
+		request.CurrencyCode,
+		request.AmountMicros,
+	); err != nil {
+		return ProFormaCustomLineItem{}, fmt.Errorf("insert pro forma custom line item %q: %w", request.Name, err)
+	}
+	return r.GetCustomLineItem(ctx, request.ID)
+}
+
 // GetPricingPlan reads one pricing plan.
 func (r ProFormaBillingRepository) GetPricingPlan(ctx context.Context, id string) (ProFormaPricingPlan, error) {
 	if r.db == nil {
@@ -395,6 +488,22 @@ func (r ProFormaBillingRepository) GetBillingGroup(ctx context.Context, id strin
 		return ProFormaBillingGroup{}, err
 	}
 	return group, nil
+}
+
+// GetCustomLineItem reads one manual pro forma adjustment row.
+func (r ProFormaBillingRepository) GetCustomLineItem(ctx context.Context, id string) (ProFormaCustomLineItem, error) {
+	if r.db == nil {
+		return ProFormaCustomLineItem{}, fmt.Errorf("database handle is required")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ProFormaCustomLineItem{}, fmt.Errorf("pro forma custom line item ID is required")
+	}
+	item, err := scanProFormaCustomLineItem(r.db.QueryRowContext(ctx, proFormaCustomLineItemSelectSQL+` WHERE ci.id = ?`, id))
+	if err != nil {
+		return ProFormaCustomLineItem{}, err
+	}
+	return item, nil
 }
 
 // ListPricingPlans returns pricing plans with rule counts.
@@ -620,7 +729,7 @@ func (r ProFormaBillingRepository) RefreshLineItems(ctx context.Context, request
 	return result, nil
 }
 
-// ListBillingGroupSummaries aggregates generated pro forma rows by group.
+// ListBillingGroupSummaries aggregates generated and custom pro forma rows by group.
 func (r ProFormaBillingRepository) ListBillingGroupSummaries(ctx context.Context, request ProFormaSummaryRequest) ([]ProFormaBillingGroupSummary, error) {
 	if r.db == nil {
 		return nil, fmt.Errorf("database handle is required")
@@ -631,35 +740,120 @@ func (r ProFormaBillingRepository) ListBillingGroupSummaries(ctx context.Context
 	}
 	rows, err := r.db.QueryContext(
 		ctx,
-		`SELECT
-			li.billing_group_id,
-			g.name,
-			li.pricing_plan_id,
-			p.name,
-			li.billing_period_start,
-			li.billing_period_end,
-			li.payer_account_id,
-			li.currency_code,
-			COUNT(*),
-			COALESCE(SUM(li.source_cost_micros), 0),
-			COALESCE(SUM(li.pro_forma_cost_micros), 0),
-			COALESCE(SUM(li.adjustment_micros), 0)
-		 FROM pro_forma_line_items li
-		 JOIN pro_forma_billing_groups g ON g.id = li.billing_group_id
-		 JOIN pro_forma_pricing_plans p ON p.id = li.pricing_plan_id
-		 WHERE li.billing_period_start = ?
-		   AND li.billing_period_end = ?
-		   AND (? = '' OR li.billing_group_id = ?)
-		 GROUP BY
-			li.billing_group_id,
-			g.name,
-			li.pricing_plan_id,
-			p.name,
-			li.billing_period_start,
-			li.billing_period_end,
-			li.payer_account_id,
-			li.currency_code
-		 ORDER BY g.name, li.currency_code`,
+		`WITH generated AS (
+			SELECT
+				li.billing_group_id,
+				g.name AS billing_group_name,
+				li.pricing_plan_id,
+				p.name AS pricing_plan_name,
+				li.billing_period_start,
+				li.billing_period_end,
+				li.payer_account_id,
+				li.currency_code,
+				COUNT(*) AS source_line_item_count,
+				COALESCE(SUM(li.source_cost_micros), 0) AS source_cost_micros,
+				COALESCE(SUM(li.pro_forma_cost_micros), 0) AS pro_forma_cost_micros,
+				COALESCE(SUM(li.adjustment_micros), 0) AS adjustment_micros
+			FROM pro_forma_line_items li
+			JOIN pro_forma_billing_groups g ON g.id = li.billing_group_id
+			JOIN pro_forma_pricing_plans p ON p.id = li.pricing_plan_id
+			WHERE li.billing_period_start = ?
+			  AND li.billing_period_end = ?
+			  AND (? = '' OR li.billing_group_id = ?)
+			GROUP BY
+				li.billing_group_id,
+				g.name,
+				li.pricing_plan_id,
+				p.name,
+				li.billing_period_start,
+				li.billing_period_end,
+				li.payer_account_id,
+				li.currency_code
+		),
+		custom AS (
+			SELECT
+				ci.billing_group_id,
+				g.name AS billing_group_name,
+				g.pricing_plan_id,
+				p.name AS pricing_plan_name,
+				ci.billing_period_start,
+				ci.billing_period_end,
+				g.payer_account_id,
+				ci.currency_code,
+				COUNT(*) AS custom_line_item_count,
+				COALESCE(SUM(ci.amount_micros), 0) AS custom_amount_micros
+			FROM pro_forma_custom_line_items ci
+			JOIN pro_forma_billing_groups g ON g.id = ci.billing_group_id
+			JOIN pro_forma_pricing_plans p ON p.id = g.pricing_plan_id
+			WHERE ci.billing_period_start = ?
+			  AND ci.billing_period_end = ?
+			  AND (? = '' OR ci.billing_group_id = ?)
+			GROUP BY
+				ci.billing_group_id,
+				g.name,
+				g.pricing_plan_id,
+				p.name,
+				ci.billing_period_start,
+				ci.billing_period_end,
+				g.payer_account_id,
+				ci.currency_code
+		),
+		summary_keys AS (
+			SELECT
+				billing_group_id,
+				billing_group_name,
+				pricing_plan_id,
+				pricing_plan_name,
+				billing_period_start,
+				billing_period_end,
+				payer_account_id,
+				currency_code
+			FROM generated
+			UNION
+			SELECT
+				billing_group_id,
+				billing_group_name,
+				pricing_plan_id,
+				pricing_plan_name,
+				billing_period_start,
+				billing_period_end,
+				payer_account_id,
+				currency_code
+			FROM custom
+		)
+		SELECT
+			k.billing_group_id,
+			k.billing_group_name,
+			k.pricing_plan_id,
+			k.pricing_plan_name,
+			k.billing_period_start,
+			k.billing_period_end,
+			k.payer_account_id,
+			k.currency_code,
+			COALESCE(g.source_line_item_count, 0),
+			COALESCE(c.custom_line_item_count, 0),
+			COALESCE(g.source_cost_micros, 0),
+			COALESCE(c.custom_amount_micros, 0),
+			COALESCE(g.pro_forma_cost_micros, 0) + COALESCE(c.custom_amount_micros, 0),
+			COALESCE(g.adjustment_micros, 0) + COALESCE(c.custom_amount_micros, 0)
+		FROM summary_keys k
+		LEFT JOIN generated g ON g.billing_group_id = k.billing_group_id
+			AND g.pricing_plan_id = k.pricing_plan_id
+			AND g.billing_period_start = k.billing_period_start
+			AND g.billing_period_end = k.billing_period_end
+			AND g.payer_account_id = k.payer_account_id
+			AND g.currency_code = k.currency_code
+		LEFT JOIN custom c ON c.billing_group_id = k.billing_group_id
+			AND c.pricing_plan_id = k.pricing_plan_id
+			AND c.billing_period_start = k.billing_period_start
+			AND c.billing_period_end = k.billing_period_end
+			AND c.payer_account_id = k.payer_account_id
+			AND c.currency_code = k.currency_code
+		ORDER BY k.billing_group_name, k.currency_code`,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+		request.BillingGroupID,
+		request.BillingGroupID,
 		request.BillingPeriodStart,
 		request.BillingPeriodEnd,
 		request.BillingGroupID,
@@ -682,7 +876,9 @@ func (r ProFormaBillingRepository) ListBillingGroupSummaries(ctx context.Context
 			&summary.PayerAccountID,
 			&summary.CurrencyCode,
 			&summary.SourceLineItemCount,
+			&summary.CustomLineItemCount,
 			&summary.SourceCostMicros,
+			&summary.CustomAmountMicros,
 			&summary.ProFormaCostMicros,
 			&summary.AdjustmentMicros,
 		); err != nil {
@@ -733,6 +929,47 @@ func (r ProFormaBillingRepository) ListLineItems(ctx context.Context, request Pr
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate pro forma line items: %w", err)
+	}
+	return items, nil
+}
+
+// ListCustomLineItems returns manual pro forma adjustments for one reporting period.
+func (r ProFormaBillingRepository) ListCustomLineItems(ctx context.Context, request ProFormaCustomLineItemListRequest) ([]ProFormaCustomLineItem, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	request = normalizeProFormaCustomLineItemListRequest(request)
+	if err := validateProFormaCustomLineItemListRequest(request); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(
+		ctx,
+		proFormaCustomLineItemSelectSQL+`
+		 WHERE ci.billing_period_start = ?
+		   AND ci.billing_period_end = ?
+		   AND (? = '' OR ci.billing_group_id = ?)
+		 ORDER BY ci.created_at DESC, ci.id DESC
+		 LIMIT ?`,
+		request.BillingPeriodStart,
+		request.BillingPeriodEnd,
+		request.BillingGroupID,
+		request.BillingGroupID,
+		request.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list pro forma custom line items: %w", err)
+	}
+	defer rows.Close()
+	var items []ProFormaCustomLineItem
+	for rows.Next() {
+		item, err := scanProFormaCustomLineItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pro forma custom line items: %w", err)
 	}
 	return items, nil
 }
@@ -985,6 +1222,54 @@ func validateProFormaBillingGroupAccountCreateRequest(request ProFormaBillingGro
 	return validateOrganizationAccountID("account ID", request.AccountID)
 }
 
+func normalizeProFormaCustomLineItemCreateRequest(request ProFormaCustomLineItemCreateRequest) ProFormaCustomLineItemCreateRequest {
+	request.ID = strings.TrimSpace(request.ID)
+	request.BillingGroupID = strings.TrimSpace(request.BillingGroupID)
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	request.LineItemType = strings.ToLower(strings.TrimSpace(request.LineItemType))
+	request.Name = strings.TrimSpace(request.Name)
+	request.Description = strings.TrimSpace(request.Description)
+	request.CurrencyCode = strings.ToUpper(strings.TrimSpace(request.CurrencyCode))
+	if request.CurrencyCode == "" {
+		request.CurrencyCode = proFormaDefaultCurrency
+	}
+	return request
+}
+
+func validateProFormaCustomLineItemCreateRequest(request ProFormaCustomLineItemCreateRequest) error {
+	if request.BillingGroupID == "" {
+		return fmt.Errorf("pro forma billing group ID is required")
+	}
+	if err := validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd); err != nil {
+		return err
+	}
+	if !isProFormaCustomLineItemType(request.LineItemType) {
+		return fmt.Errorf("unsupported pro forma custom line item type %q", request.LineItemType)
+	}
+	if request.Name == "" {
+		return fmt.Errorf("pro forma custom line item name is required")
+	}
+	if len(request.CurrencyCode) != 3 {
+		return fmt.Errorf("pro forma custom line item currency code must be three characters")
+	}
+	switch request.LineItemType {
+	case ProFormaCustomLineItemTypeFee, ProFormaCustomLineItemTypeMarkup:
+		if request.AmountMicros <= 0 {
+			return fmt.Errorf("pro forma %s amount must be greater than zero", request.LineItemType)
+		}
+	case ProFormaCustomLineItemTypeCredit:
+		if request.AmountMicros >= 0 {
+			return fmt.Errorf("pro forma credit amount must be less than zero")
+		}
+	case ProFormaCustomLineItemTypeAnnotation:
+		if request.AmountMicros != 0 {
+			return fmt.Errorf("pro forma annotation amount must be zero")
+		}
+	}
+	return nil
+}
+
 func normalizeProFormaRefreshRequest(request ProFormaRefreshRequest) ProFormaRefreshRequest {
 	request.BillingGroupID = strings.TrimSpace(request.BillingGroupID)
 	request.PayerAccountID = strings.TrimSpace(request.PayerAccountID)
@@ -1031,9 +1316,35 @@ func validateProFormaLineItemListRequest(request ProFormaLineItemListRequest) er
 	return validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd)
 }
 
+func normalizeProFormaCustomLineItemListRequest(request ProFormaCustomLineItemListRequest) ProFormaCustomLineItemListRequest {
+	request.BillingGroupID = strings.TrimSpace(request.BillingGroupID)
+	request.BillingPeriodStart = strings.TrimSpace(request.BillingPeriodStart)
+	request.BillingPeriodEnd = strings.TrimSpace(request.BillingPeriodEnd)
+	if request.Limit <= 0 {
+		request.Limit = defaultProFormaLineItemLimit
+	}
+	if request.Limit > maxProFormaLineItemLimit {
+		request.Limit = maxProFormaLineItemLimit
+	}
+	return request
+}
+
+func validateProFormaCustomLineItemListRequest(request ProFormaCustomLineItemListRequest) error {
+	return validateBillingPeriodDateRange(request.BillingPeriodStart, request.BillingPeriodEnd)
+}
+
 func isProFormaStatus(status string) bool {
 	switch status {
 	case "active", "archived":
+		return true
+	default:
+		return false
+	}
+}
+
+func isProFormaCustomLineItemType(lineItemType string) bool {
+	switch lineItemType {
+	case ProFormaCustomLineItemTypeFee, ProFormaCustomLineItemTypeCredit, ProFormaCustomLineItemTypeMarkup, ProFormaCustomLineItemTypeAnnotation:
 		return true
 	default:
 		return false
@@ -1057,6 +1368,10 @@ type proFormaBillingGroupAccountRow interface {
 }
 
 type proFormaLineItemRow interface {
+	Scan(dest ...any) error
+}
+
+type proFormaCustomLineItemRow interface {
 	Scan(dest ...any) error
 }
 
@@ -1160,6 +1475,30 @@ func scanProFormaLineItem(row proFormaLineItemRow) (ProFormaLineItem, error) {
 	return item, nil
 }
 
+func scanProFormaCustomLineItem(row proFormaCustomLineItemRow) (ProFormaCustomLineItem, error) {
+	var item ProFormaCustomLineItem
+	if err := row.Scan(
+		&item.ID,
+		&item.BillingGroupID,
+		&item.BillingGroupName,
+		&item.PricingPlanID,
+		&item.PricingPlanName,
+		&item.BillingPeriodStart,
+		&item.BillingPeriodEnd,
+		&item.PayerAccountID,
+		&item.LineItemType,
+		&item.Name,
+		&item.Description,
+		&item.CurrencyCode,
+		&item.AmountMicros,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return ProFormaCustomLineItem{}, fmt.Errorf("scan pro forma custom line item: %w", err)
+	}
+	return item, nil
+}
+
 const proFormaPricingPlanSelectSQL = `SELECT
 	p.id,
 	p.name,
@@ -1246,3 +1585,23 @@ const proFormaLineItemSelectSQL = `SELECT
  FROM pro_forma_line_items li
  JOIN pro_forma_billing_groups g ON g.id = li.billing_group_id
  JOIN pro_forma_pricing_plans p ON p.id = li.pricing_plan_id`
+
+const proFormaCustomLineItemSelectSQL = `SELECT
+	ci.id,
+	ci.billing_group_id,
+	g.name,
+	g.pricing_plan_id,
+	p.name,
+	ci.billing_period_start,
+	ci.billing_period_end,
+	g.payer_account_id,
+	ci.line_item_type,
+	ci.name,
+	ci.description,
+	ci.currency_code,
+	ci.amount_micros,
+	ci.created_at,
+	ci.updated_at
+ FROM pro_forma_custom_line_items ci
+ JOIN pro_forma_billing_groups g ON g.id = ci.billing_group_id
+ JOIN pro_forma_pricing_plans p ON p.id = g.pricing_plan_id`

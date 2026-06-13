@@ -212,6 +212,9 @@ func newWorkspaceMux(workspace *workspaceSession) http.Handler {
 	mux.HandleFunc("/pro-forma/refresh", func(w http.ResponseWriter, r *http.Request) {
 		newProFormaHandler(workspace.DB()).handleRefreshLineItems(w, r)
 	})
+	mux.HandleFunc("/pro-forma/custom-line-items/create", func(w http.ResponseWriter, r *http.Request) {
+		newProFormaHandler(workspace.DB()).handleCreateCustomLineItem(w, r)
+	})
 	mux.HandleFunc("/cost-explorer", func(w http.ResponseWriter, r *http.Request) {
 		newCostExplorerHandler(workspace.DB()).handleCostExplorer(w, r)
 	})

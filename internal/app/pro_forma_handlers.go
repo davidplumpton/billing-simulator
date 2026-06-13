@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -35,9 +36,11 @@ type proFormaPageData struct {
 	AccountAssignments  []proFormaAccountAssignmentView
 	Summaries           []proFormaSummaryView
 	LineItems           []proFormaLineItemView
+	CustomLineItems     []proFormaCustomLineItemView
 	PricingPlanOptions  []uiSelectOptionView
 	BillingGroupOptions []uiSelectOptionView
 	AccountOptions      []uiSelectOptionView
+	CustomTypeOptions   []uiSelectOptionView
 	Tables              proFormaTablesView
 }
 
@@ -86,11 +89,14 @@ type proFormaSummaryView struct {
 	PayerAccountID     string
 	CurrencyCode       string
 	SourceLineItems    int
+	CustomLineItems    int
 	SourceCost         string
+	CustomAmount       string
 	ProFormaCost       string
 	Adjustment         string
 	AdjustmentMicros   int64
 	SourceActivityText string
+	CustomActivityText string
 }
 
 type proFormaLineItemView struct {
@@ -106,6 +112,16 @@ type proFormaLineItemView struct {
 	SourceID         string
 }
 
+type proFormaCustomLineItemView struct {
+	BillingGroupName string
+	Type             string
+	Name             string
+	Description      string
+	Period           string
+	Amount           string
+	AmountMicros     int64
+}
+
 type proFormaTablesView struct {
 	PricingPlans       uiTableView
 	PricingRules       uiTableView
@@ -113,6 +129,7 @@ type proFormaTablesView struct {
 	AccountAssignments uiTableView
 	Summaries          uiTableView
 	LineItems          uiTableView
+	CustomLineItems    uiTableView
 }
 
 // newProFormaHandler builds the repositories for pro forma billing workflows.
@@ -270,6 +287,42 @@ func (h proFormaHandler) handleRefreshLineItems(w http.ResponseWriter, r *http.R
 	redirectProForma(w, r, fmt.Sprintf("Refreshed %d pro forma rows", result.ProFormaLineItems))
 }
 
+// handleCreateCustomLineItem adds one manual pro forma fee, credit, markup, or annotation.
+func (h proFormaHandler) handleCreateCustomLineItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if h.db == nil {
+		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before creating pro forma custom line items.", "")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.renderProForma(w, r, http.StatusBadRequest, "parse custom line item form: "+err.Error(), "")
+		return
+	}
+	lineItemType := strings.ToLower(strings.TrimSpace(r.PostForm.Get("line_item_type")))
+	amountMicros, err := parseProFormaCustomAmountMicros(lineItemType, r.PostForm.Get("amount_usd"))
+	if err != nil {
+		h.renderProForma(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	item, err := h.proForma.CreateCustomLineItem(r.Context(), persistence.ProFormaCustomLineItemCreateRequest{
+		BillingGroupID:     r.PostForm.Get("billing_group_id"),
+		BillingPeriodStart: r.PostForm.Get("billing_period_start"),
+		BillingPeriodEnd:   r.PostForm.Get("billing_period_end"),
+		LineItemType:       lineItemType,
+		Name:               r.PostForm.Get("name"),
+		Description:        r.PostForm.Get("description"),
+		AmountMicros:       amountMicros,
+	})
+	if err != nil {
+		h.renderProForma(w, r, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	redirectProForma(w, r, "Added custom "+formatProFormaCustomLineItemType(item.LineItemType)+" "+item.Name)
+}
+
 // renderProForma builds the pro forma billing page.
 func (h proFormaHandler) renderProForma(w http.ResponseWriter, r *http.Request, status int, errorMessage, flashMessage string) {
 	data := proFormaPageData{
@@ -313,6 +366,7 @@ func (h proFormaHandler) loadProFormaPageData(r *http.Request, data *proFormaPag
 	if data.BillingPeriodEnd == "" {
 		data.BillingPeriodEnd = clock.BillingPeriodEnd
 	}
+	data.CustomTypeOptions = proFormaCustomLineItemTypeOptions()
 
 	plans, err := h.proForma.ListPricingPlans(ctx)
 	if err != nil {
@@ -370,14 +424,16 @@ func (h proFormaHandler) loadProFormaPageData(r *http.Request, data *proFormaPag
 	if err != nil {
 		return err
 	}
-	var sourceTotal, proFormaTotal, adjustmentTotal int64
-	var sourceRows int
+	var sourceTotal, customTotal, proFormaTotal, adjustmentTotal int64
+	var sourceRows, customRows int
 	for _, summary := range summaries {
 		data.Summaries = append(data.Summaries, proFormaSummaryViewFromSummary(summary))
 		sourceTotal += summary.SourceCostMicros
+		customTotal += summary.CustomAmountMicros
 		proFormaTotal += summary.ProFormaCostMicros
 		adjustmentTotal += summary.AdjustmentMicros
 		sourceRows += summary.SourceLineItemCount
+		customRows += summary.CustomLineItemCount
 	}
 	items, err := h.proForma.ListLineItems(ctx, persistence.ProFormaLineItemListRequest{
 		BillingPeriodStart: data.BillingPeriodStart,
@@ -390,10 +446,23 @@ func (h proFormaHandler) loadProFormaPageData(r *http.Request, data *proFormaPag
 	for _, item := range items {
 		data.LineItems = append(data.LineItems, proFormaLineItemViewFromItem(item))
 	}
+	customItems, err := h.proForma.ListCustomLineItems(ctx, persistence.ProFormaCustomLineItemListRequest{
+		BillingPeriodStart: data.BillingPeriodStart,
+		BillingPeriodEnd:   data.BillingPeriodEnd,
+		Limit:              50,
+	})
+	if err != nil {
+		return err
+	}
+	for _, item := range customItems {
+		data.CustomLineItems = append(data.CustomLineItems, proFormaCustomLineItemViewFromItem(item))
+	}
 	data.StateCards = []proFormaStateCardView{
 		{Label: "Pricing Plans", Value: strconv.Itoa(len(plans))},
 		{Label: "Billing Groups", Value: strconv.Itoa(len(groups))},
 		{Label: "Source Cost", Value: formatUSDMicros(sourceTotal)},
+		{Label: "Custom Items", Value: strconv.Itoa(customRows)},
+		{Label: "Custom Amount", Value: formatUSDMicros(customTotal)},
 		{Label: "Pro Forma Cost", Value: formatUSDMicros(proFormaTotal)},
 		{Label: "Adjustment", Value: formatUSDMicros(adjustmentTotal)},
 		{Label: "Rows", Value: strconv.Itoa(sourceRows)},
@@ -465,11 +534,14 @@ func proFormaSummaryViewFromSummary(summary persistence.ProFormaBillingGroupSumm
 		PayerAccountID:     summary.PayerAccountID,
 		CurrencyCode:       summary.CurrencyCode,
 		SourceLineItems:    summary.SourceLineItemCount,
+		CustomLineItems:    summary.CustomLineItemCount,
 		SourceCost:         formatUSDMicros(summary.SourceCostMicros),
+		CustomAmount:       formatUSDMicros(summary.CustomAmountMicros),
 		ProFormaCost:       formatUSDMicros(summary.ProFormaCostMicros),
 		Adjustment:         formatUSDMicros(summary.AdjustmentMicros),
 		AdjustmentMicros:   summary.AdjustmentMicros,
 		SourceActivityText: formatCountLabel(summary.SourceLineItemCount, "source line item", "source line items"),
+		CustomActivityText: formatCountLabel(summary.CustomLineItemCount, "custom item", "custom items"),
 	}
 }
 
@@ -489,6 +561,18 @@ func proFormaLineItemViewFromItem(item persistence.ProFormaLineItem) proFormaLin
 		Multiplier:       formatBasisPointsPercent(item.RateMultiplierBasisPoints),
 		Status:           item.LineItemStatus,
 		SourceID:         item.SourceBillLineItemID,
+	}
+}
+
+func proFormaCustomLineItemViewFromItem(item persistence.ProFormaCustomLineItem) proFormaCustomLineItemView {
+	return proFormaCustomLineItemView{
+		BillingGroupName: item.BillingGroupName,
+		Type:             formatProFormaCustomLineItemType(item.LineItemType),
+		Name:             item.Name,
+		Description:      item.Description,
+		Period:           item.BillingPeriodStart + " to " + item.BillingPeriodEnd,
+		Amount:           formatUSDMicros(item.AmountMicros),
+		AmountMicros:     item.AmountMicros,
 	}
 }
 
@@ -525,6 +609,30 @@ func parseProFormaMultiplierBasisPoints(value string) (int, error) {
 	return int(parsed), nil
 }
 
+func parseProFormaCustomAmountMicros(lineItemType, value string) (int64, error) {
+	lineItemType = strings.ToLower(strings.TrimSpace(lineItemType))
+	if lineItemType == persistence.ProFormaCustomLineItemTypeAnnotation {
+		return 0, nil
+	}
+	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "$", ""), ",", ""))
+	amountMicros, err := parsePositiveDecimalScaled(value, positiveDecimalScaleOptions{
+		RequiredMessage: "custom line item amount is required",
+		NumericMessage:  "custom line item amount must be numeric",
+		FiniteMessage:   "custom line item amount must be finite",
+		PositiveMessage: "custom line item amount must be greater than zero",
+		TooLargeMessage: "custom line item amount is too large",
+		Scale:           1_000_000,
+		MaxScaled:       float64(math.MaxInt64),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if lineItemType == persistence.ProFormaCustomLineItemTypeCredit {
+		return -amountMicros, nil
+	}
+	return amountMicros, nil
+}
+
 func formatBasisPointsPercent(value int) string {
 	whole := value / 100
 	fraction := value % 100
@@ -534,14 +642,39 @@ func formatBasisPointsPercent(value int) string {
 	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%d.%02d", whole, fraction), "0"), ".") + "%"
 }
 
+func formatProFormaCustomLineItemType(lineItemType string) string {
+	switch lineItemType {
+	case persistence.ProFormaCustomLineItemTypeFee:
+		return "Fee"
+	case persistence.ProFormaCustomLineItemTypeCredit:
+		return "Credit"
+	case persistence.ProFormaCustomLineItemTypeMarkup:
+		return "Markup"
+	case persistence.ProFormaCustomLineItemTypeAnnotation:
+		return "Annotation"
+	default:
+		return lineItemType
+	}
+}
+
+func proFormaCustomLineItemTypeOptions() []uiSelectOptionView {
+	return []uiSelectOptionView{
+		{Value: persistence.ProFormaCustomLineItemTypeFee, Label: "Fee"},
+		{Value: persistence.ProFormaCustomLineItemTypeMarkup, Label: "Markup"},
+		{Value: persistence.ProFormaCustomLineItemTypeCredit, Label: "Credit"},
+		{Value: persistence.ProFormaCustomLineItemTypeAnnotation, Label: "Annotation"},
+	}
+}
+
 func proFormaTables() proFormaTablesView {
 	return proFormaTablesView{
 		PricingPlans:       uiTable(uiTableHeaders("Plan", "Currency", "Status", "Rules"), "No pricing plans"),
 		PricingRules:       uiTable(uiTableHeaders("Plan", "Service", "Multiplier", "Status"), "No pricing rules"),
 		BillingGroups:      uiTable(uiTableHeaders("Group", "Payer", "Plan", "Accounts", "Status"), "No billing groups"),
 		AccountAssignments: uiTable(uiTableHeaders("Group", "Account"), "No assigned accounts"),
-		Summaries:          uiTable(uiTableHeaders("Group", "Period", "Source Cost", "Pro Forma Cost", "Adjustment", "Activity"), "No pro forma rows for the selected period"),
+		Summaries:          uiTable(uiTableHeaders("Group", "Period", "Source Cost", "Custom Amount", "Pro Forma Cost", "Adjustment", "Activity"), "No pro forma rows for the selected period"),
 		LineItems:          uiTable(uiTableHeaders("Group", "Service", "Account", "Source Cost", "Pro Forma Cost", "Adjustment", "Multiplier"), "No pro forma line items"),
+		CustomLineItems:    uiTable(uiTableHeaders("Group", "Type", "Name", "Amount", "Period"), "No custom line items"),
 	}
 }
 
@@ -670,6 +803,36 @@ var proFormaPageTemplate = newPageTemplate("pro-forma-page", `<div class="page-h
 						</label>
 						<button type="submit">Refresh Rows</button>
 					</form>
+
+					<form method="post" action="/pro-forma/custom-line-items/create" class="panel compact">
+						<h2>Custom Item</h2>
+						<label class="form-row">Group
+							<select name="billing_group_id" required>
+								{{range .BillingGroupOptions}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+							</select>
+						</label>
+						<label class="form-row">Type
+							<select name="line_item_type" required>
+								{{range .CustomTypeOptions}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+							</select>
+						</label>
+						<label class="form-row">Name
+							<input name="name" required>
+						</label>
+						<label class="form-row">Amount USD
+							<input name="amount_usd" value="0.00" inputmode="decimal">
+						</label>
+						<label class="form-row">Period Start
+							<input name="billing_period_start" value="{{.BillingPeriodStart}}" required>
+						</label>
+						<label class="form-row">Period End
+							<input name="billing_period_end" value="{{.BillingPeriodEnd}}" required>
+						</label>
+						<label class="form-row">Description
+							<input name="description">
+						</label>
+						<button type="submit">Add Item</button>
+					</form>
 				{{end}}
 			</section>
 
@@ -782,12 +945,38 @@ var proFormaPageTemplate = newPageTemplate("pro-forma-page", `<div class="page-h
 									<td><strong>{{.BillingGroupName}}</strong><small>{{.PricingPlanName}}</small><small>{{.PayerAccountID}} / {{.CurrencyCode}}</small></td>
 									<td>{{.Period}}</td>
 									<td>{{.SourceCost}}</td>
+									<td>{{if .CustomLineItems}}<strong>{{.CustomAmount}}</strong>{{else}}{{.CustomAmount}}{{end}}</td>
 									<td><strong>{{.ProFormaCost}}</strong></td>
 									<td>{{if .AdjustmentMicros}}<strong>{{.Adjustment}}</strong>{{else}}{{.Adjustment}}{{end}}</td>
-									<td>{{.SourceActivityText}}</td>
+									<td>{{.SourceActivityText}} / {{.CustomActivityText}}</td>
 								</tr>
 							{{else}}
 								{{template "ui.dense-table-empty-row" $.Tables.Summaries}}
+							{{end}}
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section>
+				<div class="section-heading">
+					<h2>Custom Items</h2>
+					<span>{{len .CustomLineItems}} items</span>
+				</div>
+				<div class="table-wrap">
+					<table class="dense-table">
+						{{template "ui.dense-table-head" .Tables.CustomLineItems}}
+						<tbody>
+							{{range .CustomLineItems}}
+								<tr>
+									<td>{{.BillingGroupName}}</td>
+									<td><span class="status">{{.Type}}</span></td>
+									<td><strong>{{.Name}}</strong>{{if .Description}}<small>{{.Description}}</small>{{end}}</td>
+									<td>{{if .AmountMicros}}<strong>{{.Amount}}</strong>{{else}}{{.Amount}}{{end}}</td>
+									<td>{{.Period}}</td>
+								</tr>
+							{{else}}
+								{{template "ui.dense-table-empty-row" $.Tables.CustomLineItems}}
 							{{end}}
 						</tbody>
 					</table>

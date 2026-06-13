@@ -153,6 +153,82 @@ func TestProFormaBillingRepositoryAppliesPricingPlanWithoutChangingBillableCost(
 	requireProFormaLineItem(t, items, serviceAmazonEC2, 83_200, 124_800, 41_600, 15_000)
 	requireProFormaLineItem(t, items, serviceAmazonS3, 7_500, 7_500, 0, proFormaDefaultMultiplierBPS)
 
+	for _, request := range []ProFormaCustomLineItemCreateRequest{
+		{
+			BillingGroupID:     group.ID,
+			BillingPeriodStart: "2026-02-01",
+			BillingPeriodEnd:   "2026-03-01",
+			LineItemType:       ProFormaCustomLineItemTypeFee,
+			Name:               "Training platform fee",
+			Description:        "Monthly internal platform charge",
+			AmountMicros:       25_000_000,
+		},
+		{
+			BillingGroupID:     group.ID,
+			BillingPeriodStart: "2026-02-01",
+			BillingPeriodEnd:   "2026-03-01",
+			LineItemType:       ProFormaCustomLineItemTypeMarkup,
+			Name:               "Shared tooling markup",
+			Description:        "Internal shared tooling recovery",
+			AmountMicros:       5_000_000,
+		},
+		{
+			BillingGroupID:     group.ID,
+			BillingPeriodStart: "2026-02-01",
+			BillingPeriodEnd:   "2026-03-01",
+			LineItemType:       ProFormaCustomLineItemTypeCredit,
+			Name:               "Training credit",
+			Description:        "Instructor-approved credit",
+			AmountMicros:       -10_000_000,
+		},
+		{
+			BillingGroupID:     group.ID,
+			BillingPeriodStart: "2026-02-01",
+			BillingPeriodEnd:   "2026-03-01",
+			LineItemType:       ProFormaCustomLineItemTypeAnnotation,
+			Name:               "Quarter-end note",
+			Description:        "Reviewed with finance",
+			AmountMicros:       0,
+		},
+	} {
+		if _, err := proFormaRepo.CreateCustomLineItem(ctx, request); err != nil {
+			t.Fatalf("CreateCustomLineItem(%s) error = %v", request.LineItemType, err)
+		}
+	}
+	customItems, err := proFormaRepo.ListCustomLineItems(ctx, ProFormaCustomLineItemListRequest{
+		BillingGroupID:     group.ID,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListCustomLineItems() error = %v", err)
+	}
+	if len(customItems) != 4 {
+		t.Fatalf("ListCustomLineItems() length = %d, want 4: %+v", len(customItems), customItems)
+	}
+	requireProFormaCustomLineItem(t, customItems, ProFormaCustomLineItemTypeFee, "Training platform fee", 25_000_000)
+	requireProFormaCustomLineItem(t, customItems, ProFormaCustomLineItemTypeMarkup, "Shared tooling markup", 5_000_000)
+	requireProFormaCustomLineItem(t, customItems, ProFormaCustomLineItemTypeCredit, "Training credit", -10_000_000)
+	requireProFormaCustomLineItem(t, customItems, ProFormaCustomLineItemTypeAnnotation, "Quarter-end note", 0)
+
+	summaries, err = proFormaRepo.ListBillingGroupSummaries(ctx, ProFormaSummaryRequest{
+		BillingGroupID:     group.ID,
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListBillingGroupSummaries() with custom items error = %v", err)
+	}
+	if len(summaries) != 1 ||
+		summaries[0].SourceLineItemCount != 2 ||
+		summaries[0].CustomLineItemCount != 4 ||
+		summaries[0].SourceCostMicros != 90_700 ||
+		summaries[0].CustomAmountMicros != 20_000_000 ||
+		summaries[0].ProFormaCostMicros != 20_132_300 ||
+		summaries[0].AdjustmentMicros != 20_041_600 {
+		t.Fatalf("summaries with custom items = %+v, want generated rows plus custom adjustments", summaries)
+	}
+
 	sourceCountAfter, sourceCostAfter := proFormaBillLineItemTotals(t, ctx, db)
 	if sourceCountAfter != sourceCountBefore || sourceCostAfter != sourceCostBefore {
 		t.Fatalf("billable line items changed from count/cost %d/%d to %d/%d", sourceCountBefore, sourceCostBefore, sourceCountAfter, sourceCostAfter)
@@ -196,4 +272,21 @@ func requireProFormaLineItem(t *testing.T, items []ProFormaLineItem, serviceCode
 		return
 	}
 	t.Fatalf("pro forma items = %+v, want service %s", items, serviceCode)
+}
+
+func requireProFormaCustomLineItem(t *testing.T, items []ProFormaCustomLineItem, lineItemType, name string, amountMicros int64) {
+	t.Helper()
+
+	for _, item := range items {
+		if item.LineItemType != lineItemType || item.Name != name {
+			continue
+		}
+		if item.AmountMicros != amountMicros ||
+			item.BillingGroupName == "" ||
+			item.PricingPlanName == "" {
+			t.Fatalf("custom pro forma item = %+v, want %s %q amount %d with group and plan labels", item, lineItemType, name, amountMicros)
+		}
+		return
+	}
+	t.Fatalf("custom pro forma items = %+v, want %s %q", items, lineItemType, name)
 }

@@ -40,6 +40,8 @@ type SavedReport struct {
 	LastRunStatus                   string
 	LastRunRowCount                 int
 	LastRunTotalUnblendedCostMicros int64
+	LastRunMetric                   string
+	LastRunMetricTotalMicros        int64
 	LastRunError                    string
 	CreatedAt                       string
 	UpdatedAt                       string
@@ -97,6 +99,8 @@ type SavedReportRunUpdate struct {
 	Status                   string
 	RowCount                 int
 	TotalUnblendedCostMicros int64
+	Metric                   string
+	MetricTotalMicros        int64
 	ErrorMessage             string
 }
 
@@ -269,6 +273,8 @@ func (r SavedReportRepository) RecordLastRun(ctx context.Context, request SavedR
 		     last_run_status = ?,
 		     last_run_row_count = ?,
 		     last_run_total_unblended_cost_micros = ?,
+		     last_run_metric = ?,
+		     last_run_metric_total_micros = ?,
 		     last_run_error = ?,
 		     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		 WHERE id = ?`,
@@ -276,6 +282,8 @@ func (r SavedReportRepository) RecordLastRun(ctx context.Context, request SavedR
 		request.Status,
 		request.RowCount,
 		request.TotalUnblendedCostMicros,
+		request.Metric,
+		request.MetricTotalMicros,
 		request.ErrorMessage,
 		request.ID,
 	)
@@ -500,6 +508,8 @@ const savedReportSelectSQL = `SELECT
 	last_run_status,
 	last_run_row_count,
 	last_run_total_unblended_cost_micros,
+	last_run_metric,
+	last_run_metric_total_micros,
 	last_run_error,
 	created_at,
 	updated_at
@@ -530,6 +540,8 @@ func scanSavedReport(scanner savedReportScanner) (SavedReport, error) {
 		&report.LastRunStatus,
 		&report.LastRunRowCount,
 		&report.LastRunTotalUnblendedCostMicros,
+		&report.LastRunMetric,
+		&report.LastRunMetricTotalMicros,
 		&report.LastRunError,
 		&report.CreatedAt,
 		&report.UpdatedAt,
@@ -595,6 +607,7 @@ func normalizeSavedReportRunUpdate(request SavedReportRunUpdate) SavedReportRunU
 	request.ID = strings.TrimSpace(request.ID)
 	request.RunAt = strings.TrimSpace(request.RunAt)
 	request.Status = strings.TrimSpace(request.Status)
+	request.Metric = normalizeSavedReportDefault(request.Metric, defaultSavedReportMetric)
 	request.ErrorMessage = strings.TrimSpace(request.ErrorMessage)
 	return request
 }
@@ -802,6 +815,12 @@ func validateSavedReportRunUpdate(request SavedReportRunUpdate) error {
 	}
 	if request.TotalUnblendedCostMicros < 0 {
 		return fmt.Errorf("saved report run total unblended cost must be non-negative")
+	}
+	if err := validateSavedReportMetrics([]string{request.Metric}); err != nil {
+		return err
+	}
+	if request.Metric == "usage_quantity" && request.MetricTotalMicros < 0 {
+		return fmt.Errorf("saved report run usage quantity total must be non-negative")
 	}
 	return nil
 }

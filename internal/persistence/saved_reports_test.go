@@ -42,6 +42,8 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 	if report.ID != "saved-report-monthly-service" ||
 		report.LastRunStatus != savedReportStatusNeverRun ||
 		report.LastRunAt != "" ||
+		report.LastRunMetric != defaultSavedReportMetric ||
+		report.LastRunMetricTotalMicros != 0 ||
 		report.Filters["service"][1] != "AmazonS3" ||
 		len(report.Groupings) != 1 ||
 		report.Groupings[0].Key != "service" ||
@@ -95,6 +97,8 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 		Status:                   savedReportStatusSucceeded,
 		RowCount:                 7,
 		TotalUnblendedCostMicros: 123_456_789,
+		Metric:                   "usage_quantity",
+		MetricTotalMicros:        7_000_000,
 	})
 	if err != nil {
 		t.Fatalf("RecordLastRun() error = %v", err)
@@ -103,6 +107,8 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 		ran.LastRunStatus != savedReportStatusSucceeded ||
 		ran.LastRunRowCount != 7 ||
 		ran.LastRunTotalUnblendedCostMicros != 123_456_789 ||
+		ran.LastRunMetric != "usage_quantity" ||
+		ran.LastRunMetricTotalMicros != 7_000_000 ||
 		ran.LastRunError != "" {
 		t.Fatalf("last-run metadata = %+v, want successful run summary", ran)
 	}
@@ -147,6 +153,45 @@ func TestSavedReportRepositoryCreatesUpdatesRunsListsAndDeletesReports(t *testin
 	}
 	if _, err := repo.Get(ctx, report.ID); !errors.Is(err, ErrSavedReportNotFound) || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("Get(deleted) error = %v, want ErrSavedReportNotFound with compatible message", err)
+	}
+}
+
+func TestSavedReportRepositoryRecordsSignedSelectedMetricRunTotal(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	repo := NewSavedReportRepository(db)
+
+	report, err := repo.Create(ctx, SavedReportCreateRequest{
+		ID:             "saved-report-net-cost-run",
+		Name:           "Net cost run",
+		OwnerAccountID: "999988887777",
+		OwnerRole:      "management-account",
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Metrics:        []string{"net_cost"},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	ran, err := repo.RecordLastRun(ctx, SavedReportRunUpdate{
+		ID:                       report.ID,
+		RunAt:                    "2026-02-08T00:00:00Z",
+		Status:                   savedReportStatusSucceeded,
+		RowCount:                 3,
+		TotalUnblendedCostMicros: 200_000,
+		Metric:                   "net_cost",
+		MetricTotalMicros:        -50_000,
+	})
+	if err != nil {
+		t.Fatalf("RecordLastRun() error = %v", err)
+	}
+	if ran.LastRunMetric != "net_cost" ||
+		ran.LastRunMetricTotalMicros != -50_000 ||
+		ran.LastRunTotalUnblendedCostMicros != 200_000 {
+		t.Fatalf("last-run metric metadata = %+v, want signed selected metric plus unblended total", ran)
 	}
 }
 
@@ -430,6 +475,24 @@ func TestSavedReportRepositoryValidatesDefinitionsAndRuns(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "row count") {
 		t.Fatalf("RecordLastRun(negative rows) error = %v, want row-count validation", err)
 	}
+	if _, err := repo.RecordLastRun(ctx, SavedReportRunUpdate{
+		ID:                valid.ID,
+		RunAt:             "2026-02-01T00:00:00Z",
+		Status:            savedReportStatusSucceeded,
+		Metric:            "cash_cost",
+		MetricTotalMicros: 1,
+	}); err == nil || !strings.Contains(err.Error(), "metric") {
+		t.Fatalf("RecordLastRun(unsupported metric) error = %v, want metric validation", err)
+	}
+	if _, err := repo.RecordLastRun(ctx, SavedReportRunUpdate{
+		ID:                valid.ID,
+		RunAt:             "2026-02-01T00:00:00Z",
+		Status:            savedReportStatusSucceeded,
+		Metric:            "usage_quantity",
+		MetricTotalMicros: -1,
+	}); err == nil || !strings.Contains(err.Error(), "usage quantity total") {
+		t.Fatalf("RecordLastRun(negative usage quantity) error = %v, want usage metric validation", err)
+	}
 	if _, err := repo.Update(ctx, SavedReportUpdateRequest{
 		Name:           "Missing ID",
 		OwnerAccountID: "999988887777",
@@ -513,5 +576,28 @@ func TestSavedReportSchemaRejectsInvalidRows(t *testing.T) {
 		`["unblended_cost"]`,
 		"table",
 		savedReportStatusSucceeded,
+	)
+	assertExecFails(t, db, `INSERT INTO saved_reports (
+		id,
+		name,
+		owner_account_id,
+		owner_role,
+		date_range_start,
+		date_range_end,
+		granularity,
+		metrics_json,
+		chart_type,
+		last_run_metric
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"saved-report-invalid-run-metric",
+		"Invalid run metric",
+		"999988887777",
+		"management-account",
+		"2026-02-01",
+		"2026-03-01",
+		"monthly",
+		`["unblended_cost"]`,
+		"table",
+		"cash_cost",
 	)
 }

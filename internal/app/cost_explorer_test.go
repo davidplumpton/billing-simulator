@@ -1096,7 +1096,7 @@ func TestCostExplorerSavedReportRunRecordsLastRunMetadata(t *testing.T) {
 		"date_range_start": {"2026-02-01"},
 		"date_range_end":   {"2026-03-01"},
 		"granularity":      {"daily"},
-		"metric":           {"unblended_cost"},
+		"metric":           {"usage_quantity"},
 		"chart_type":       {"table"},
 		"service_values":   {"Amazon EC2"},
 		"tag_key":          {"app"},
@@ -1139,6 +1139,7 @@ func TestCostExplorerSavedReportRunRecordsLastRunMetadata(t *testing.T) {
 		"Ran saved report Saved report run metadata",
 		"Saved report run metadata",
 		"succeeded 2026-02-03T00:00:00Z",
+		"Usage Quantity 2",
 		"tag:app=storefront",
 		"$0.0832",
 	} {
@@ -1155,6 +1156,8 @@ func TestCostExplorerSavedReportRunRecordsLastRunMetadata(t *testing.T) {
 		ranReport.LastRunAt != "2026-02-03T00:00:00Z" ||
 		ranReport.LastRunRowCount != 1 ||
 		ranReport.LastRunTotalUnblendedCostMicros != 83_200 ||
+		ranReport.LastRunMetric != "usage_quantity" ||
+		ranReport.LastRunMetricTotalMicros != 2_000_000 ||
 		ranReport.LastRunError != "" {
 		t.Fatalf("saved report last-run metadata = %+v, want successful UI run summary", ranReport)
 	}
@@ -1452,6 +1455,8 @@ func TestCostExplorerQueryEngineFeatureWorksInFreshWorkspace(t *testing.T) {
 		Status:                   "succeeded",
 		RowCount:                 len(savedResult.Rows),
 		TotalUnblendedCostMicros: savedResult.TotalUnblendedCostMicros,
+		Metric:                   savedReport.Metrics[0],
+		MetricTotalMicros:        savedResult.TotalUnblendedCostMicros,
 	})
 	if err != nil {
 		t.Fatalf("RecordLastRun(saved report) error = %v", err)
@@ -1459,6 +1464,8 @@ func TestCostExplorerQueryEngineFeatureWorksInFreshWorkspace(t *testing.T) {
 	if ranReport.LastRunStatus != "succeeded" ||
 		ranReport.LastRunRowCount != 2 ||
 		ranReport.LastRunTotalUnblendedCostMicros != 1_996_800 ||
+		ranReport.LastRunMetric != "unblended_cost" ||
+		ranReport.LastRunMetricTotalMicros != 1_996_800 ||
 		ranReport.LastRunAt != "2026-02-03T00:00:00Z" {
 		t.Fatalf("saved report last-run metadata = %+v, want successful query metadata", ranReport)
 	}

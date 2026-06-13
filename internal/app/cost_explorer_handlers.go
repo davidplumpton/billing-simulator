@@ -363,6 +363,7 @@ func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, 
 			ID:           report.ID,
 			RunAt:        clock.CurrentTime,
 			Status:       "failed",
+			Metric:       builder.Metric,
 			ErrorMessage: err.Error(),
 		}); recordErr != nil {
 			h.renderCostExplorer(w, r, http.StatusInternalServerError, recordErr.Error(), "")
@@ -377,6 +378,8 @@ func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, 
 		Status:                   "succeeded",
 		RowCount:                 len(result.Rows),
 		TotalUnblendedCostMicros: result.TotalUnblendedCostMicros,
+		Metric:                   builder.Metric,
+		MetricTotalMicros:        costExplorerResultMetricTotalMicros(builder.Metric, result),
 	}); err != nil {
 		h.renderCostExplorer(w, r, http.StatusInternalServerError, err.Error(), "")
 		return
@@ -774,6 +777,9 @@ func costExplorerSavedReportViewFromReport(report persistence.SavedReport, selec
 	lastRun := report.LastRunStatus
 	if report.LastRunAt != "" {
 		lastRun += " " + report.LastRunAt
+		if report.LastRunStatus == "succeeded" {
+			lastRun += " / " + costExplorerMetricLabel(report.LastRunMetric) + " " + costExplorerRunMetricTotalValue(report.LastRunMetric, report.LastRunMetricTotalMicros)
+		}
 	}
 	return costExplorerSavedReportView{
 		ID:             report.ID,
@@ -846,6 +852,30 @@ func costExplorerResultMetricValue(metric string, result persistence.CostExplore
 	default:
 		return formatUSDMicros(result.TotalUnblendedCostMicros)
 	}
+}
+
+// costExplorerResultMetricTotalMicros returns the persisted raw total for the selected report metric.
+func costExplorerResultMetricTotalMicros(metric string, result persistence.CostExplorerQueryResult) int64 {
+	switch metric {
+	case "usage_quantity":
+		return result.TotalUsageQuantityMicros
+	case "blended_cost":
+		return result.TotalBlendedCostMicros
+	case "net_cost":
+		return result.TotalNetCostMicros
+	case "amortized_cost":
+		return result.TotalAmortizedCostMicros
+	default:
+		return result.TotalUnblendedCostMicros
+	}
+}
+
+// costExplorerRunMetricTotalValue formats persisted saved-report run totals with metric-specific units.
+func costExplorerRunMetricTotalValue(metric string, totalMicros int64) string {
+	if metric == "usage_quantity" {
+		return formatQuantityMicros(totalMicros)
+	}
+	return formatUSDMicros(totalMicros)
 }
 
 // costExplorerLineItemMetricValue formats the selected drilldown metric from complete row totals.

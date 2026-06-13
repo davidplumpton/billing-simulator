@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"aws-billing-simulator/internal/csvsafe"
 	"aws-billing-simulator/internal/persistence"
 )
 
@@ -148,34 +149,35 @@ func invoiceCSVHeader() []string {
 func invoiceCSVRecord(printable persistence.PrintableInvoice, item persistence.InvoiceLineItem) []string {
 	document := printable.Document
 	obligation := printable.Obligation
+	safe := csvsafe.SpreadsheetString
 	return []string{
-		document.InvoiceID,
-		document.BillID,
-		document.Status,
-		obligation.Status,
-		document.BillingPeriodStart,
-		document.BillingPeriodEnd,
-		document.InvoiceDate,
-		document.DueDate,
-		document.PayerAccountID,
-		item.UsageAccountID,
-		item.ID,
-		item.LineItemType,
-		item.ServiceCode,
-		item.ServiceName,
-		item.RegionCode,
-		item.ResourceID,
-		item.ResourceName,
-		item.UsageType,
-		item.Operation,
-		item.UsageStartTime,
-		item.UsageEndTime,
+		safe(document.InvoiceID),
+		safe(document.BillID),
+		safe(document.Status),
+		safe(obligation.Status),
+		safe(document.BillingPeriodStart),
+		safe(document.BillingPeriodEnd),
+		safe(document.InvoiceDate),
+		safe(document.DueDate),
+		safe(document.PayerAccountID),
+		safe(item.UsageAccountID),
+		safe(item.ID),
+		safe(item.LineItemType),
+		safe(item.ServiceCode),
+		safe(item.ServiceName),
+		safe(item.RegionCode),
+		safe(item.ResourceID),
+		safe(item.ResourceName),
+		safe(item.UsageType),
+		safe(item.Operation),
+		safe(item.UsageStartTime),
+		safe(item.UsageEndTime),
 		formatMicrosDecimal(item.PricingQuantityMicros),
-		item.PricingUnit,
+		safe(item.PricingUnit),
 		formatMicrosDecimal(item.UnblendedRateMicros),
 		formatMicrosDecimal(item.UnblendedCostMicros),
-		item.CurrencyCode,
-		item.Description,
+		safe(item.CurrencyCode),
+		safe(item.Description),
 	}
 }
 

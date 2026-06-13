@@ -50,6 +50,114 @@ func TestCURLineItemColumnsIncludeRequiredExportFields(t *testing.T) {
 	}
 }
 
+func TestCURCSVExportRecordNeutralizesSpreadsheetFormulaStrings(t *testing.T) {
+	t.Parallel()
+
+	record, err := curCSVExportRecord("2026-03-01T00:00:00Z", "+bill", CURLineItem{
+		LineItemID:          "=line-item",
+		BillingPeriodStart:  "2026-02-01",
+		BillingPeriodEnd:    "2026-03-01",
+		PayerAccountID:      "999988887777",
+		UsageAccountID:      "111122223333",
+		AccountName:         "+Storefront",
+		ServiceCode:         serviceAmazonEC2,
+		ServiceName:         "-Amazon EC2",
+		ProductCode:         serviceAmazonEC2,
+		Region:              "us-east-1",
+		UsageType:           "instance-hours:t3.medium",
+		Operation:           "RunInstances",
+		LineItemType:        billLineItemTypeUsage,
+		ResourceID:          "@resource",
+		UsageStartTime:      "2026-02-01T00:00:00Z",
+		UsageEndTime:        "2026-02-01T01:00:00Z",
+		UsageAmountMicros:   1_000_000,
+		UsageUnit:           "Hours",
+		UnblendedRateMicros: 41_600,
+		UnblendedCostMicros: -41_600,
+		Currency:            defaultBillCurrencyCode,
+		LegalEntity:         defaultInvoiceSellerOfRecord,
+		InvoiceEntity:       defaultInvoiceSellerOfRecord,
+		Tags:                map[string]string{"formula": "=tag"},
+		CostCategories:      map[string]string{"Product": "@category"},
+		Description:         "=description",
+	})
+	if err != nil {
+		t.Fatalf("curCSVExportRecord() error = %v", err)
+	}
+	header := CURCSVExportColumns()
+	for column, want := range map[string]string{
+		"source_bill_id": "'+bill",
+		"line_item_id":   "'=line-item",
+		"account_name":   "'+Storefront",
+		"service_name":   "'-Amazon EC2",
+		"resource_id":    "'@resource",
+		"description":    "'=description",
+		"unblended_cost": "-0.041600",
+		"tags_json":      `{"formula":"=tag"}`,
+	} {
+		assertCSVRecordColumn(t, header, record, column, want)
+	}
+}
+
+func TestFOCUSCSVExportRecordNeutralizesSpreadsheetFormulaStrings(t *testing.T) {
+	t.Parallel()
+
+	record, err := focusCSVExportRecord("@generated", "+bill", CURLineItem{
+		LineItemID:           "=line-item",
+		BillingPeriodStart:   "2026-02-01",
+		BillingPeriodEnd:     "2026-03-01",
+		PayerAccountID:       "999988887777",
+		PayerAccountName:     "=Management",
+		UsageAccountID:       "111122223333",
+		AccountName:          "@Storefront",
+		ServiceCode:          serviceAmazonEC2,
+		ServiceName:          "Amazon EC2",
+		ProductFamily:        "Compute Instance",
+		Region:               "us-east-1",
+		UsageType:            "instance-hours:t3.medium",
+		Operation:            "RunInstances",
+		LineItemType:         billLineItemTypeUsage,
+		ResourceID:           "=resource",
+		ResourceName:         "-resource name",
+		ResourceType:         "ec2_instance",
+		UsageStartTime:       "2026-02-01T00:00:00Z",
+		UsageEndTime:         "2026-02-01T01:00:00Z",
+		ConsumedAmountMicros: 1_000_000,
+		ConsumedUnit:         "Hours",
+		UsageAmountMicros:    1_000_000,
+		UsageUnit:            "Hours",
+		UnblendedRateMicros:  41_600,
+		UnblendedCostMicros:  -41_600,
+		Currency:             defaultBillCurrencyCode,
+		LegalEntity:          defaultInvoiceSellerOfRecord,
+		InvoiceEntity:        defaultInvoiceSellerOfRecord,
+		InvoiceID:            "-invoice",
+		PriceCatalogSKU:      "sku-ec2",
+		Tags:                 map[string]string{"formula": "+tag"},
+		CostCategories:       map[string]string{"Product": "-category"},
+		Description:          "+description",
+	}, false)
+	if err != nil {
+		t.Fatalf("focusCSVExportRecord() error = %v", err)
+	}
+	header := FOCUSCSVExportColumns()
+	for column, want := range map[string]string{
+		"x_SimulatorExportGeneratedAt": "'@generated",
+		"x_SimulatorSourceBillId":      "'+bill",
+		"x_SimulatorLineItemId":        "'=line-item",
+		"BillingAccountName":           "'=Management",
+		"ChargeDescription":            "'+description",
+		"EffectiveCost":                "-0.041600",
+		"InvoiceId":                    "'-invoice",
+		"ResourceId":                   "'=resource",
+		"ResourceName":                 "'-resource name",
+		"SubAccountName":               "'@Storefront",
+		"Tags":                         `{"formula":"+tag"}`,
+	} {
+		assertCSVRecordColumn(t, header, record, column, want)
+	}
+}
+
 func TestCURLineItemRepositoryMapsBillLineItemsToExportRows(t *testing.T) {
 	t.Parallel()
 
@@ -764,4 +872,12 @@ func csvColumnIndex(t *testing.T, header []string, column string) int {
 	}
 	t.Fatalf("CSV header = %+v, missing %q", header, column)
 	return -1
+}
+
+func assertCSVRecordColumn(t *testing.T, header, record []string, column, want string) {
+	t.Helper()
+
+	if got := record[csvColumnIndex(t, header, column)]; got != want {
+		t.Fatalf("CSV column %s = %q, want %q in %v", column, got, want, record)
+	}
 }

@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"aws-billing-simulator/internal/csvsafe"
 )
 
 const (
@@ -949,36 +951,37 @@ func curCSVExportRecord(generatedAt, sourceBillID string, item CURLineItem) ([]s
 	if err != nil {
 		return nil, fmt.Errorf("encode CUR-like cost categories for line item %q: %w", item.LineItemID, err)
 	}
+	safe := csvsafe.SpreadsheetString
 	return []string{
-		generatedAt,
-		sourceBillID,
-		item.LineItemID,
-		item.BillingPeriodStart,
-		item.BillingPeriodEnd,
-		item.PayerAccountID,
-		item.UsageAccountID,
-		item.AccountName,
-		item.ServiceCode,
-		item.ServiceName,
-		item.ProductCode,
-		item.Region,
-		item.AvailabilityZone,
-		item.UsageType,
-		item.Operation,
-		item.LineItemType,
-		item.ResourceID,
-		item.UsageStartTime,
-		item.UsageEndTime,
+		safe(generatedAt),
+		safe(sourceBillID),
+		safe(item.LineItemID),
+		safe(item.BillingPeriodStart),
+		safe(item.BillingPeriodEnd),
+		safe(item.PayerAccountID),
+		safe(item.UsageAccountID),
+		safe(item.AccountName),
+		safe(item.ServiceCode),
+		safe(item.ServiceName),
+		safe(item.ProductCode),
+		safe(item.Region),
+		safe(item.AvailabilityZone),
+		safe(item.UsageType),
+		safe(item.Operation),
+		safe(item.LineItemType),
+		safe(item.ResourceID),
+		safe(item.UsageStartTime),
+		safe(item.UsageEndTime),
 		formatCURMicrosDecimal(item.UsageAmountMicros),
-		item.UsageUnit,
+		safe(item.UsageUnit),
 		formatCURMicrosDecimal(item.UnblendedRateMicros),
 		formatCURMicrosDecimal(item.UnblendedCostMicros),
-		item.Currency,
-		item.LegalEntity,
-		item.InvoiceEntity,
-		tagsJSON,
-		costCategoriesJSON,
-		item.Description,
+		safe(item.Currency),
+		safe(item.LegalEntity),
+		safe(item.InvoiceEntity),
+		safe(tagsJSON),
+		safe(costCategoriesJSON),
+		safe(item.Description),
 	}, nil
 }
 

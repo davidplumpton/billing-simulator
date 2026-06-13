@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"aws-billing-simulator/internal/csvsafe"
 	"aws-billing-simulator/internal/persistence"
 )
 
@@ -55,19 +56,20 @@ func costExplorerResultsCSVHeader() []string {
 func costExplorerResultsCSVRecord(result persistence.CostExplorerQueryResult, builder costExplorerBuilderView, row persistence.CostExplorerQueryRow) []string {
 	group1 := costExplorerCSVGroup(row, 0)
 	group2 := costExplorerCSVGroup(row, 1)
+	safe := csvsafe.SpreadsheetString
 	return []string{
-		result.DateRangeStart,
-		result.DateRangeEnd,
-		result.Granularity,
-		builder.Metric,
-		row.TimePeriodStart,
-		row.TimePeriodEnd,
-		group1.Type,
-		group1.Key,
-		group1.Value,
-		group2.Type,
-		group2.Key,
-		group2.Value,
+		safe(result.DateRangeStart),
+		safe(result.DateRangeEnd),
+		safe(result.Granularity),
+		safe(builder.Metric),
+		safe(row.TimePeriodStart),
+		safe(row.TimePeriodEnd),
+		safe(group1.Type),
+		safe(group1.Key),
+		safe(group1.Value),
+		safe(group2.Type),
+		safe(group2.Key),
+		safe(group2.Value),
 		costExplorerMetricCSVValue(builder.Metric, row),
 		formatMicrosDecimal(row.UsageQuantityMicros),
 		formatMicrosDecimal(row.UnblendedCostMicros),
@@ -75,7 +77,7 @@ func costExplorerResultsCSVRecord(result persistence.CostExplorerQueryResult, bu
 		formatMicrosDecimal(row.NetCostMicros),
 		formatMicrosDecimal(row.AmortizedCostMicros),
 		fmt.Sprintf("%d", row.LineItemCount),
-		row.CurrencyCode,
+		safe(row.CurrencyCode),
 	}
 }
 

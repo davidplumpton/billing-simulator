@@ -82,8 +82,8 @@ The sidecar includes:
 ## Differences From AWS Data Exports
 
 - The export is generated from synthetic simulator data and local SQLite state only.
-- It does not include AWS account credentials, real pricing freshness, real invoices, taxes, credits, blended rates, or FOCUS-native amortized/net cost fields.
+- It does not include AWS account credentials, real pricing freshness, real invoices, taxes, credits, AWS blended rates, or FOCUS-native amortized/net cost fields.
 - It exports simplified Reserved Instance and Savings Plan simulator fee/credit rows as bill line items, but it does not emit formal FOCUS Contract Commitment datasets.
-- It maps current unblended synthetic costs into `EffectiveCost`, `ListCost`, and `ListUnitPrice`; discount-instrument source links stay in simulator tables for later report metrics.
+- It maps current unblended synthetic costs into `EffectiveCost`, `ListCost`, and `ListUnitPrice`; discount-instrument source links stay in simulator tables for Cost Explorer net/blended/amortized source-allocation report metrics.
 - It uses simulator-specific custom columns for bill IDs, Cost Categories, schema marker, and source line-item IDs.
 - It includes a simulator metadata sidecar for validation context, but it does not produce formal FOCUS validator pass/fail output.

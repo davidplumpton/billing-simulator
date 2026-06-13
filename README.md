@@ -58,7 +58,7 @@ The current codebase already includes these working foundations:
 - Billing Conductor-style pro forma pricing plans and billing groups with account assignments, service-level internal rate multipliers, generated showback rows, custom fee/markup/credit/annotation rows, and separate source-line references that do not mutate payable bill line items.
 - Cost Explorer query aggregation over priced line items with date range, granularity, dimension, tag, and Cost Category filters plus up to two groupings.
 - Cost Explorer derived summary tables for daily cost, monthly account/service spend, tag coverage, and Cost Category value rollups after billing changes.
-- Cost Explorer report builder UI with date range, granularity, metric, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
+- Cost Explorer report builder UI with date range, granularity, unblended/signed net/simulator blended/amortized source-allocation/usage metrics, filter, group-by, saved report selection, saved definition editing, server-rendered line/bar/stacked-bar charts, dense result tables, aggregate-row bill line item drilldowns, and report result CSV export.
 - Cost anomaly detection UI for explicitly refreshing persisted alerts that compare a current period against a baseline period and flag service, account, tag, and Cost Category spend spikes.
 - CUR-like export schema mapping, FOCUS-like CSV export mapping with FOCUS v1.4 target metadata sidecars documented in [docs/focus-like-export-schema.md](docs/focus-like-export-schema.md), payer-period CSV downloads, workspace-local export file metadata, Exports UI for explicitly generating/listing/downloading/regenerating generated files, and export reconciliation reports over bill line items for payer and usage accounts, product code, usage, rates, costs, line-item type, resource IDs, tags, Cost Categories, legal/invoice entity fields, source bill metadata, deterministic generation time, consolidated bill/invoice total comparisons for payer-scoped views, and visible line-item total comparisons for member-scoped exports.
 - Query Lab UI with external SQL examples over generated CUR-like CSV exports, selected generated export paths, or explicit CSV paths for linked-account totals, untagged spend, top usage types, invoice reconciliation, and allocated cost comparisons.
@@ -78,7 +78,7 @@ The broader MVP and later phases include:
 - Query-lab SQL examples target generated CUR-like exports and selected local CSV paths; the current dependency decision keeps DuckDB optional and external rather than embedded in the simulator binary. See [docs/query-lab-duckdb-decision.md](docs/query-lab-duckdb-decision.md).
 - Additional Billing Conductor-style showback lab workflows.
 - Richer instructor-authored scenarios and instructor assessment review workflows beyond current learner progress and check feedback.
-- More advanced billing fidelity such as credits, taxes, richer Reserved Instance workflows, richer Savings Plan variants, blended rates, and amortized report views.
+- More advanced billing fidelity such as credits, taxes, richer Reserved Instance workflows, richer Savings Plan variants, and richer blended-rate allocation beyond the current simulator report metrics.
 
 ## Architecture
 

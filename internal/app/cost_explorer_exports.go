@@ -44,6 +44,9 @@ func costExplorerResultsCSVHeader() []string {
 		"metric_value",
 		"usage_quantity",
 		"unblended_cost",
+		"blended_cost",
+		"net_cost",
+		"amortized_cost",
 		"line_item_count",
 		"currency_code",
 	}
@@ -68,6 +71,9 @@ func costExplorerResultsCSVRecord(result persistence.CostExplorerQueryResult, bu
 		costExplorerMetricCSVValue(builder.Metric, row),
 		formatMicrosDecimal(row.UsageQuantityMicros),
 		formatMicrosDecimal(row.UnblendedCostMicros),
+		formatMicrosDecimal(row.BlendedCostMicros),
+		formatMicrosDecimal(row.NetCostMicros),
+		formatMicrosDecimal(row.AmortizedCostMicros),
 		fmt.Sprintf("%d", row.LineItemCount),
 		row.CurrencyCode,
 	}
@@ -84,6 +90,12 @@ func costExplorerMetricCSVValue(metric string, row persistence.CostExplorerQuery
 	switch metric {
 	case "usage_quantity":
 		return formatMicrosDecimal(row.UsageQuantityMicros)
+	case "blended_cost":
+		return formatMicrosDecimal(row.BlendedCostMicros)
+	case "net_cost":
+		return formatMicrosDecimal(row.NetCostMicros)
+	case "amortized_cost":
+		return formatMicrosDecimal(row.AmortizedCostMicros)
 	default:
 		return formatMicrosDecimal(row.UnblendedCostMicros)
 	}

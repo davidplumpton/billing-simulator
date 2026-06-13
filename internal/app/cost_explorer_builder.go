@@ -22,6 +22,7 @@ func costExplorerQueryRequestFromBuilder(builder costExplorerBuilderView) (persi
 		DateRangeStart: builder.DateRangeStart,
 		DateRangeEnd:   builder.DateRangeEnd,
 		Granularity:    builder.Granularity,
+		Metric:         builder.Metric,
 		Filters:        filters,
 		Groupings:      groupings,
 	}, nil

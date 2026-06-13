@@ -131,6 +131,101 @@ func TestCostExplorerRepositoryFiltersAndGroupsBillLineItems(t *testing.T) {
 	}
 }
 
+func TestCostExplorerRepositoryReportsDiscountCostMetrics(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	spRepo := NewSavingsPlanRepository(db)
+
+	if _, err := spRepo.CreatePurchase(ctx, SavingsPlanPurchaseCreateRequest{
+		ID:                     "sp-cost-explorer-metrics",
+		PayerAccountID:         AnyCompanyRetailManagementAccountID,
+		OwnerAccountID:         "111122223333",
+		ReferenceUsageType:     "instance-hours:t3.medium",
+		RegionCode:             "us-east-1",
+		SharingScope:           savingsPlanSharingOrg,
+		TermStartTime:          "2026-02-01T00:00:00Z",
+		TermEndTime:            "2026-02-01T03:00:00Z",
+		HourlyCommitmentMicros: 100_000,
+		UpfrontFeeMicros:       90_000,
+		Description:            "Cost Explorer metric coverage",
+	}); err != nil {
+		t.Fatalf("CreatePurchase(Savings Plan) error = %v", err)
+	}
+	recordSavingsPlanTestUsage(t, ctx, usageRepo, "resource-ce-sp-owner", "usage-ce-sp-owner", "111122223333", "2026-02-01T00:00:00Z", "2026-02-01T02:00:00Z", 2_000_000)
+	recordSavingsPlanTestUsage(t, ctx, usageRepo, "resource-ce-sp-shared", "usage-ce-sp-shared", "444455556666", "2026-02-01T00:00:00Z", "2026-02-01T02:00:00Z", 2_000_000)
+	if _, err := NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := NewBillLineItemRepository(db).GenerateBillLineItems(ctx, BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+
+	request := CostExplorerQueryRequest{
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "monthly",
+		Metric:         "amortized_cost",
+		Groupings: []CostExplorerGrouping{
+			{Type: "dimension", Key: "linked_account"},
+		},
+	}
+	repo := NewCostExplorerRepository(db)
+	result, err := repo.Query(ctx, request)
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if result.TotalLineItemCount != 6 ||
+		result.TotalUnblendedCostMicros != 722_800 ||
+		result.TotalNetCostMicros != 390_000 ||
+		result.TotalBlendedCostMicros != 390_000 ||
+		result.TotalAmortizedCostMicros != 216_320 {
+		t.Fatalf("discount metric totals = count %d unblended %d net %d blended %d amortized %d, want 6/722800/390000/390000/216320",
+			result.TotalLineItemCount,
+			result.TotalUnblendedCostMicros,
+			result.TotalNetCostMicros,
+			result.TotalBlendedCostMicros,
+			result.TotalAmortizedCostMicros,
+		)
+	}
+	owner := requireCostExplorerLinkedAccountRow(t, result.Rows, "111122223333")
+	if owner.LineItemCount != 4 ||
+		owner.UnblendedCostMicros != 556_400 ||
+		owner.NetCostMicros != 390_000 ||
+		owner.BlendedCostMicros != 390_000 ||
+		owner.AmortizedCostMicros != 108_160 {
+		t.Fatalf("owner discount metric row = %+v, want fees retained in net and source amortization only", owner)
+	}
+	shared := requireCostExplorerLinkedAccountRow(t, result.Rows, "444455556666")
+	if shared.LineItemCount != 2 ||
+		shared.UnblendedCostMicros != 166_400 ||
+		shared.NetCostMicros != 0 ||
+		shared.BlendedCostMicros != 0 ||
+		shared.AmortizedCostMicros != 108_160 {
+		t.Fatalf("shared discount metric row = %+v, want usage plus negation netted and amortized source cost", shared)
+	}
+
+	lineItems, err := repo.ListLineItems(ctx, CostExplorerLineItemRequest{
+		Query:           request,
+		TimePeriodStart: shared.TimePeriodStart,
+		TimePeriodEnd:   shared.TimePeriodEnd,
+		GroupValues:     shared.GroupValues,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItems(shared account) error = %v", err)
+	}
+	if len(lineItems.Items) != 2 ||
+		lineItems.TotalLineItemCount != 2 ||
+		lineItems.TotalUnblendedCostMicros != 166_400 ||
+		lineItems.TotalNetCostMicros != 0 ||
+		lineItems.TotalBlendedCostMicros != 0 ||
+		lineItems.TotalAmortizedCostMicros != 108_160 {
+		t.Fatalf("shared drilldown metrics = %+v, want complete derived totals behind displayed rows", lineItems)
+	}
+}
+
 func TestCostExplorerRepositoryListsAggregateSourceLineItems(t *testing.T) {
 	t.Parallel()
 
@@ -769,6 +864,19 @@ func TestCostExplorerRepositoryValidatesQueries(t *testing.T) {
 			}
 		})
 	}
+}
+
+func requireCostExplorerLinkedAccountRow(t *testing.T, rows []CostExplorerQueryRow, accountID string) CostExplorerQueryRow {
+	t.Helper()
+
+	for _, row := range rows {
+		if len(row.GroupValues) == 1 &&
+			row.GroupValues[0] == (CostExplorerGroupValue{Type: "dimension", Key: "linked_account", Value: accountID}) {
+			return row
+		}
+	}
+	t.Fatalf("Cost Explorer rows = %+v, want linked account %s", rows, accountID)
+	return CostExplorerQueryRow{}
 }
 
 // insertCostExplorerDrilldownLineItems creates many homogeneous source rows for drilldown pagination tests.

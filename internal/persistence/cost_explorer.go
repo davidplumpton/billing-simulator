@@ -19,6 +19,7 @@ type CostExplorerQueryRequest struct {
 	DateRangeStart string
 	DateRangeEnd   string
 	Granularity    string
+	Metric         string
 	Filters        map[string][]string
 	Groupings      []CostExplorerGrouping
 	Visibility     BillingVisibilityFilter
@@ -35,6 +36,9 @@ type CostExplorerQueryResult struct {
 	TotalLineItemCount       int
 	TotalUsageQuantityMicros int64
 	TotalUnblendedCostMicros int64
+	TotalBlendedCostMicros   int64
+	TotalNetCostMicros       int64
+	TotalAmortizedCostMicros int64
 	Rows                     []CostExplorerQueryRow
 }
 
@@ -47,6 +51,9 @@ type CostExplorerQueryRow struct {
 	LineItemCount       int
 	UsageQuantityMicros int64
 	UnblendedCostMicros int64
+	BlendedCostMicros   int64
+	NetCostMicros       int64
+	AmortizedCostMicros int64
 }
 
 // CostExplorerLineItemRequest selects source bill line items behind one aggregate report row.
@@ -64,6 +71,9 @@ type CostExplorerLineItemResult struct {
 	TotalLineItemCount       int
 	TotalUsageQuantityMicros int64
 	TotalUnblendedCostMicros int64
+	TotalBlendedCostMicros   int64
+	TotalNetCostMicros       int64
+	TotalAmortizedCostMicros int64
 }
 
 // CostExplorerGroupValue names one grouping value on an aggregate row.
@@ -108,6 +118,9 @@ func (r CostExplorerRepository) Query(ctx context.Context, request CostExplorerQ
 		result.TotalLineItemCount += row.LineItemCount
 		result.TotalUsageQuantityMicros += row.UsageQuantityMicros
 		result.TotalUnblendedCostMicros += row.UnblendedCostMicros
+		result.TotalBlendedCostMicros += row.BlendedCostMicros
+		result.TotalNetCostMicros += row.NetCostMicros
+		result.TotalAmortizedCostMicros += row.AmortizedCostMicros
 	}
 	return result, nil
 }
@@ -176,6 +189,10 @@ func normalizeCostExplorerQueryRequest(request CostExplorerQueryRequest) CostExp
 	if request.Granularity == "" {
 		request.Granularity = defaultCostExplorerGranularity
 	}
+	request.Metric = strings.TrimSpace(request.Metric)
+	if request.Metric == "" {
+		request.Metric = "unblended_cost"
+	}
 	request.Filters = normalizeSavedReportFilters(request.Filters)
 	request.Groupings = normalizeSavedReportGroupings(request.Groupings)
 	request.Visibility = normalizeBillingVisibilityFilter(request.Visibility)
@@ -188,6 +205,9 @@ func (r CostExplorerRepository) resolveQuery(ctx context.Context, request CostEx
 		return costExplorerResolvedQuery{}, err
 	}
 	if err := validateCostExplorerGranularity(request.Granularity); err != nil {
+		return costExplorerResolvedQuery{}, err
+	}
+	if err := validateCostExplorerMetric(request.Metric); err != nil {
 		return costExplorerResolvedQuery{}, err
 	}
 	filters, err := r.resolveFilters(ctx, request.Filters)
@@ -228,6 +248,15 @@ func validateCostExplorerGranularity(granularity string) error {
 		return nil
 	default:
 		return fmt.Errorf("cost explorer granularity %q is not supported", granularity)
+	}
+}
+
+func validateCostExplorerMetric(metric string) error {
+	switch metric {
+	case "unblended_cost", "blended_cost", "net_cost", "amortized_cost", "usage_quantity":
+		return nil
+	default:
+		return fmt.Errorf("cost explorer metric %q is not supported", metric)
 	}
 }
 
@@ -401,7 +430,10 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 			group_2_value,
 			COUNT(*),
 			COALESCE(SUM(usage_quantity_micros), 0),
-			COALESCE(SUM(unblended_cost_micros), 0)
+			COALESCE(SUM(unblended_cost_micros), 0),
+			COALESCE(SUM(blended_cost_micros), 0),
+			COALESCE(SUM(net_cost_micros), 0),
+			COALESCE(SUM(amortized_cost_micros), 0)
 		 FROM (
 			SELECT
 				%s AS bucket_start,
@@ -409,7 +441,10 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 				%s AS group_1_value,
 				%s AS group_2_value,
 				bli.usage_quantity_micros AS usage_quantity_micros,
-				bli.unblended_cost_micros AS unblended_cost_micros
+				bli.unblended_cost_micros AS unblended_cost_micros,
+				%s AS blended_cost_micros,
+				%s AS net_cost_micros,
+				%s AS amortized_cost_micros
 			FROM bill_line_items bli
 			WHERE %s
 		 ) q
@@ -418,6 +453,9 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 		bucketExpression,
 		groupExpressions[0],
 		groupExpressions[1],
+		costExplorerBlendedCostExpression("bli"),
+		costExplorerNetCostExpression("bli"),
+		costExplorerAmortizedCostExpression("bli"),
 		strings.Join(whereClauses, " AND "),
 	)
 	args := append(selectArgs, whereArgs...)
@@ -439,6 +477,9 @@ func (r CostExplorerRepository) queryRows(ctx context.Context, query costExplore
 			&row.LineItemCount,
 			&row.UsageQuantityMicros,
 			&row.UnblendedCostMicros,
+			&row.BlendedCostMicros,
+			&row.NetCostMicros,
+			&row.AmortizedCostMicros,
 		); err != nil {
 			return nil, fmt.Errorf("scan cost explorer aggregate: %w", err)
 		}
@@ -491,7 +532,10 @@ func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExp
 		`SELECT
 			COUNT(*),
 			COALESCE(SUM(bli.usage_quantity_micros), 0),
-			COALESCE(SUM(bli.unblended_cost_micros), 0)
+			COALESCE(SUM(bli.unblended_cost_micros), 0),
+			COALESCE(SUM(`+costExplorerBlendedCostExpression("bli")+`), 0),
+			COALESCE(SUM(`+costExplorerNetCostExpression("bli")+`), 0),
+			COALESCE(SUM(`+costExplorerAmortizedCostExpression("bli")+`), 0)
 		 FROM bill_line_items bli
 		 WHERE `+whereSQL,
 		whereArgs...,
@@ -499,6 +543,9 @@ func (r CostExplorerRepository) listLineItems(ctx context.Context, query costExp
 		&result.TotalLineItemCount,
 		&result.TotalUsageQuantityMicros,
 		&result.TotalUnblendedCostMicros,
+		&result.TotalBlendedCostMicros,
+		&result.TotalNetCostMicros,
+		&result.TotalAmortizedCostMicros,
 	); err != nil {
 		return CostExplorerLineItemResult{}, fmt.Errorf("summarize cost explorer drilldown line items: %w", err)
 	}
@@ -724,6 +771,56 @@ func costExplorerDimensionExpression(key string) (string, error) {
 	default:
 		return "", fmt.Errorf("cost explorer dimension %q is not supported", key)
 	}
+}
+
+// costExplorerNetCostExpression maps simulator positive Credit/Refund rows to their signed bill impact.
+func costExplorerNetCostExpression(alias string) string {
+	return fmt.Sprintf(`CASE
+		WHEN %[1]s.line_item_type IN ('Credit', 'Refund') THEN -%[1]s.unblended_cost_micros
+		ELSE %[1]s.unblended_cost_micros
+	END`, alias)
+}
+
+// costExplorerBlendedCostExpression currently mirrors net cost until richer blended-rate inputs exist.
+func costExplorerBlendedCostExpression(alias string) string {
+	return costExplorerNetCostExpression(alias)
+}
+
+// costExplorerAmortizedCostExpression shifts supported RI/SP discounts back onto covered usage rows.
+func costExplorerAmortizedCostExpression(alias string) string {
+	riCovered := fmt.Sprintf(`COALESCE((
+		SELECT SUM(source.covered_cost_micros)
+		FROM reserved_instance_line_item_sources source
+		WHERE source.source_bill_line_item_id = %[1]s.id
+		  AND source.line_item_kind = 'coverage_credit'
+	), 0)`, alias)
+	spCovered := fmt.Sprintf(`COALESCE((
+		SELECT SUM(source.covered_cost_micros)
+		FROM savings_plan_line_item_sources source
+		WHERE source.source_bill_line_item_id = %[1]s.id
+		  AND source.line_item_kind = 'negation'
+	), 0)`, alias)
+	spAmortized := fmt.Sprintf(`COALESCE((
+		SELECT SUM(source.amortized_commitment_cost_micros)
+		FROM savings_plan_line_item_sources source
+		WHERE source.source_bill_line_item_id = %[1]s.id
+		  AND source.line_item_kind = 'negation'
+	), 0)`, alias)
+	return fmt.Sprintf(`CASE
+		WHEN EXISTS (
+			SELECT 1
+			FROM savings_plan_line_item_sources generated
+			WHERE generated.bill_line_item_id = %[1]s.id
+		) THEN 0
+		WHEN EXISTS (
+			SELECT 1
+			FROM reserved_instance_line_item_sources generated
+			WHERE generated.bill_line_item_id = %[1]s.id
+			  AND generated.line_item_kind = 'coverage_credit'
+		) THEN 0
+		WHEN %[1]s.line_item_type = 'Usage' THEN MAX(0, %[1]s.unblended_cost_micros - (%[2]s) - (%[3]s)) + (%[4]s)
+		ELSE %[5]s
+	END`, alias, riCovered, spCovered, spAmortized, costExplorerNetCostExpression(alias))
 }
 
 func costExplorerPlaceholders(count int) string {

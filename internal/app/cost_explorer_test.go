@@ -156,7 +156,7 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 	assertHEADDownloadMatchesGET(t, newMux(db), "/cost-explorer/results.csv?"+query.Encode(), resp.Header, "Content-Type", "Content-Disposition")
 	for _, want := range []string{
 		"date_range_start,date_range_end,granularity,metric,period_start",
-		"2026-02-01,2026-03-01,daily,unblended_cost,2026-02-01,2026-02-02,dimension,service,AmazonEC2,tag,app,storefront,0.083200,2.000000,0.083200,1,USD",
+		"2026-02-01,2026-03-01,daily,unblended_cost,2026-02-01,2026-02-02,dimension,service,AmazonEC2,tag,app,storefront,0.083200,2.000000,0.083200,0.083200,0.083200,0.083200,1,USD",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /cost-explorer/results.csv body missing %q: %s", want, body)
@@ -269,6 +269,101 @@ func TestCostExplorerReportBuilderWorkflow(t *testing.T) {
 		report.Filters["service"][0] != "Amazon EC2" ||
 		report.Filters["tag:app"][0] != "storefront" {
 		t.Fatalf("saved report definition = %+v, want browser report filters and groupings", report)
+	}
+}
+
+func TestCostExplorerAdvancedCostMetricsWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	seedSavingsPlanWorkflowUsage(t, ctx, db)
+	if _, err := persistence.NewSavingsPlanRepository(db).CreatePurchase(ctx, persistence.SavingsPlanPurchaseCreateRequest{
+		ID:                     "sp-cost-explorer-ui",
+		PayerAccountID:         persistence.AnyCompanyRetailManagementAccountID,
+		OwnerAccountID:         "111122223333",
+		ReferenceUsageType:     "instance-hours:t3.medium",
+		RegionCode:             "us-east-1",
+		SharingScope:           persistence.SavingsPlanSharingScopeOrganization,
+		TermStartTime:          "2026-02-01T00:00:00Z",
+		TermEndTime:            "2026-02-01T03:00:00Z",
+		HourlyCommitmentMicros: 100_000,
+		UpfrontFeeMicros:       90_000,
+		Description:            "Cost Explorer UI Savings Plan",
+	}); err != nil {
+		t.Fatalf("CreatePurchase(Savings Plan) error = %v", err)
+	}
+	if _, err := persistence.NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := persistence.NewBillLineItemRepository(db).GenerateBillLineItems(ctx, persistence.BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+
+	server := httptest.NewServer(newMux(db))
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	query := url.Values{
+		"date_range_start": {"2026-02-01"},
+		"date_range_end":   {"2026-03-01"},
+		"granularity":      {"monthly"},
+		"metric":           {"amortized_cost"},
+		"chart_type":       {"table"},
+		"group_1_type":     {"dimension"},
+		"group_1_key":      {"linked_account"},
+		"run":              {"1"},
+	}
+	resp, err := client.Get(server.URL + "/cost-explorer?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer amortized report error = %v", err)
+	}
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer amortized report status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		`<option value="blended_cost">Blended Cost</option>`,
+		`<option value="net_cost">Net Cost</option>`,
+		`<option value="amortized_cost" selected>Amortized Cost</option>`,
+		"Report Results",
+		"Amortized Cost",
+		"$0.21632",
+		"Linked Account=111122223333",
+		"Linked Account=555566667777",
+		"$0.10816",
+		"$0.5564",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer amortized report missing %q: %s", want, body)
+		}
+	}
+
+	resp, err = client.Get(server.URL + "/cost-explorer/results.csv?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /cost-explorer/results.csv amortized report error = %v", err)
+	}
+	body = readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cost-explorer/results.csv amortized report status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	for _, want := range []string{
+		"usage_quantity,unblended_cost,blended_cost,net_cost,amortized_cost,line_item_count",
+		"monthly,amortized_cost,2026-02-01,2026-03-01,dimension,linked_account,111122223333",
+		"0.556400,0.390000,0.390000,0.108160,4,USD",
+		"0.166400,0.000000,0.000000,0.108160,2,USD",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /cost-explorer/results.csv amortized report missing %q: %s", want, body)
+		}
 	}
 }
 
@@ -766,8 +861,8 @@ func TestCostExplorerReportUIFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 	for _, want := range []string{
 		"date_range_start,date_range_end,granularity,metric,period_start",
-		"tag,app,payments,,,,0.998400,24.000000,0.998400,1,USD",
-		"tag,app,storefront,,,,0.998400,24.000000,0.998400,1,USD",
+		"tag,app,payments,,,,0.998400,24.000000,0.998400,0.998400,0.998400,0.998400,1,USD",
+		"tag,app,storefront,,,,0.998400,24.000000,0.998400,0.998400,0.998400,0.998400,1,USD",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /cost-explorer/results.csv body missing %q: %s", want, body)
@@ -927,8 +1022,8 @@ func TestCostExplorerReportUIFeatureWorksInFreshWorkspace(t *testing.T) {
 	}
 	for _, want := range []string{
 		"daily,usage_quantity",
-		"tag,app,payments,,,,24.000000,24.000000,0.998400,1,USD",
-		"tag,app,storefront,,,,24.000000,24.000000,0.998400,1,USD",
+		"tag,app,payments,,,,24.000000,24.000000,0.998400,0.998400,0.998400,0.998400,1,USD",
+		"tag,app,storefront,,,,24.000000,24.000000,0.998400,0.998400,0.998400,0.998400,1,USD",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET /cost-explorer/results.csv saved report body missing %q: %s", want, body)

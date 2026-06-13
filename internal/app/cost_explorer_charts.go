@@ -187,6 +187,12 @@ func costExplorerMetricMicros(metric string, row persistence.CostExplorerQueryRo
 	switch metric {
 	case "usage_quantity":
 		return row.UsageQuantityMicros
+	case "blended_cost":
+		return row.BlendedCostMicros
+	case "net_cost":
+		return row.NetCostMicros
+	case "amortized_cost":
+		return row.AmortizedCostMicros
 	default:
 		return row.UnblendedCostMicros
 	}

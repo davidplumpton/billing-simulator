@@ -493,7 +493,7 @@ func (h costExplorerHandler) loadCostExplorerLineItemsPageData(ctx context.Conte
 	data.LineItemsLabel = limitedTableLabel(len(result.Items), result.TotalLineItemCount, "item", "items")
 	data.StateCards = []costExplorerStateCardView{
 		{Label: "Line Items", Value: fmt.Sprintf("%d", result.TotalLineItemCount)},
-		{Label: "Unblended Cost", Value: formatUSDMicros(result.TotalUnblendedCostMicros)},
+		{Label: costExplorerMetricLabel(queryRequest.Metric), Value: costExplorerLineItemMetricValue(queryRequest.Metric, result)},
 		{Label: "Usage Quantity", Value: formatQuantityMicros(result.TotalUsageQuantityMicros)},
 		{Label: "Period", Value: periodStart},
 	}
@@ -694,7 +694,7 @@ func costExplorerResultViewFromResult(result persistence.CostExplorerQueryResult
 		StateCards: []costExplorerStateCardView{
 			{Label: "Rows", Value: fmt.Sprintf("%d", len(result.Rows))},
 			{Label: "Line Items", Value: fmt.Sprintf("%d", result.TotalLineItemCount)},
-			{Label: "Unblended Cost", Value: formatUSDMicros(result.TotalUnblendedCostMicros)},
+			{Label: costExplorerMetricLabel(builder.Metric), Value: costExplorerResultMetricValue(builder.Metric, result)},
 			{Label: "Usage Quantity", Value: formatQuantityMicros(result.TotalUsageQuantityMicros)},
 		},
 	}
@@ -821,8 +821,46 @@ func costExplorerMetricValue(metric string, row persistence.CostExplorerQueryRow
 	switch metric {
 	case "usage_quantity":
 		return formatQuantityMicros(row.UsageQuantityMicros)
+	case "blended_cost":
+		return formatUSDMicros(row.BlendedCostMicros)
+	case "net_cost":
+		return formatUSDMicros(row.NetCostMicros)
+	case "amortized_cost":
+		return formatUSDMicros(row.AmortizedCostMicros)
 	default:
 		return formatUSDMicros(row.UnblendedCostMicros)
+	}
+}
+
+// costExplorerResultMetricValue formats the selected aggregate metric for report state cards.
+func costExplorerResultMetricValue(metric string, result persistence.CostExplorerQueryResult) string {
+	switch metric {
+	case "usage_quantity":
+		return formatQuantityMicros(result.TotalUsageQuantityMicros)
+	case "blended_cost":
+		return formatUSDMicros(result.TotalBlendedCostMicros)
+	case "net_cost":
+		return formatUSDMicros(result.TotalNetCostMicros)
+	case "amortized_cost":
+		return formatUSDMicros(result.TotalAmortizedCostMicros)
+	default:
+		return formatUSDMicros(result.TotalUnblendedCostMicros)
+	}
+}
+
+// costExplorerLineItemMetricValue formats the selected drilldown metric from complete row totals.
+func costExplorerLineItemMetricValue(metric string, result persistence.CostExplorerLineItemResult) string {
+	switch metric {
+	case "usage_quantity":
+		return formatQuantityMicros(result.TotalUsageQuantityMicros)
+	case "blended_cost":
+		return formatUSDMicros(result.TotalBlendedCostMicros)
+	case "net_cost":
+		return formatUSDMicros(result.TotalNetCostMicros)
+	case "amortized_cost":
+		return formatUSDMicros(result.TotalAmortizedCostMicros)
+	default:
+		return formatUSDMicros(result.TotalUnblendedCostMicros)
 	}
 }
 
@@ -832,6 +870,12 @@ func costExplorerMetricLabel(metric string) string {
 		return "Usage Quantity"
 	case "unblended_cost":
 		return "Unblended Cost"
+	case "blended_cost":
+		return "Blended Cost"
+	case "net_cost":
+		return "Net Cost"
+	case "amortized_cost":
+		return "Amortized Cost"
 	default:
 		return metric
 	}
@@ -873,6 +917,9 @@ func costExplorerMetricOptions(selected string) []uiSelectOptionView {
 	}
 	options := []uiSelectOptionView{
 		{Value: "unblended_cost", Label: "Unblended Cost"},
+		{Value: "blended_cost", Label: "Blended Cost"},
+		{Value: "net_cost", Label: "Net Cost"},
+		{Value: "amortized_cost", Label: "Amortized Cost"},
 		{Value: "usage_quantity", Label: "Usage Quantity"},
 	}
 	return selectOptionsWithSelected(options, selected)

@@ -238,6 +238,9 @@ func TestWorkspaceRouteLeaseMetadataMatchesSharedRoutes(t *testing.T) {
 			t.Fatalf("workspaceRouteUsesActiveDB(%q) = true, want false for workspace lifecycle route", path)
 		}
 	}
+	if workspaceRouteUsesActiveDB("/scenarios/archive") {
+		t.Fatal("workspaceRouteUsesActiveDB(/scenarios/archive) = true, want false because archive takes the exclusive workspace lock itself")
+	}
 	if !workspaceRouteUsesActiveDB("/unregistered-future-route") {
 		t.Fatal("workspaceRouteUsesActiveDB() should default unknown routes to lease-protected")
 	}

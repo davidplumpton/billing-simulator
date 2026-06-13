@@ -3,6 +3,7 @@ package app
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -456,6 +457,160 @@ func TestScenarioFeedbackReportUsesPersistedLearnerEvidence(t *testing.T) {
 			t.Fatalf("GET /scenarios/feedback body missing %q: %s", want, body)
 		}
 	}
+}
+
+func TestScenarioArchiveWaitsForWorkspaceWritesBeforeDatabaseSnapshot(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "archive-snapshot-workspace")
+	db, err := persistence.OpenWorkspace(ctx, workspacePath)
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	session := &workspaceSession{db: db, path: workspacePath, lastPath: workspacePath}
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	runID := "scenario-run-archive-target"
+	insertScenarioArchiveRun(t, ctx, db, runID)
+
+	release := session.BeginRequest()
+	leaseReleased := false
+	defer func() {
+		if !leaseReleased {
+			release()
+		}
+	}()
+	concurrentRunID := "scenario-run-written-before-snapshot"
+	insertScenarioArchiveRun(t, ctx, db, concurrentRunID)
+
+	type archiveResult struct {
+		result scenarioArchiveResult
+		err    error
+	}
+	archiveStarted := make(chan struct{})
+	archiveDone := make(chan archiveResult, 1)
+	go func() {
+		close(archiveStarted)
+		result, err := newWorkspaceScenarioHandler(session).archiveScenarioRun(ctx, runID)
+		archiveDone <- archiveResult{result: result, err: err}
+	}()
+	<-archiveStarted
+	select {
+	case done := <-archiveDone:
+		t.Fatalf("archive completed before the in-flight DB-backed request released its workspace lease: result=%+v err=%v", done.result, done.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	leaseReleased = true
+
+	var done archiveResult
+	select {
+	case done = <-archiveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("archive did not finish after the in-flight DB-backed request released its workspace lease")
+	}
+	if done.err != nil {
+		t.Fatalf("archiveScenarioRun() error = %v", done.err)
+	}
+
+	snapshotDir := t.TempDir()
+	if err := os.WriteFile(persistence.WorkspaceDBPath(snapshotDir), readArchiveEntry(t, done.result.Path, "workspace/simulator.db"), 0o600); err != nil {
+		t.Fatalf("write archived database snapshot: %v", err)
+	}
+	snapshotDB, err := persistence.OpenWorkspace(ctx, snapshotDir)
+	if err != nil {
+		t.Fatalf("open archived database snapshot: %v", err)
+	}
+	defer snapshotDB.Close()
+
+	var archivedRunCount int
+	if err := snapshotDB.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		  FROM scenario_runs
+		 WHERE id IN (?, ?)
+	`, runID, concurrentRunID).Scan(&archivedRunCount); err != nil {
+		t.Fatalf("query archived database snapshot: %v", err)
+	}
+	if archivedRunCount != 2 {
+		t.Fatalf("archived scenario run count = %d, want target run plus write committed before snapshot", archivedRunCount)
+	}
+}
+
+func insertScenarioArchiveRun(t *testing.T, ctx context.Context, db *sql.DB, runID string) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO scenario_runs (
+			id,
+			definition_name,
+			organization_template,
+			random_seed,
+			status,
+			clock_start,
+			current_event_id,
+			events_total,
+			events_succeeded,
+			resources_created,
+			usage_events_created,
+			metering_records_created,
+			bill_line_items_created,
+			bills_issued,
+			started_at,
+			completed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID,
+		"Archive Snapshot Fixture",
+		persistence.AnyCompanyRetailTemplateKey,
+		7,
+		"succeeded",
+		"2026-03-01",
+		"archive-snapshot",
+		1,
+		1,
+		0,
+		0,
+		0,
+		0,
+		0,
+		"2026-03-01T00:00:00Z",
+		"2026-03-01T00:00:01Z",
+	); err != nil {
+		t.Fatalf("insert scenario archive run %q: %v", runID, err)
+	}
+}
+
+func readArchiveEntry(t *testing.T, archivePath, entryName string) []byte {
+	t.Helper()
+
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatalf("open archive %q: %v", archivePath, err)
+	}
+	defer reader.Close()
+	for _, file := range reader.File {
+		if file.Name != entryName {
+			continue
+		}
+		entry, err := file.Open()
+		if err != nil {
+			t.Fatalf("open archive entry %q: %v", entryName, err)
+		}
+		data, err := io.ReadAll(entry)
+		if closeErr := entry.Close(); closeErr != nil {
+			t.Fatalf("close archive entry %q: %v", entryName, closeErr)
+		}
+		if err != nil {
+			t.Fatalf("read archive entry %q: %v", entryName, err)
+		}
+		return data
+	}
+	t.Fatalf("archive %q missing entry %q", archivePath, entryName)
+	return nil
 }
 
 func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {

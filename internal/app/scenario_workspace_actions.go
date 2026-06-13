@@ -294,6 +294,25 @@ func (s *workspaceSession) ResetToScenarioSeed(ctx context.Context, definition s
 	return result, nil
 }
 
+// ArchiveScenarioRun serializes review archive snapshotting against DB-backed requests.
+func (s *workspaceSession) ArchiveScenarioRun(ctx context.Context, runID string) (scenarioArchiveResult, error) {
+	if s == nil {
+		return scenarioArchiveResult{}, fmt.Errorf("workspace session is required")
+	}
+
+	s.swapMu.Lock()
+	defer s.swapMu.Unlock()
+
+	s.mu.Lock()
+	db := s.db
+	workspacePath := s.path
+	s.mu.Unlock()
+	if db == nil || workspacePath == "" {
+		return scenarioArchiveResult{}, fmt.Errorf("open workspace is required")
+	}
+	return archiveScenarioRunWithSnapshot(ctx, db, workspacePath, runID)
+}
+
 // clearActiveWorkspaceForReset prevents new request handlers from observing a handle being closed.
 func (s *workspaceSession) clearActiveWorkspaceForReset() {
 	s.mu.Lock()
@@ -417,27 +436,38 @@ func (s workspaceResetStaging) Commit() error {
 
 // archiveScenarioRun creates a ZIP with a database snapshot plus run-specific export files.
 func (h scenarioHandler) archiveScenarioRun(ctx context.Context, runID string) (result scenarioArchiveResult, err error) {
+	if h.workspace != nil {
+		return h.workspace.ArchiveScenarioRun(ctx, runID)
+	}
+	return archiveScenarioRunWithSnapshot(ctx, h.db, h.currentWorkspacePath(), runID)
+}
+
+// archiveScenarioRunWithSnapshot builds a review ZIP after callers have stabilized workspace DB access.
+func archiveScenarioRunWithSnapshot(ctx context.Context, db *sql.DB, workspacePath, runID string) (result scenarioArchiveResult, err error) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		return scenarioArchiveResult{}, fmt.Errorf("scenario run ID is required")
 	}
-	workspacePath := h.currentWorkspacePath()
 	if workspacePath == "" {
 		return scenarioArchiveResult{}, fmt.Errorf("workspace path is required")
 	}
+	if db == nil {
+		return scenarioArchiveResult{}, fmt.Errorf("database handle is required")
+	}
 
-	run, err := h.scenarioRunByID(ctx, runID)
+	reader := scenarioHandler{db: db}
+	run, err := reader.scenarioRunByID(ctx, runID)
 	if err != nil {
 		return scenarioArchiveResult{}, err
 	}
-	bills, err := h.scenarioBillsForRun(ctx, runID)
+	bills, err := reader.scenarioBillsForRun(ctx, runID)
 	if err != nil {
 		return scenarioArchiveResult{}, err
 	}
-	if err := checkpointWorkspaceDB(ctx, h.db); err != nil {
+	if err := checkpointWorkspaceDB(ctx, db); err != nil {
 		return scenarioArchiveResult{}, err
 	}
-	feedbackReport, err := h.loadScenarioFeedbackReport(ctx, runID)
+	feedbackReport, err := reader.loadScenarioFeedbackReport(ctx, runID)
 	if err != nil {
 		return scenarioArchiveResult{}, fmt.Errorf("build feedback report: %w", err)
 	}
@@ -471,7 +501,7 @@ func (h scenarioHandler) archiveScenarioRun(ctx context.Context, runID string) (
 		return scenarioArchiveResult{}, err
 	}
 
-	curRepo := persistence.NewCURLineItemRepository(h.db)
+	curRepo := persistence.NewCURLineItemRepository(db)
 	exportCount := 0
 	for i := range bills {
 		bill := &bills[i]

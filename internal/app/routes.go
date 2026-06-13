@@ -546,7 +546,7 @@ var appRouteDefinitions = []appRouteDefinition{
 		},
 	},
 	{
-		pattern: "/scenarios/archive", usesActiveDB: true, allowed: []string{http.MethodPost},
+		pattern: "/scenarios/archive", allowed: []string{http.MethodPost},
 		handler: func(h appRouteHandlers) http.HandlerFunc {
 			return func(w http.ResponseWriter, r *http.Request) {
 				h.scenarios().handleArchiveScenario(w, r)

@@ -786,7 +786,8 @@ func costExplorerBlendedCostExpression(alias string) string {
 	return costExplorerNetCostExpression(alias)
 }
 
-// costExplorerAmortizedCostExpression shifts supported RI/SP discounts back onto covered usage rows.
+// costExplorerAmortizedCostExpression shifts supported RI/SP discounts back onto covered usage rows
+// and leaves unused Savings Plan commitment on generated fee rows.
 func costExplorerAmortizedCostExpression(alias string) string {
 	riCovered := fmt.Sprintf(`COALESCE((
 		SELECT SUM(source.covered_cost_micros)
@@ -806,11 +807,19 @@ func costExplorerAmortizedCostExpression(alias string) string {
 		WHERE source.source_bill_line_item_id = %[1]s.id
 		  AND source.line_item_kind = 'negation'
 	), 0)`, alias)
+	spFeeAmortized := costExplorerSavingsPlanFeeAmortizedCostExpression(alias)
 	return fmt.Sprintf(`CASE
 		WHEN EXISTS (
 			SELECT 1
 			FROM savings_plan_line_item_sources generated
 			WHERE generated.bill_line_item_id = %[1]s.id
+			  AND generated.line_item_kind IN ('upfront_fee', 'recurring_fee')
+		) THEN %[5]s
+		WHEN EXISTS (
+			SELECT 1
+			FROM savings_plan_line_item_sources generated
+			WHERE generated.bill_line_item_id = %[1]s.id
+			  AND generated.line_item_kind = 'negation'
 		) THEN 0
 		WHEN EXISTS (
 			SELECT 1
@@ -819,8 +828,92 @@ func costExplorerAmortizedCostExpression(alias string) string {
 			  AND generated.line_item_kind = 'coverage_credit'
 		) THEN 0
 		WHEN %[1]s.line_item_type = 'Usage' THEN MAX(0, %[1]s.unblended_cost_micros - (%[2]s) - (%[3]s)) + (%[4]s)
-		ELSE %[5]s
-	END`, alias, riCovered, spCovered, spAmortized, costExplorerNetCostExpression(alias))
+		ELSE %[6]s
+	END`, alias, riCovered, spCovered, spAmortized, spFeeAmortized, costExplorerNetCostExpression(alias))
+}
+
+// costExplorerSavingsPlanFeeAmortizedCostExpression returns only the unused amortized commitment on generated fee rows.
+func costExplorerSavingsPlanFeeAmortizedCostExpression(alias string) string {
+	totalCovered := costExplorerSavingsPlanPeriodNegationSum(alias, "covered_cost_micros")
+	totalAmortized := costExplorerSavingsPlanPeriodNegationSum(alias, "amortized_commitment_cost_micros")
+	amortizedUpfront := costExplorerSavingsPlanPeriodAmortizedUpfrontExpression(alias)
+	allocatedUpfront := fmt.Sprintf(`MAX(0, (%[1]s) - (%[2]s))`, totalAmortized, totalCovered)
+	unusedUpfront := fmt.Sprintf(`MAX(0, (%[1]s) - (%[2]s))`, amortizedUpfront, allocatedUpfront)
+	unusedRecurring := fmt.Sprintf(`MAX(0, %[1]s.unblended_cost_micros - (%[2]s))`, alias, totalCovered)
+	upfrontGeneratedInPeriod := fmt.Sprintf(`EXISTS (
+		SELECT 1
+		FROM savings_plan_line_item_sources current_source
+		JOIN savings_plan_line_item_sources upfront_source
+		  ON upfront_source.savings_plan_id = current_source.savings_plan_id
+		 AND upfront_source.line_item_kind = 'upfront_fee'
+		JOIN bill_line_items upfront
+		  ON upfront.id = upfront_source.bill_line_item_id
+		WHERE current_source.bill_line_item_id = %[1]s.id
+		  AND current_source.line_item_kind = 'recurring_fee'
+		  AND upfront.billing_period_start = %[1]s.billing_period_start
+		  AND upfront.billing_period_end = %[1]s.billing_period_end
+		  AND upfront.payer_account_id = %[1]s.payer_account_id
+		  AND upfront.line_item_status = %[1]s.line_item_status
+	)`, alias)
+
+	return fmt.Sprintf(`CASE
+		WHEN EXISTS (
+			SELECT 1
+			FROM savings_plan_line_item_sources source
+			WHERE source.bill_line_item_id = %[1]s.id
+			  AND source.line_item_kind = 'upfront_fee'
+		) THEN %[2]s
+		WHEN EXISTS (
+			SELECT 1
+			FROM savings_plan_line_item_sources source
+			WHERE source.bill_line_item_id = %[1]s.id
+			  AND source.line_item_kind = 'recurring_fee'
+		) THEN %[3]s + CASE WHEN %[4]s THEN 0 ELSE %[2]s END
+		ELSE 0
+	END`, alias, unusedUpfront, unusedRecurring, upfrontGeneratedInPeriod)
+}
+
+// costExplorerSavingsPlanPeriodNegationSum totals covered usage allocations for the fee row's plan and billing period.
+func costExplorerSavingsPlanPeriodNegationSum(alias, column string) string {
+	return fmt.Sprintf(`COALESCE((
+		SELECT SUM(source.%[2]s)
+		FROM savings_plan_line_item_sources fee_source
+		JOIN savings_plan_line_item_sources source
+		  ON source.savings_plan_id = fee_source.savings_plan_id
+		 AND source.line_item_kind = 'negation'
+		JOIN bill_line_items generated
+		  ON generated.id = source.bill_line_item_id
+		WHERE fee_source.bill_line_item_id = %[1]s.id
+		  AND fee_source.line_item_kind IN ('upfront_fee', 'recurring_fee')
+		  AND generated.billing_period_start = %[1]s.billing_period_start
+		  AND generated.billing_period_end = %[1]s.billing_period_end
+		  AND generated.payer_account_id = %[1]s.payer_account_id
+		  AND generated.line_item_status = %[1]s.line_item_status
+	), 0)`, alias, column)
+}
+
+// costExplorerSavingsPlanPeriodAmortizedUpfrontExpression computes the period share of a plan's upfront fee.
+func costExplorerSavingsPlanPeriodAmortizedUpfrontExpression(alias string) string {
+	return fmt.Sprintf(`COALESCE((
+		SELECT CAST(
+			purchase.upfront_fee_micros *
+			MAX(0,
+				CAST(strftime('%%s', MIN(purchase.term_end_time, %[1]s.usage_end_time)) AS INTEGER) -
+				CAST(strftime('%%s', MAX(purchase.term_start_time, %[1]s.usage_start_time)) AS INTEGER)
+			) /
+			MAX(1,
+				CAST(strftime('%%s', purchase.term_end_time) AS INTEGER) -
+				CAST(strftime('%%s', purchase.term_start_time) AS INTEGER)
+			)
+			AS INTEGER
+		)
+		FROM savings_plan_line_item_sources fee_source
+		JOIN savings_plan_purchases purchase
+		  ON purchase.id = fee_source.savings_plan_id
+		WHERE fee_source.bill_line_item_id = %[1]s.id
+		  AND fee_source.line_item_kind IN ('upfront_fee', 'recurring_fee')
+		LIMIT 1
+	), 0)`, alias)
 }
 
 func costExplorerPlaceholders(count int) string {

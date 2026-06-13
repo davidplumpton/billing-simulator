@@ -336,9 +336,10 @@ func TestCostExplorerAdvancedCostMetricsWorkflow(t *testing.T) {
 		`<option value="amortized_cost" selected>Amortized Cost</option>`,
 		"Report Results",
 		"Amortized Cost",
-		"$0.21632",
+		"$0.39",
 		"Linked Account=111122223333",
 		"Linked Account=555566667777",
+		"$0.28184",
 		"$0.10816",
 		"$0.5564",
 	} {
@@ -358,7 +359,7 @@ func TestCostExplorerAdvancedCostMetricsWorkflow(t *testing.T) {
 	for _, want := range []string{
 		"usage_quantity,unblended_cost,blended_cost,net_cost,amortized_cost,line_item_count",
 		"monthly,amortized_cost,2026-02-01,2026-03-01,dimension,linked_account,111122223333",
-		"0.556400,0.390000,0.390000,0.108160,4,USD",
+		"0.556400,0.390000,0.390000,0.281840,4,USD",
 		"0.166400,0.000000,0.000000,0.108160,2,USD",
 	} {
 		if !strings.Contains(body, want) {

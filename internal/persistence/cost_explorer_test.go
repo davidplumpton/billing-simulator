@@ -181,8 +181,8 @@ func TestCostExplorerRepositoryReportsDiscountCostMetrics(t *testing.T) {
 		result.TotalUnblendedCostMicros != 722_800 ||
 		result.TotalNetCostMicros != 390_000 ||
 		result.TotalBlendedCostMicros != 390_000 ||
-		result.TotalAmortizedCostMicros != 216_320 {
-		t.Fatalf("discount metric totals = count %d unblended %d net %d blended %d amortized %d, want 6/722800/390000/390000/216320",
+		result.TotalAmortizedCostMicros != 390_000 {
+		t.Fatalf("discount metric totals = count %d unblended %d net %d blended %d amortized %d, want 6/722800/390000/390000/390000",
 			result.TotalLineItemCount,
 			result.TotalUnblendedCostMicros,
 			result.TotalNetCostMicros,
@@ -195,8 +195,8 @@ func TestCostExplorerRepositoryReportsDiscountCostMetrics(t *testing.T) {
 		owner.UnblendedCostMicros != 556_400 ||
 		owner.NetCostMicros != 390_000 ||
 		owner.BlendedCostMicros != 390_000 ||
-		owner.AmortizedCostMicros != 108_160 {
-		t.Fatalf("owner discount metric row = %+v, want fees retained in net and source amortization only", owner)
+		owner.AmortizedCostMicros != 281_840 {
+		t.Fatalf("owner discount metric row = %+v, want covered allocation plus unused commitment", owner)
 	}
 	shared := requireCostExplorerLinkedAccountRow(t, result.Rows, "444455556666")
 	if shared.LineItemCount != 2 ||
@@ -223,6 +223,116 @@ func TestCostExplorerRepositoryReportsDiscountCostMetrics(t *testing.T) {
 		lineItems.TotalBlendedCostMicros != 0 ||
 		lineItems.TotalAmortizedCostMicros != 108_160 {
 		t.Fatalf("shared drilldown metrics = %+v, want complete derived totals behind displayed rows", lineItems)
+	}
+}
+
+func TestCostExplorerRepositoryReportsFullyUnusedSavingsPlanCommitment(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	usageRepo := NewResourceUsageRepository(db)
+	spRepo := NewSavingsPlanRepository(db)
+
+	if _, err := spRepo.CreatePurchase(ctx, SavingsPlanPurchaseCreateRequest{
+		ID:                     "sp-cost-explorer-unused",
+		PayerAccountID:         AnyCompanyRetailManagementAccountID,
+		OwnerAccountID:         "111122223333",
+		ReferenceUsageType:     "instance-hours:t3.medium",
+		RegionCode:             "us-east-1",
+		SharingScope:           savingsPlanSharingOrg,
+		TermStartTime:          "2026-02-03T00:00:00Z",
+		TermEndTime:            "2026-02-03T01:00:00Z",
+		HourlyCommitmentMicros: 100_000,
+		UpfrontFeeMicros:       60_000,
+		Description:            "Unused Cost Explorer commitment",
+	}); err != nil {
+		t.Fatalf("CreatePurchase(Savings Plan) error = %v", err)
+	}
+	resource, err := usageRepo.CreateResource(ctx, ResourceCreateRequest{
+		ID:           "resource-ce-sp-unused-s3",
+		AccountID:    "222233334444",
+		RegionCode:   "us-east-1",
+		ServiceCode:  serviceAmazonS3,
+		ResourceType: "s3_bucket",
+		ResourceName: "Cost Explorer non-covered usage",
+		Status:       "active",
+		StartedAt:    "2026-02-03T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("CreateResource(S3) error = %v", err)
+	}
+	if _, err := usageRepo.RecordUsageEvent(ctx, UsageEventCreateRequest{
+		ID:                  "usage-ce-sp-unused-s3",
+		ResourceID:          resource.ID,
+		UsageType:           "requests:put-1k",
+		Operation:           "PutObject",
+		UsageStartTime:      "2026-02-03T00:00:00Z",
+		UsageEndTime:        "2026-02-03T01:00:00Z",
+		UsageQuantityMicros: 1_000_000,
+		UsageUnit:           "Request",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(S3) error = %v", err)
+	}
+	if _, err := NewMeteringRepository(db).GenerateMeteringRecords(ctx); err != nil {
+		t.Fatalf("GenerateMeteringRecords() error = %v", err)
+	}
+	if _, err := NewBillLineItemRepository(db).GenerateBillLineItems(ctx, BillLineItemGenerationRequest{}); err != nil {
+		t.Fatalf("GenerateBillLineItems() error = %v", err)
+	}
+
+	sources, err := spRepo.ListLineItemSources(ctx, "sp-cost-explorer-unused")
+	if err != nil {
+		t.Fatalf("ListLineItemSources() error = %v", err)
+	}
+	var feeRows, negationRows int
+	for _, source := range sources {
+		switch source.LineItemKind {
+		case savingsPlanKindUpfrontFee, savingsPlanKindRecurringFee:
+			feeRows++
+		case savingsPlanKindNegation:
+			negationRows++
+		}
+	}
+	if feeRows != 2 || negationRows != 0 {
+		t.Fatalf("Savings Plan generated source rows = fees %d negations %d, want fully unused fees only", feeRows, negationRows)
+	}
+
+	result, err := NewCostExplorerRepository(db).Query(ctx, CostExplorerQueryRequest{
+		DateRangeStart: "2026-02-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "monthly",
+		Metric:         "amortized_cost",
+		Filters: map[string][]string{
+			"service": {serviceAmazonEC2},
+		},
+		Groupings: []CostExplorerGrouping{
+			{Type: "dimension", Key: "linked_account"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if result.TotalLineItemCount != 2 ||
+		result.TotalUnblendedCostMicros != 160_000 ||
+		result.TotalNetCostMicros != 160_000 ||
+		result.TotalBlendedCostMicros != 160_000 ||
+		result.TotalAmortizedCostMicros != 160_000 {
+		t.Fatalf("unused Savings Plan totals = count %d unblended %d net %d blended %d amortized %d, want 2/160000/160000/160000/160000",
+			result.TotalLineItemCount,
+			result.TotalUnblendedCostMicros,
+			result.TotalNetCostMicros,
+			result.TotalBlendedCostMicros,
+			result.TotalAmortizedCostMicros,
+		)
+	}
+	owner := requireCostExplorerLinkedAccountRow(t, result.Rows, "111122223333")
+	if owner.LineItemCount != 2 ||
+		owner.UnblendedCostMicros != 160_000 ||
+		owner.NetCostMicros != 160_000 ||
+		owner.BlendedCostMicros != 160_000 ||
+		owner.AmortizedCostMicros != 160_000 {
+		t.Fatalf("unused Savings Plan owner row = %+v, want full unused commitment on owner fee rows", owner)
 	}
 }
 

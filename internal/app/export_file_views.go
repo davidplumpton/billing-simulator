@@ -121,6 +121,9 @@ func exportFileRowViewFromFile(file persistence.ExportFile, viewer exportViewerF
 		ViewerRole:         viewer.Role,
 		ViewerAccountID:    viewer.AccountID,
 	}
+	if file.ExportType == persistence.ExportFileTypeCURCSV {
+		row.QueryLabPath = queryLabPathForExportFilename(file.Filename)
+	}
 	request, err := curCSVExportRequestFromExportFile(file)
 	if err == nil {
 		row.CanRegenerate = true

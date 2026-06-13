@@ -338,6 +338,12 @@ func TestExportPathHelpersPreserveRequestAndViewerScope(t *testing.T) {
 	if filename, ok := exportFileDownloadFilenameFromPath(exportFileDownloadPath("cur export.csv")); !ok || filename != "cur export.csv" {
 		t.Fatalf("exportFileDownloadFilenameFromPath = %q, %v; want cur export.csv, true", filename, ok)
 	}
+	assertPathQuery(t, queryLabPathForCSVPath("/tmp/generated exports/cur.csv"), "/query-lab", map[string]string{
+		"csv_path": "/tmp/generated exports/cur.csv",
+	})
+	assertPathQuery(t, queryLabPathForExportFilename("cur-export.csv"), "/query-lab", map[string]string{
+		"export_filename": "cur-export.csv",
+	})
 
 	assertPathQuery(t, curCSVExportPathWithViewer(persistence.CURCSVExportRequest{
 		BillingPeriodStart: "2026-02-01",

@@ -2,17 +2,23 @@ package app
 
 import (
 	"net/http"
+	"net/url"
+	"path/filepath"
+	"strings"
 
 	"aws-billing-simulator/internal/persistence"
 )
 
 const queryLabCSVPathPlaceholder = "/path/to/export.csv"
 
-type queryLabHandler struct{}
+type queryLabHandler struct {
+	workspacePath string
+}
 
 type queryLabPageData struct {
 	Actions       uiActionBarView
 	CSVPath       string
+	CSVPathHint   string
 	SchemaColumns []string
 	Examples      []queryLabExampleView
 }
@@ -28,6 +34,11 @@ func newQueryLabHandler() queryLabHandler {
 	return queryLabHandler{}
 }
 
+// newWorkspaceQueryLabHandler lets generated export filenames resolve to local workspace CSV paths.
+func newWorkspaceQueryLabHandler(workspacePath string) queryLabHandler {
+	return queryLabHandler{workspacePath: strings.TrimSpace(workspacePath)}
+}
+
 // handleQueryLab renders example SQL that learners can run against downloaded CUR CSV exports.
 func (h queryLabHandler) handleQueryLab(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -35,11 +46,13 @@ func (h queryLabHandler) handleQueryLab(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	csvPath, selected := queryLabCSVPathFromValues(r.URL.Query(), h.workspacePath)
 	data := queryLabPageData{
 		Actions:       uiActionBar(uiActionLink("Exports", "/exports"), uiActionLink("Scenarios", "/scenarios")),
-		CSVPath:       queryLabCSVPathPlaceholder,
+		CSVPath:       csvPath,
+		CSVPathHint:   queryLabCSVPathHint(selected),
 		SchemaColumns: persistence.CURCSVExportColumns(),
-		Examples:      queryLabExamples(queryLabCSVPathPlaceholder),
+		Examples:      queryLabExamples(csvPath),
 	}
 	renderPage(w, http.StatusOK, pageLayoutOptions{
 		Title:     "Query Lab - AWS Billing Simulator",
@@ -47,7 +60,47 @@ func (h queryLabHandler) handleQueryLab(w http.ResponseWriter, r *http.Request) 
 	}, queryLabPageTemplate, data, "render query lab page")
 }
 
+func queryLabCSVPathFromValues(values url.Values, workspacePath string) (string, bool) {
+	if csvPath := strings.TrimSpace(values.Get("csv_path")); csvPath != "" {
+		return csvPath, true
+	}
+	filename := strings.TrimSpace(values.Get("export_filename"))
+	if filename == "" || strings.TrimSpace(workspacePath) == "" || !safeQueryLabExportFilename(filename) {
+		return queryLabCSVPathPlaceholder, false
+	}
+	return filepath.Join(persistence.WorkspaceExportsPath(workspacePath), filename), true
+}
+
+func queryLabCSVPathHint(selected bool) string {
+	if selected {
+		return "The examples below use this CSV path."
+	}
+	return "Generate or select a CUR CSV export, then replace this path in any example."
+}
+
+func safeQueryLabExportFilename(filename string) bool {
+	if filename == "" || filename == "." || filename == ".." || filename != filepath.Base(filename) || strings.ContainsAny(filename, `/\`) {
+		return false
+	}
+	if len(filename) > 200 {
+		return false
+	}
+	for _, r := range filename {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' ||
+			r == '_' ||
+			r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func queryLabExamples(csvPath string) []queryLabExampleView {
+	csvPath = queryLabSQLString(csvPath)
 	return []queryLabExampleView{
 		{
 			Title:    "Linked Account Totals",
@@ -168,6 +221,10 @@ ORDER BY allocated_cost_usd DESC;`,
 	}
 }
 
+func queryLabSQLString(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
 var queryLabPageTemplate = newPageTemplate("query-lab-page", `<div class="page-heading">
 			<div>
 				<h1>Query Lab</h1>
@@ -179,7 +236,7 @@ var queryLabPageTemplate = newPageTemplate("query-lab-page", `<div class="page-h
 			<div>
 				<h2>CSV Source</h2>
 				<strong>{{.CSVPath}}</strong>
-				<small>Generate or download a CUR CSV export, then replace this path in any example.</small>
+				<small>{{.CSVPathHint}}</small>
 			</div>
 			<div class="detail-list">
 				<span>Optional Engine</span>

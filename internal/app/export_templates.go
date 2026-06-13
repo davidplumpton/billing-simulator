@@ -107,6 +107,7 @@ var exportsPageTemplate = newPageTemplate("exports-page", `<div class="page-head
 									<td class="actions-cell">
 										<div class="inline-actions compact-actions">
 											<a class="button-link secondary" href="{{.DownloadPath}}">Download</a>
+											{{if .QueryLabPath}}<a class="button-link secondary" href="{{.QueryLabPath}}">Query Lab</a>{{end}}
 											{{if .ReconciliationPath}}<a class="button-link secondary" href="{{.ReconciliationPath}}">Reconcile</a>{{end}}
 											{{if .CanRegenerate}}
 												<form method="post" action="/exports/regenerate">

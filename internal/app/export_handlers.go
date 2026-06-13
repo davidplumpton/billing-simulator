@@ -89,6 +89,7 @@ type exportFileRowView struct {
 	CreatedAt          string
 	UpdatedAt          string
 	DownloadPath       string
+	QueryLabPath       string
 	RegenerateFilename string
 	ViewerRole         string
 	ViewerAccountID    string
@@ -408,7 +409,7 @@ func (h exportsHandler) renderExportsForValues(w http.ResponseWriter, r *http.Re
 		WorkspaceReady:      h.db != nil,
 		Error:               errorMessage,
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
-		Actions:             uiActionBar(uiActionLink("Query Lab", "/query-lab"), uiActionLink("Reconciliation", curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{}, viewer)), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
+		Actions:             uiActionBar(uiActionLink("Query Lab", queryLabPath()), uiActionLink("Reconciliation", curExportReconciliationPathWithViewer(persistence.CURExportReconciliationRequest{}, viewer)), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
 		Filters:             exportFileFilterFromValues(values),
 		GenerateCURCSV:      curCSVGenerationFormFromValues(values),
 		GenerateFOCUSCSV:    focusCSVGenerationFormFromValues(values),
@@ -560,7 +561,7 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 	data := exportReconciliationPageData{
 		WorkspaceReady:      h.db != nil,
 		WorkspaceEmptyState: uiWorkspaceRequiredState(),
-		Actions:             uiActionBar(uiActionLink("Query Lab", "/query-lab"), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
+		Actions:             uiActionBar(uiActionLink("Query Lab", queryLabPath()), uiActionLink("Bills", billsPathWithExportViewer(viewer))),
 		Filters:             exportReconciliationFilterFromRequest(r),
 		Tables: exportReconciliationTablesView{
 			Documents: uiTable(uiTableHeaders("Source", "ID", "Status", "Items", "Charges", "Credits", "Refunds", "Tax", "Total", "Item Delta", "Charge Delta", "Credit Delta", "Refund Delta", "Tax Delta", "Total Delta"), "Run a reconciliation report"),
@@ -604,7 +605,7 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 				data.Report = exportReconciliationReportViewFromReport(report, viewer)
 				data.Actions = uiActionBar(
 					uiActionLink("CUR CSV", data.Report.CURCSVPath),
-					uiActionLink("Query Lab", "/query-lab"),
+					uiActionLink("Query Lab", queryLabPath()),
 					uiActionLink("Bills", billsPathWithExportViewer(viewer)),
 				)
 			}

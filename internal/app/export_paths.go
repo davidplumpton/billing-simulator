@@ -38,6 +38,28 @@ func exportFileDownloadFilenameFromPath(path string) (string, bool) {
 	return filename, true
 }
 
+func queryLabPath() string {
+	return "/query-lab"
+}
+
+func queryLabPathForCSVPath(csvPath string) string {
+	values := url.Values{}
+	appendQueryValue(values, "csv_path", csvPath)
+	if len(values) == 0 {
+		return queryLabPath()
+	}
+	return queryLabPath() + "?" + values.Encode()
+}
+
+func queryLabPathForExportFilename(filename string) string {
+	values := url.Values{}
+	appendQueryValue(values, "export_filename", filename)
+	if len(values) == 0 {
+		return queryLabPath()
+	}
+	return queryLabPath() + "?" + values.Encode()
+}
+
 func curCSVExportPath(request persistence.CURCSVExportRequest) string {
 	return curCSVExportPathWithViewer(request, exportViewerFields{})
 }

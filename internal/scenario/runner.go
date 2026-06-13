@@ -37,6 +37,7 @@ type Runner struct {
 	reports      persistence.SavedReportRepository
 	profiles     persistence.PaymentProfileRepository
 	payments     persistence.PaymentLifecycleRepository
+	savingsPlans persistence.SavingsPlanRepository
 	daily        persistence.DailyMeteringJobRepository
 	monthEnd     persistence.MonthEndCloseRepository
 	organization persistence.OrganizationRepository
@@ -56,6 +57,7 @@ func NewRunner(db *sql.DB) Runner {
 		reports:      persistence.NewSavedReportRepository(db),
 		profiles:     persistence.NewPaymentProfileRepository(db),
 		payments:     persistence.NewPaymentLifecycleRepository(db),
+		savingsPlans: persistence.NewSavingsPlanRepository(db),
 		daily:        persistence.NewDailyMeteringJobRepository(db),
 		monthEnd:     persistence.NewMonthEndCloseRepository(db),
 		organization: persistence.NewOrganizationRepository(db),
@@ -224,6 +226,38 @@ func (r Runner) applyEvent(ctx context.Context, state *scenarioExecutionState, e
 
 func isMissingCostCategory(err error) bool {
 	return errors.Is(err, persistence.ErrCostCategoryNotFound)
+}
+
+// createSavingsPlan prepares a simplified Compute Savings Plan for commitment coverage labs.
+func (r Runner) createSavingsPlan(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.SavingsPlanPurchase, error) {
+	termStart, ok := parseScenarioDateOrTimestamp(event.TermStartAt)
+	if !ok {
+		return persistence.SavingsPlanPurchase{}, fmt.Errorf("scenario savings plan %q term_start_at is invalid", event.ID)
+	}
+	termEnd, ok := parseScenarioDateOrTimestamp(event.TermEndAt)
+	if !ok {
+		return persistence.SavingsPlanPurchase{}, fmt.Errorf("scenario savings plan %q term_end_at is invalid", event.ID)
+	}
+	purchaseID := event.SavingsPlanID
+	if purchaseID == "" {
+		purchaseID = stableScenarioID("sp_scn", state.runID, event.ID, event.OwnerAccount, event.OwnerAccountID, event.UsageType, event.Region)
+	}
+	return r.savingsPlans.CreatePurchase(ctx, persistence.SavingsPlanPurchaseCreateRequest{
+		ID:                     purchaseID,
+		PayerAccountID:         state.resolveAccountID(event.PayerAccountID, event.PayerAccount),
+		OwnerAccountID:         state.resolveAccountID(event.OwnerAccountID, event.OwnerAccount),
+		ReferenceUsageType:     event.UsageType,
+		Operation:              event.Operation,
+		RegionCode:             event.Region,
+		SharingScope:           event.SharingScope,
+		TermStartTime:          termStart.Format(time.RFC3339),
+		TermEndTime:            termEnd.Format(time.RFC3339),
+		HourlyCommitmentMicros: event.HourlyCommitmentMicros,
+		UpfrontFeeMicros:       event.UpfrontFeeMicros,
+		CurrencyCode:           event.CurrencyCode,
+		Status:                 event.Status,
+		Description:            event.Description,
+	})
 }
 
 // createBudget prepares a budget lab guardrail and reuses matching rows so scenario reruns stay executable.

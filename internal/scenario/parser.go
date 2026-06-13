@@ -101,6 +101,9 @@ const (
 	// EventActionRefreshBudgetForecasts refreshes budget forecast summaries and alert notifications.
 	EventActionRefreshBudgetForecasts EventAction = "refresh_budget_forecasts"
 
+	// EventActionCreateSavingsPlan creates a simplified Compute Savings Plan purchase.
+	EventActionCreateSavingsPlan EventAction = "create_savings_plan"
+
 	// EventActionCreateSavedReport creates or updates a Cost Explorer saved report starter definition.
 	EventActionCreateSavedReport EventAction = "create_saved_report"
 )
@@ -119,6 +122,8 @@ type Event struct {
 	ParentUnitID            string              `json:"parent_unit_id,omitempty"`
 	PayerAccount            string              `json:"payer_account,omitempty"`
 	PayerAccountID          string              `json:"payer_account_id,omitempty"`
+	OwnerAccount            string              `json:"owner_account,omitempty"`
+	OwnerAccountID          string              `json:"owner_account_id,omitempty"`
 	Service                 string              `json:"service,omitempty"`
 	ServiceCode             string              `json:"service_code,omitempty"`
 	Resource                string              `json:"resource,omitempty"`
@@ -175,6 +180,12 @@ type Event struct {
 	FailureReason           string              `json:"failure_reason,omitempty"`
 	Reason                  string              `json:"reason,omitempty"`
 	AmountMicros            int64               `json:"amount_micros,omitempty"`
+	SavingsPlanID           string              `json:"savings_plan_id,omitempty"`
+	TermStartAt             string              `json:"term_start_at,omitempty"`
+	TermEndAt               string              `json:"term_end_at,omitempty"`
+	HourlyCommitmentMicros  int64               `json:"hourly_commitment_micros,omitempty"`
+	UpfrontFeeMicros        int64               `json:"upfront_fee_micros,omitempty"`
+	SharingScope            string              `json:"sharing_scope,omitempty"`
 	BudgetID                string              `json:"budget_id,omitempty"`
 	BudgetName              string              `json:"budget_name,omitempty"`
 	BudgetAmountMicros      int64               `json:"budget_amount_micros,omitempty"`
@@ -184,8 +195,6 @@ type Event struct {
 	Thresholds              []BudgetThreshold   `json:"thresholds,omitempty"`
 	ReportID                string              `json:"report_id,omitempty"`
 	ReportName              string              `json:"report_name,omitempty"`
-	OwnerAccount            string              `json:"owner_account,omitempty"`
-	OwnerAccountID          string              `json:"owner_account_id,omitempty"`
 	OwnerRole               string              `json:"owner_role,omitempty"`
 	DateRangeStart          string              `json:"date_range_start,omitempty"`
 	DateRangeEnd            string              `json:"date_range_end,omitempty"`
@@ -746,6 +755,39 @@ func validateCreateBudgetEvent(path string, event Event, problems *validationPro
 	}
 }
 
+// validateCreateSavingsPlanEvent checks the simplified Compute Savings Plan fields used by commitment labs.
+func validateCreateSavingsPlanEvent(path string, event Event, problems *validationProblems) {
+	if event.PayerAccount == "" && event.PayerAccountID == "" {
+		problems.add("%s.payer_account or %s.payer_account_id is required for create_savings_plan", path, path)
+	}
+	if event.OwnerAccount == "" && event.OwnerAccountID == "" {
+		problems.add("%s.owner_account or %s.owner_account_id is required for create_savings_plan", path, path)
+	}
+	if event.UsageType == "" {
+		problems.add("%s.usage_type is required for create_savings_plan", path)
+	}
+	if event.Operation != "" && event.Operation != "RunInstances" {
+		problems.add("%s.operation %q is not supported for create_savings_plan", path, event.Operation)
+	}
+	if event.Region == "" {
+		problems.add("%s.region is required for create_savings_plan", path)
+	}
+	if event.HourlyCommitmentMicros <= 0 {
+		problems.add("%s.hourly_commitment_micros must be greater than zero for create_savings_plan", path)
+	}
+	if event.UpfrontFeeMicros < 0 {
+		problems.add("%s.upfront_fee_micros must be zero or greater for create_savings_plan", path)
+	}
+	switch event.SharingScope {
+	case "", persistence.SavingsPlanSharingScopeOrganization, persistence.SavingsPlanSharingScopeOwnerAccount:
+	default:
+		problems.add("%s.sharing_scope %q is not supported for create_savings_plan", path, event.SharingScope)
+	}
+	if event.CurrencyCode != "" && len(event.CurrencyCode) != 3 {
+		problems.add("%s.currency_code must be three characters", path)
+	}
+}
+
 // validateCreateSavedReportEvent checks the saved report starter fields used by scenario labs.
 func validateCreateSavedReportEvent(path string, event Event, problems *validationProblems) {
 	if event.ReportName == "" {
@@ -973,6 +1015,17 @@ func parseScenarioDateOnly(value string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.UTC), true
+}
+
+func parseScenarioDateOrTimestamp(value string) (time.Time, bool) {
+	if parsed, ok := parseScenarioDateOnly(value); ok {
+		return parsed, true
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func validateScenarioTimestamp(path, value string, problems *validationProblems) {

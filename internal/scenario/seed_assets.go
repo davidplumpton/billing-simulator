@@ -25,6 +25,9 @@ const (
 	// ForecastBudgetAlertSeedKey identifies the packaged budget forecast alert lab.
 	ForecastBudgetAlertSeedKey = "forecast-budget-alert"
 
+	// SavingsPlanCoverageSeedKey identifies the packaged Savings Plan coverage lab.
+	SavingsPlanCoverageSeedKey = "savings-plan-coverage"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

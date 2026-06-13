@@ -132,6 +132,23 @@ func TestScenarioFeedbackPackagedRunsUseSchemaBackedDataSources(t *testing.T) {
 				"Scenario audit rows make the billing lab reproducible and inspectable.",
 			},
 		},
+		{
+			name:       "savings plan actions",
+			key:        "savings-plan-coverage",
+			definition: "Savings Plan coverage",
+			wantSources: []string{
+				"savings_plan_purchases, savings_plan_line_item_sources, bill_line_items",
+				"metering_records, bill_line_items",
+			},
+			wantText: []string{
+				"Created a simplified Compute Savings Plan commitment for estimated billing coverage.",
+				"Savings Plans add commitment fees and coverage negations that reports reconcile back to source usage.",
+			},
+			staleText: []string{
+				"Recorded a scenario action outcome.",
+				"Scenario audit rows make the billing lab reproducible and inspectable.",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -209,6 +226,7 @@ func supportedScenarioFeedbackActionTypes() []scenario.EventAction {
 		scenario.EventActionCollectPayment,
 		scenario.EventActionCreateBudget,
 		scenario.EventActionRefreshBudgetForecasts,
+		scenario.EventActionCreateSavingsPlan,
 		scenario.EventActionCreateSavedReport,
 	}
 }

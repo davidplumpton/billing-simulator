@@ -174,6 +174,13 @@ func newScenarioEventActionSpecsByAction() map[EventAction]scenarioEventActionSp
 			apply:     applyRefreshBudgetForecastsScenarioEvent,
 		},
 		{
+			action:            EventActionCreateSavingsPlan,
+			normalize:         normalizeCreateSavingsPlanScenarioEvent,
+			validate:          validateCreateSavingsPlanScenarioEvent,
+			validateSemantics: validateCreateSavingsPlanScenarioEventSemantics,
+			apply:             applyCreateSavingsPlanScenarioEvent,
+		},
+		{
 			action:            EventActionCreateSavedReport,
 			normalize:         normalizeCreateSavedReportScenarioEvent,
 			validate:          validateCreateSavedReportScenarioEvent,
@@ -326,6 +333,13 @@ func normalizeRefreshBudgetForecastsScenarioEvent(event Event) Event {
 	return event
 }
 
+func normalizeCreateSavingsPlanScenarioEvent(event Event) Event {
+	event = normalizePayerScenarioEvent(event)
+	trimScenarioEventStrings(&event.OwnerAccount, &event.OwnerAccountID, &event.SavingsPlanID, &event.UsageType, &event.Operation, &event.Region, &event.TermStartAt, &event.TermEndAt, &event.SharingScope, &event.Description, &event.Status)
+	trimUpperScenarioEventString(&event.CurrencyCode)
+	return event
+}
+
 func normalizeCreateSavedReportScenarioEvent(event Event) Event {
 	trimScenarioEventStrings(&event.ReportID, &event.ReportName, &event.Description, &event.OwnerAccount, &event.OwnerAccountID, &event.OwnerRole, &event.DateRangeStart, &event.DateRangeEnd, &event.Granularity, &event.ChartType)
 	event.Filters = normalizeStringListMap(event.Filters)
@@ -391,6 +405,22 @@ func validateCreateBudgetScenarioEvent(path string, event Event, problems *valid
 	validateCreateBudgetEvent(path, event, problems)
 }
 
+func validateCreateSavingsPlanScenarioEvent(path string, event Event, problems *validationProblems) {
+	validateOptionalTimestamp(path+".term_start_at", event.TermStartAt, problems)
+	validateOptionalTimestamp(path+".term_end_at", event.TermEndAt, problems)
+	if event.TermStartAt == "" || event.TermEndAt == "" {
+		problems.add("%s.term_start_at and %s.term_end_at are required for create_savings_plan", path, path)
+	}
+	if event.TermStartAt != "" && event.TermEndAt != "" {
+		start, startOK := parseScenarioDateOrTimestamp(event.TermStartAt)
+		end, endOK := parseScenarioDateOrTimestamp(event.TermEndAt)
+		if startOK && endOK && !start.Before(end) {
+			problems.add("%s.term_start_at must be before term_end_at", path)
+		}
+	}
+	validateCreateSavingsPlanEvent(path, event, problems)
+}
+
 func validateCreateSavedReportScenarioEvent(path string, event Event, problems *validationProblems) {
 	validateOptionalDate(path+".date_range_start", event.DateRangeStart, problems)
 	validateOptionalDate(path+".date_range_end", event.DateRangeEnd, problems)
@@ -417,6 +447,11 @@ func validatePaymentMethodScenarioEventSemantics(path, organizationTemplate stri
 }
 
 func validateCreateSavedReportScenarioEventSemantics(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
+	validateScenarioAccountReference(path+".owner_account", organizationTemplate, event.OwnerAccountID, event.OwnerAccount, createdAccounts, problems)
+}
+
+func validateCreateSavingsPlanScenarioEventSemantics(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
+	validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
 	validateScenarioAccountReference(path+".owner_account", organizationTemplate, event.OwnerAccountID, event.OwnerAccount, createdAccounts, problems)
 }
 
@@ -617,6 +652,13 @@ func applyCreateBudgetScenarioEvent(ctx context.Context, r Runner, state *scenar
 
 func applyRefreshBudgetForecastsScenarioEvent(ctx context.Context, r Runner, _ *scenarioExecutionState, event Event, _ time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
 	if err := r.refreshBudgetForecasts(ctx, event); err != nil {
+		return failScenarioRunEvent(audit, err)
+	}
+	return audit, nil
+}
+
+func applyCreateSavingsPlanScenarioEvent(ctx context.Context, r Runner, state *scenarioExecutionState, event Event, _ time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
+	if _, err := r.createSavingsPlan(ctx, state, event); err != nil {
 		return failScenarioRunEvent(audit, err)
 	}
 	return audit, nil

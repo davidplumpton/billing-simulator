@@ -559,6 +559,13 @@ func scenarioCatalog() map[string]scenarioCatalogMetadata {
 			ResumeLabel:       "Resume in Cost Explorer",
 			ResumePath:        "/cost-explorer?saved_report_id=saved-report-scn-storefront-forecast-drilldown",
 		},
+		scenario.SavingsPlanCoverageSeedKey: {
+			Phase:             "Phase 3",
+			Objective:         "Review a Compute Savings Plan commitment, its fees, negation rows, covered source usage, and amortized source allocation.",
+			EstimatedDuration: "20 min",
+			ResumeLabel:       "Resume in Savings Plans",
+			ResumePath:        "/savings-plans",
+		},
 		scenario.UntaggedDataTransferSpikeSeedKey: {
 			Phase:             "Phase 2",
 			Objective:         "Find an untagged data-transfer spike and trace the cost through billed line items.",
@@ -681,6 +688,9 @@ func scenarioEditorEventTarget(event scenario.Event) string {
 		event.Category,
 		event.BudgetName,
 		event.ReportName,
+		event.SavingsPlanID,
+		event.OwnerAccount,
+		event.OwnerAccountID,
 		event.PayerAccount,
 		event.PayerAccountID,
 	} {

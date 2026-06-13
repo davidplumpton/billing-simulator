@@ -70,6 +70,9 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, ForecastBudgetAlertSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, ForecastBudgetAlertSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, SavingsPlanCoverageSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, SavingsPlanCoverageSeedKey)
+	}
 	definition, err := LoadSeedDefinition(UntaggedDataTransferSpikeSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition() error = %v", err)
@@ -131,6 +134,17 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 		definition.Events[5].Action != EventActionRefreshBudgetForecasts ||
 		definition.Events[6].Action != EventActionCreateSavedReport {
 		t.Fatalf("forecast budget alert definition = %+v, want budget forecast lab fixture", definition)
+	}
+	definition, err = LoadSeedDefinition(SavingsPlanCoverageSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", SavingsPlanCoverageSeedKey, err)
+	}
+	if definition.Name != "Savings Plan coverage" ||
+		len(definition.Events) != 6 ||
+		definition.Events[0].Action != EventActionCreateSavingsPlan ||
+		definition.Events[0].HourlyCommitmentMicros != 100_000 ||
+		definition.Events[5].Action != EventActionRunDailyMetering {
+		t.Fatalf("savings plan coverage definition = %+v, want Savings Plan lab fixture", definition)
 	}
 }
 
@@ -1013,6 +1027,75 @@ func TestRunnerAppliesForecastBudgetAlertSeed(t *testing.T) {
 		"scheduled-storefront-scale-up",
 		"2026-02-20T00:00:00Z"); got != 1 {
 		t.Fatalf("unmetered scheduled forecast usage rows = %d, want 1", got)
+	}
+}
+
+func TestRunnerAppliesSavingsPlanCoverageSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(SavingsPlanCoverageSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", SavingsPlanCoverageSeedKey, err)
+	}
+
+	result, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(savings plan coverage) error = %v", err)
+	}
+	if result.Run.Status != scenarioRunStatusSucceeded ||
+		result.Run.EventsSucceeded != 6 ||
+		result.ResourcesCreated != 2 ||
+		result.UsageEventsCreated != 2 ||
+		result.MeteringRecordsCreated != 2 ||
+		result.BillLineItemsCreated != 7 ||
+		result.BillsIssued != 0 {
+		t.Fatalf("Run() result = %+v, want successful Savings Plan coverage lab counts", result)
+	}
+
+	spRepo := persistence.NewSavingsPlanRepository(db)
+	purchases, err := spRepo.ListPurchases(ctx)
+	if err != nil {
+		t.Fatalf("ListPurchases() error = %v", err)
+	}
+	if len(purchases) != 1 ||
+		purchases[0].PayerAccountID != persistence.AnyCompanyRetailManagementAccountID ||
+		purchases[0].OwnerAccountID != "111122223333" ||
+		purchases[0].SharingScope != persistence.SavingsPlanSharingScopeOrganization ||
+		purchases[0].HourlyCommitmentMicros != 100_000 ||
+		purchases[0].UpfrontFeeMicros != 90_000 {
+		t.Fatalf("Savings Plan purchases = %+v, want one Storefront-owned shared commitment", purchases)
+	}
+
+	details, err := spRepo.ListLineItemSourceDetails(ctx, purchases[0].ID)
+	if err != nil {
+		t.Fatalf("ListLineItemSourceDetails() error = %v", err)
+	}
+	if len(details) != 4 {
+		t.Fatalf("Savings Plan source details = %+v, want upfront, recurring, and two negations", details)
+	}
+	var feeRows, negationRows int
+	var coveredCost, amortizedCost int64
+	coveredAccounts := map[string]bool{}
+	for _, detail := range details {
+		switch detail.LineItemKind {
+		case "upfront_fee", "recurring_fee":
+			feeRows++
+		case "negation":
+			negationRows++
+			coveredCost += detail.CoveredCostMicros
+			amortizedCost += detail.AmortizedCommitmentCostMicros
+			coveredAccounts[detail.SourceUsageAccountID] = true
+		}
+	}
+	if feeRows != 2 ||
+		negationRows != 2 ||
+		coveredCost != 166_400 ||
+		amortizedCost != 216_320 ||
+		!coveredAccounts["111122223333"] ||
+		!coveredAccounts["555566667777"] {
+		t.Fatalf("Savings Plan detail totals fees=%d negations=%d covered=%d amortized=%d accounts=%+v, want owner and shared-account coverage", feeRows, negationRows, coveredCost, amortizedCost, coveredAccounts)
 	}
 }
 

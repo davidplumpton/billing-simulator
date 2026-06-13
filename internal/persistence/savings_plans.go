@@ -25,6 +25,20 @@ const (
 	savingsPlanSupportedOperation = "RunInstances"
 )
 
+const (
+	// SavingsPlanSharingScopeOrganization lets a purchase cover matching EC2 usage across linked accounts.
+	SavingsPlanSharingScopeOrganization = savingsPlanSharingOrg
+
+	// SavingsPlanSharingScopeOwnerAccount limits coverage to the owner account's matching EC2 usage.
+	SavingsPlanSharingScopeOwnerAccount = savingsPlanSharingOwner
+
+	// SavingsPlanStatusActive marks a purchase eligible for generated fee and negation rows.
+	SavingsPlanStatusActive = savingsPlanStatusActive
+
+	// SavingsPlanStatusRetired keeps purchase history while excluding future generated rows.
+	SavingsPlanStatusRetired = savingsPlanStatusRetired
+)
+
 // SavingsPlanPurchase stores one simplified Compute Savings Plan commitment.
 type SavingsPlanPurchase struct {
 	ID                     string
@@ -62,6 +76,28 @@ type SavingsPlanLineItemSource struct {
 	AmortizedCommitmentCostMicros int64
 	CreatedAt                     string
 	UpdatedAt                     string
+}
+
+// SavingsPlanLineItemSourceDetail joins generated Savings Plan rows to covered source usage.
+type SavingsPlanLineItemSourceDetail struct {
+	SavingsPlanLineItemSource
+	GeneratedDescription           string
+	GeneratedLineItemType          string
+	GeneratedOperation             string
+	GeneratedUsageAccountID        string
+	GeneratedBillingPeriodStart    string
+	GeneratedBillingPeriodEnd      string
+	GeneratedPricingQuantityMicros int64
+	GeneratedPricingUnit           string
+	GeneratedCostMicros            int64
+	GeneratedStatus                string
+	SourceDescription              string
+	SourceUsageAccountID           string
+	SourceUsageStartTime           string
+	SourceUsageEndTime             string
+	SourcePricingQuantityMicros    int64
+	SourcePricingUnit              string
+	SourceCostMicros               int64
 }
 
 // SavingsPlanPurchaseCreateRequest describes a simplified Savings Plan purchase to persist.
@@ -115,6 +151,58 @@ func (r SavingsPlanRepository) CreatePurchase(ctx context.Context, request Savin
 	return purchase, nil
 }
 
+// ListPurchases reads simplified Compute Savings Plan purchases for browser workflows.
+func (r SavingsPlanRepository) ListPurchases(ctx context.Context) ([]SavingsPlanPurchase, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			id,
+			payer_account_id,
+			owner_account_id,
+			plan_type,
+			service_code,
+			service_name,
+			product_family,
+			reference_usage_type,
+			operation,
+			region_code,
+			sharing_scope,
+			term_start_time,
+			term_end_time,
+			hourly_commitment_micros,
+			upfront_fee_micros,
+			currency_code,
+			price_catalog_sku,
+			price_effective_date,
+			status,
+			description,
+			created_at,
+			updated_at
+		 FROM savings_plan_purchases
+		 ORDER BY term_start_time DESC, owner_account_id, id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list savings plan purchases: %w", err)
+	}
+	defer rows.Close()
+
+	var purchases []SavingsPlanPurchase
+	for rows.Next() {
+		purchase, err := scanSavingsPlanPurchase(rows)
+		if err != nil {
+			return nil, err
+		}
+		purchases = append(purchases, purchase)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate savings plan purchases: %w", err)
+	}
+	return purchases, nil
+}
+
 // ListLineItemSources reads Savings Plan-generated line item links for one purchase.
 func (r SavingsPlanRepository) ListLineItemSources(ctx context.Context, savingsPlanID string) ([]SavingsPlanLineItemSource, error) {
 	if r.db == nil {
@@ -156,6 +244,76 @@ func (r SavingsPlanRepository) ListLineItemSources(ctx context.Context, savingsP
 		return nil, fmt.Errorf("iterate savings plan line item sources: %w", err)
 	}
 	return sources, nil
+}
+
+// ListLineItemSourceDetails reads generated fee/negation rows with covered usage context.
+func (r SavingsPlanRepository) ListLineItemSourceDetails(ctx context.Context, savingsPlanID string) ([]SavingsPlanLineItemSourceDetail, error) {
+	if r.db == nil {
+		return nil, fmt.Errorf("database handle is required")
+	}
+	savingsPlanID = strings.TrimSpace(savingsPlanID)
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT
+			source.bill_line_item_id,
+			source.savings_plan_id,
+			source.source_bill_line_item_id,
+			source.line_item_kind,
+			source.covered_quantity_micros,
+			source.covered_cost_micros,
+			source.amortized_commitment_cost_micros,
+			source.created_at,
+			source.updated_at,
+			generated.description,
+			generated.line_item_type,
+			generated.operation,
+			generated.usage_account_id,
+			generated.billing_period_start,
+			generated.billing_period_end,
+			generated.pricing_quantity_micros,
+			generated.pricing_unit,
+			generated.unblended_cost_micros,
+			generated.line_item_status,
+			COALESCE(covered.description, ''),
+			COALESCE(covered.usage_account_id, ''),
+			COALESCE(covered.usage_start_time, ''),
+			COALESCE(covered.usage_end_time, ''),
+			COALESCE(covered.pricing_quantity_micros, 0),
+			COALESCE(covered.pricing_unit, ''),
+			COALESCE(covered.unblended_cost_micros, 0)
+		 FROM savings_plan_line_item_sources source
+		 JOIN bill_line_items generated ON generated.id = source.bill_line_item_id
+		 LEFT JOIN bill_line_items covered ON covered.id = source.source_bill_line_item_id
+		 WHERE (? = '' OR source.savings_plan_id = ?)
+		 ORDER BY source.savings_plan_id,
+		          generated.billing_period_start,
+		          CASE source.line_item_kind
+		              WHEN 'upfront_fee' THEN 0
+		              WHEN 'recurring_fee' THEN 1
+		              ELSE 2
+		          END,
+		          generated.usage_start_time,
+		          source.bill_line_item_id`,
+		savingsPlanID,
+		savingsPlanID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list savings plan line item source details: %w", err)
+	}
+	defer rows.Close()
+
+	var details []SavingsPlanLineItemSourceDetail
+	for rows.Next() {
+		detail, err := scanSavingsPlanLineItemSourceDetail(rows)
+		if err != nil {
+			return nil, err
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate savings plan line item source details: %w", err)
+	}
+	return details, nil
 }
 
 func (r SavingsPlanRepository) purchaseFromCreateRequest(ctx context.Context, request SavingsPlanPurchaseCreateRequest) (SavingsPlanPurchase, error) {
@@ -1117,6 +1275,43 @@ func scanSavingsPlanLineItemSource(row interface{ Scan(dest ...any) error }) (Sa
 	}
 	source.SourceBillLineItemID = nullStringValue(sourceBillLineItemID)
 	return source, nil
+}
+
+func scanSavingsPlanLineItemSourceDetail(row interface{ Scan(dest ...any) error }) (SavingsPlanLineItemSourceDetail, error) {
+	var detail SavingsPlanLineItemSourceDetail
+	var sourceBillLineItemID sql.NullString
+	if err := row.Scan(
+		&detail.BillLineItemID,
+		&detail.SavingsPlanID,
+		&sourceBillLineItemID,
+		&detail.LineItemKind,
+		&detail.CoveredQuantityMicros,
+		&detail.CoveredCostMicros,
+		&detail.AmortizedCommitmentCostMicros,
+		&detail.CreatedAt,
+		&detail.UpdatedAt,
+		&detail.GeneratedDescription,
+		&detail.GeneratedLineItemType,
+		&detail.GeneratedOperation,
+		&detail.GeneratedUsageAccountID,
+		&detail.GeneratedBillingPeriodStart,
+		&detail.GeneratedBillingPeriodEnd,
+		&detail.GeneratedPricingQuantityMicros,
+		&detail.GeneratedPricingUnit,
+		&detail.GeneratedCostMicros,
+		&detail.GeneratedStatus,
+		&detail.SourceDescription,
+		&detail.SourceUsageAccountID,
+		&detail.SourceUsageStartTime,
+		&detail.SourceUsageEndTime,
+		&detail.SourcePricingQuantityMicros,
+		&detail.SourcePricingUnit,
+		&detail.SourceCostMicros,
+	); err != nil {
+		return SavingsPlanLineItemSourceDetail{}, fmt.Errorf("scan savings plan line item source detail: %w", err)
+	}
+	detail.SourceBillLineItemID = nullStringValue(sourceBillLineItemID)
+	return detail, nil
 }
 
 func savingsPlanLineItemKindForFee(item BillLineItem) string {

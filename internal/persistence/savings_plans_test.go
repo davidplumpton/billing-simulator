@@ -86,6 +86,35 @@ func TestSavingsPlanRepositoryAppliesFeesNegationsAndAmortizedSources(t *testing
 	if negationRows != 2 || feeRows != 2 || coveredQuantity != 4_000_000 || coveredCost != 166_400 || amortizedCost != 216_320 {
 		t.Fatalf("Savings Plan source totals = negations %d fees %d quantity %d covered %d amortized %d, want 2/2/4000000/166400/216320", negationRows, feeRows, coveredQuantity, coveredCost, amortizedCost)
 	}
+	purchases, err := spRepo.ListPurchases(ctx)
+	if err != nil {
+		t.Fatalf("ListPurchases() error = %v", err)
+	}
+	if len(purchases) != 1 || purchases[0].ID != purchase.ID {
+		t.Fatalf("ListPurchases() = %+v, want created purchase", purchases)
+	}
+	details, err := spRepo.ListLineItemSourceDetails(ctx, purchase.ID)
+	if err != nil {
+		t.Fatalf("ListLineItemSourceDetails() error = %v", err)
+	}
+	if len(details) != 4 {
+		t.Fatalf("ListLineItemSourceDetails() = %+v, want four generated rows", details)
+	}
+	var detailedNegations int
+	for _, detail := range details {
+		if detail.GeneratedDescription == "" || detail.GeneratedCostMicros == 0 {
+			t.Fatalf("source detail missing generated line item context: %+v", detail)
+		}
+		if detail.LineItemKind == savingsPlanKindNegation {
+			detailedNegations++
+			if detail.SourceBillLineItemID == "" || detail.SourceDescription == "" || detail.SourceCostMicros == 0 || detail.AmortizedCommitmentCostMicros == 0 {
+				t.Fatalf("negation detail missing source/amortized context: %+v", detail)
+			}
+		}
+	}
+	if detailedNegations != 2 {
+		t.Fatalf("ListLineItemSourceDetails() negation rows = %d, want 2", detailedNegations)
+	}
 
 	second, err := NewBillLineItemRepository(db).GenerateBillLineItems(ctx, BillLineItemGenerationRequest{})
 	if err != nil {

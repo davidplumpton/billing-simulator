@@ -119,6 +119,7 @@ func pageNavItems(active string) []pageNavItem {
 		{Key: "resources", Label: "Resources", Path: "/resources"},
 		{Key: "tags", Label: "Tags", Path: "/tags"},
 		{Key: "cost-categories", Label: "Cost Categories", Path: "/cost-categories"},
+		{Key: "savings-plans", Label: "Savings Plans", Path: "/savings-plans"},
 		{Key: "pro-forma", Label: "Pro Forma", Path: "/pro-forma"},
 		{Key: "cost-explorer", Label: "Cost Explorer", Path: "/cost-explorer"},
 		{Key: "anomalies", Label: "Anomalies", Path: "/anomalies"},

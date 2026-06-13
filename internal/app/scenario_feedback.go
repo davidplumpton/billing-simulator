@@ -276,6 +276,8 @@ func scenarioActionWhatChanged(actionType string) string {
 		return "Created or reused a monthly budget guardrail with actual and forecast thresholds."
 	case "refresh_budget_forecasts":
 		return "Recomputed budget forecast summaries and in-app alert notifications for the billing period."
+	case "create_savings_plan":
+		return "Created a simplified Compute Savings Plan commitment for estimated billing coverage."
 	case "create_saved_report":
 		return "Created or updated a Cost Explorer saved report definition for the lab drilldown."
 	case "create_payment_method":
@@ -317,6 +319,8 @@ func scenarioActionDataSource(actionType string) string {
 		return "budgets, budget_thresholds"
 	case "refresh_budget_forecasts":
 		return "budget_forecast_summaries, budget_alert_notifications"
+	case "create_savings_plan":
+		return "savings_plan_purchases, savings_plan_line_item_sources, bill_line_items"
 	case "create_saved_report":
 		return "saved_reports"
 	case "create_payment_method":
@@ -350,6 +354,8 @@ func scenarioActionBillingConcept(actionType string) string {
 		return "Budgets compare actual and forecast spend against learner-defined thresholds for a billing period."
 	case "refresh_budget_forecasts":
 		return "Budget forecasts estimate open-period spend and alert notifications surface threshold breaches before month end."
+	case "create_savings_plan":
+		return "Savings Plans add commitment fees and coverage negations that reports reconcile back to source usage."
 	case "create_saved_report":
 		return "Cost Explorer saved reports preserve reusable grouping, filter, metric, and chart choices for spend analysis."
 	case "create_payment_method", "schedule_payment", "process_payment", "fail_payment", "mark_payment_due", "mark_payment_past_due", "collect_payment":

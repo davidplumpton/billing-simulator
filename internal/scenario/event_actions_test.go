@@ -28,6 +28,7 @@ func TestScenarioEventActionRegistryCoversSupportedActions(t *testing.T) {
 		EventActionCollectPayment,
 		EventActionCreateBudget,
 		EventActionRefreshBudgetForecasts,
+		EventActionCreateSavingsPlan,
 		EventActionCreateSavedReport,
 	}
 

@@ -113,7 +113,7 @@ func (h scenarioHandler) renderScenarioFeedback(w http.ResponseWriter, r *http.R
 	data.Notices = uiNotices("", errorMessage)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Scenario Feedback - AWS Billing Simulator",
+		Title:     "Scenario Feedback - Billing Simulator",
 		ActiveNav: "scenarios",
 	}, scenarioFeedbackPageTemplate, data, "render scenario feedback page")
 }

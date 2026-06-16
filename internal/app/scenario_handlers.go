@@ -261,7 +261,7 @@ func (h scenarioHandler) renderScenarios(w http.ResponseWriter, r *http.Request,
 	data.Notices = uiNotices(flashMessage, data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Scenarios - AWS Billing Simulator",
+		Title:     "Scenarios - Billing Simulator",
 		ActiveNav: "scenarios",
 	}, scenariosPageTemplate, data, "render scenarios page")
 }
@@ -276,7 +276,7 @@ func (h scenarioHandler) renderScenarioEditor(w http.ResponseWriter, status int,
 		Preview:             preview,
 	}
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Scenario Editor - AWS Billing Simulator",
+		Title:     "Scenario Editor - Billing Simulator",
 		ActiveNav: "scenarios",
 	}, scenarioEditorPageTemplate, data, "render scenario editor page")
 }

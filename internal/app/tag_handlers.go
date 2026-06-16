@@ -231,7 +231,7 @@ func (h costAllocationTagsHandler) renderTags(w http.ResponseWriter, r *http.Req
 	}
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Tags - AWS Billing Simulator",
+		Title:     "Tags - Billing Simulator",
 		ActiveNav: "tags",
 	}, tagManagerPageTemplate, data, "render tags page")
 }

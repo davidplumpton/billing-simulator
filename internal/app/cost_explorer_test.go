@@ -31,7 +31,7 @@ func TestCostExplorerUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /cost-explorer without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Cost Explorer - AWS Billing Simulator</title>`,
+		`<title>Cost Explorer - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/cost-explorer">Cost Explorer</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,
@@ -734,7 +734,7 @@ func TestCostExplorerReportUIFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /cost-explorer status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Cost Explorer - AWS Billing Simulator</title>`,
+		`<title>Cost Explorer - Billing Simulator</title>`,
 		"Report Definition",
 		"Time and Metric",
 		"Filters",

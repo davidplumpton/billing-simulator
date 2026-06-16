@@ -168,7 +168,7 @@ func (r *invoicePDFRenderer) invoiceHeader(data invoicePageData) {
 	y := r.y
 	r.draw("F2", 18, invoicePDFMarginLeft, y, "Invoice "+data.InvoiceID)
 	r.draw("F2", 16, 420, y, "Total "+data.Total)
-	r.draw("F1", 9, invoicePDFMarginLeft, y-17, "AWS Billing Simulator synthetic invoice")
+	r.draw("F1", 9, invoicePDFMarginLeft, y-17, "Billing Simulator synthetic invoice")
 	r.draw("F1", 9, 420, y-17, data.PaymentStatus+" due "+data.AmountDue)
 	r.y -= 42
 }
@@ -325,7 +325,7 @@ func invoicePDFContentStream(page []invoicePDFTextRun, pageNumber, pageCount int
 	for _, run := range page {
 		fmt.Fprintf(&stream, "BT /%s %.2f Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", run.Font, run.Size, run.X, run.Y, invoicePDFEscapeText(run.Text))
 	}
-	footer := fmt.Sprintf("AWS Billing Simulator - synthetic training invoice - Page %d of %d", pageNumber, pageCount)
+	footer := fmt.Sprintf("Billing Simulator - synthetic training invoice - Page %d of %d", pageNumber, pageCount)
 	fmt.Fprintf(&stream, "BT /F1 7.00 Tf 1 0 0 1 %.2f %.2f Tm (%s) Tj ET\n", invoicePDFMarginLeft, 30.0, invoicePDFEscapeText(footer))
 	return stream.String()
 }

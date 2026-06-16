@@ -345,7 +345,7 @@ func (h proFormaHandler) renderProForma(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Pro Forma - AWS Billing Simulator",
+		Title:     "Pro Forma - Billing Simulator",
 		ActiveNav: "pro-forma",
 	}, proFormaPageTemplate, data, "render pro forma page")
 }

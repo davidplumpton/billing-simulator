@@ -1,7 +1,7 @@
 (function () {
 	"use strict";
 
-	var fragmentHeader = "X-AWS-Billing-Simulator-Fragment";
+	var fragmentHeader = "X-Billing-Simulator-Fragment";
 	var debounceTimers = new WeakMap();
 
 	function closestPartialForm(element) {

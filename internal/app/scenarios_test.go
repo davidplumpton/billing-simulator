@@ -37,7 +37,7 @@ func TestScenariosUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /scenarios without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Scenarios - AWS Billing Simulator</title>`,
+		`<title>Scenarios - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,
@@ -56,7 +56,7 @@ func TestScenariosUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /scenarios/editor without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Scenario Editor - AWS Billing Simulator</title>`,
+		`<title>Scenario Editor - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,
@@ -184,7 +184,7 @@ func TestScenarioEditorValidationPreviewWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /scenarios/editor status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Scenario Editor - AWS Billing Simulator</title>`,
+		`<title>Scenario Editor - Billing Simulator</title>`,
 		`action="/scenarios/editor/validate"`,
 		"Scenario YAML",
 		"Validation Preview",
@@ -440,7 +440,7 @@ func TestScenarioFeedbackReportUsesPersistedLearnerEvidence(t *testing.T) {
 		t.Fatalf("GET /scenarios/feedback status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Scenario Feedback - AWS Billing Simulator</title>`,
+		`<title>Scenario Feedback - Billing Simulator</title>`,
 		"Learner Feedback",
 		"Feedback Fixture",
 		"This run applied 2 of 2 scenario events",
@@ -652,7 +652,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /scenarios status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Scenarios - AWS Billing Simulator</title>`,
+		`<title>Scenarios - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
 		"Available Scenarios",
 		"First consolidated bill",

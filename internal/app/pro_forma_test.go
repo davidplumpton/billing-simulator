@@ -28,7 +28,7 @@ func TestProFormaUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /pro-forma without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Pro Forma - AWS Billing Simulator</title>`,
+		`<title>Pro Forma - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/pro-forma">Pro Forma</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,

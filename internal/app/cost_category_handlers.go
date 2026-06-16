@@ -238,7 +238,7 @@ func (h costCategoriesHandler) renderCostCategories(w http.ResponseWriter, r *ht
 		return
 	}
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Cost Categories - AWS Billing Simulator",
+		Title:     "Cost Categories - Billing Simulator",
 		ActiveNav: "cost-categories",
 	}, costCategoriesPageTemplate, data, "render cost categories page")
 }

@@ -234,7 +234,7 @@ func (h budgetHandler) renderBudgets(w http.ResponseWriter, r *http.Request, sta
 	}
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Budgets - AWS Billing Simulator",
+		Title:     "Budgets - Billing Simulator",
 		ActiveNav: "budgets",
 	}, budgetsPageTemplate, data, "render budgets page")
 }

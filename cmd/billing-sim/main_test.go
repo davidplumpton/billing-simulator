@@ -79,7 +79,7 @@ func TestPackagedCommandBuildsAndRunsFreshWorkspaceSmoke(t *testing.T) {
 		t.Fatalf("GET / final path = %q, want /resources", got)
 	}
 	for _, want := range []string{
-		`<title>Resources - AWS Billing Simulator</title>`,
+		`<title>Resources - Billing Simulator</title>`,
 		`<link rel="stylesheet" href="/assets/app.css">`,
 		`<script src="/assets/app.js" defer></script>`,
 		"Create Resource",
@@ -106,7 +106,7 @@ func TestPackagedCommandBuildsAndRunsFreshWorkspaceSmoke(t *testing.T) {
 		{
 			path:        "/assets/app.js",
 			contentType: "text/javascript",
-			wants:       []string{"data-partial-form", "X-AWS-Billing-Simulator-Fragment"},
+			wants:       []string{"data-partial-form", "X-Billing-Simulator-Fragment"},
 		},
 	}
 	for _, check := range assetChecks {
@@ -138,8 +138,8 @@ func TestPackagedCommandBuildsAndRunsFreshWorkspaceSmoke(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count schema_migrations in command-created workspace: %v", err)
 	}
-	if migrationCount != 40 {
-		t.Fatalf("schema_migrations count = %d, want 40", migrationCount)
+	if migrationCount != 41 {
+		t.Fatalf("schema_migrations count = %d, want 41", migrationCount)
 	}
 
 	var catalogCount int

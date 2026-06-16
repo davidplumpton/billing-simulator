@@ -28,7 +28,7 @@ func TestSavingsPlanUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /savings-plans without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Savings Plans - AWS Billing Simulator</title>`,
+		`<title>Savings Plans - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/savings-plans">Savings Plans</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,

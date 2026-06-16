@@ -111,7 +111,7 @@ func (h workspaceHandler) renderWorkspaces(w http.ResponseWriter, status int, er
 	}
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Workspaces - AWS Billing Simulator",
+		Title:     "Workspaces - Billing Simulator",
 		ActiveNav: "workspaces",
 	}, workspacePageTemplate, data, "render workspace page")
 }

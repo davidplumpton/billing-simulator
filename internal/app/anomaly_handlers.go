@@ -138,7 +138,7 @@ func (h anomalyHandler) renderAnomalies(w http.ResponseWriter, r *http.Request, 
 	}
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Anomalies - AWS Billing Simulator",
+		Title:     "Anomalies - Billing Simulator",
 		ActiveNav: "anomalies",
 	}, anomaliesPageTemplate, data, "render anomalies page")
 }

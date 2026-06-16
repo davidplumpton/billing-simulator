@@ -382,8 +382,8 @@ func TestStartAppliesWorkspaceMigrations(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 40 {
-		t.Fatalf("schema_migrations count = %d, want 40", count)
+	if count != 41 {
+		t.Fatalf("schema_migrations count = %d, want 41", count)
 	}
 
 	var catalogCount int
@@ -447,7 +447,7 @@ func TestLocalServerSmokeFlowCreatesWorkspaceAndServesDashboard(t *testing.T) {
 		t.Fatalf("GET / final path = %q, want /workspaces", got)
 	}
 	for _, want := range []string{
-		`<title>Workspaces - AWS Billing Simulator</title>`,
+		`<title>Workspaces - Billing Simulator</title>`,
 		`<link rel="stylesheet" href="/assets/app.css">`,
 		`<script src="/assets/app.js" defer></script>`,
 		"No workspace open",
@@ -471,7 +471,7 @@ func TestLocalServerSmokeFlowCreatesWorkspaceAndServesDashboard(t *testing.T) {
 		t.Fatalf("POST /workspaces/open final path = %q, want /resources", got)
 	}
 	for _, want := range []string{
-		`<title>Resources - AWS Billing Simulator</title>`,
+		`<title>Resources - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/resources">Resources</a>`,
 		"Opened workspace",
 		"Create Resource",
@@ -516,7 +516,7 @@ func TestLocalServerSmokeFlowCreatesWorkspaceAndServesDashboard(t *testing.T) {
 		{
 			path:        "/assets/app.js",
 			contentType: "text/javascript",
-			wants:       []string{"data-partial-form", "X-AWS-Billing-Simulator-Fragment"},
+			wants:       []string{"data-partial-form", "X-Billing-Simulator-Fragment"},
 		},
 	}
 	for _, asset := range assets {
@@ -607,7 +607,7 @@ func TestEmbeddedProgressiveEnhancementScriptServed(t *testing.T) {
 	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/javascript") ||
 		!strings.Contains(body, "data-partial-form") ||
-		!strings.Contains(body, "X-AWS-Billing-Simulator-Fragment") {
+		!strings.Contains(body, "X-Billing-Simulator-Fragment") {
 		t.Fatalf("GET /assets/app.js missing partial-update script contract: %s", body)
 	}
 }

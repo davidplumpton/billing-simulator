@@ -12,7 +12,7 @@ const (
 	maxInvoiceDocumentLimit             = 100
 	defaultInvoiceDocumentVersion       = 1
 	invoiceDocumentStatusIssued         = "issued"
-	defaultInvoiceSellerOfRecord        = "AWS Billing Simulator"
+	defaultInvoiceSellerOfRecord        = "Billing Simulator"
 	defaultInvoiceSellerAddress         = "Local synthetic invoice lab"
 	defaultInvoiceSellerTaxRegistration = ""
 	defaultInvoiceBillToName            = "AnyCompany Retail"

@@ -224,8 +224,8 @@ func TestWorkspaceUICreatesWorkspaceAndPersistsLastPath(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 40 {
-		t.Fatalf("schema_migrations count = %d, want 40", count)
+	if count != 41 {
+		t.Fatalf("schema_migrations count = %d, want 41", count)
 	}
 }
 
@@ -680,7 +680,7 @@ func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /workspaces status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Workspaces - AWS Billing Simulator</title>`,
+		`<title>Workspaces - Billing Simulator</title>`,
 		`<link rel="stylesheet" href="/assets/app.css">`,
 		`<script src="/assets/app.js" defer></script>`,
 		`<a class="active" aria-current="page" href="/workspaces">Workspaces</a>`,
@@ -702,7 +702,7 @@ func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("POST /workspaces/open status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Resources - AWS Billing Simulator</title>`,
+		`<title>Resources - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/resources">Resources</a>`,
 		`data-partial-form="resources"`,
 		`<table class="dense-table">`,
@@ -724,7 +724,7 @@ func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 		{
 			path: "/organization",
 			wants: []string{
-				`<title>Organization - AWS Billing Simulator</title>`,
+				`<title>Organization - Billing Simulator</title>`,
 				`<a class="active" aria-current="page" href="/organization">Organization</a>`,
 				"AnyCompany Retail",
 				"Account Detail",
@@ -733,7 +733,7 @@ func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 		{
 			path: "/bills",
 			wants: []string{
-				`<title>Bills - AWS Billing Simulator</title>`,
+				`<title>Bills - Billing Simulator</title>`,
 				`<a class="active" aria-current="page" href="/bills">Bills</a>`,
 				`data-partial-form="bills"`,
 				"No issued bills to reconcile",
@@ -772,7 +772,7 @@ func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 		{
 			path:        "/assets/app.js",
 			contentType: "text/javascript",
-			wants:       []string{"data-partial-form", "X-AWS-Billing-Simulator-Fragment"},
+			wants:       []string{"data-partial-form", "X-Billing-Simulator-Fragment"},
 		},
 	}
 	for _, asset := range assets {
@@ -937,47 +937,47 @@ func TestSharedLayoutNavigationAndEmbeddedStylesheet(t *testing.T) {
 	}{
 		{
 			path:       "/workspaces",
-			title:      "<title>Workspaces - AWS Billing Simulator</title>",
+			title:      "<title>Workspaces - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/workspaces">Workspaces</a>`,
 		},
 		{
 			path:       "/organization",
-			title:      "<title>Organization - AWS Billing Simulator</title>",
+			title:      "<title>Organization - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/organization">Organization</a>`,
 		},
 		{
 			path:       "/resources",
-			title:      "<title>Resources - AWS Billing Simulator</title>",
+			title:      "<title>Resources - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/resources">Resources</a>`,
 		},
 		{
 			path:       "/cost-categories",
-			title:      "<title>Cost Categories - AWS Billing Simulator</title>",
+			title:      "<title>Cost Categories - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/cost-categories">Cost Categories</a>`,
 		},
 		{
 			path:       "/savings-plans",
-			title:      "<title>Savings Plans - AWS Billing Simulator</title>",
+			title:      "<title>Savings Plans - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/savings-plans">Savings Plans</a>`,
 		},
 		{
 			path:       "/pro-forma",
-			title:      "<title>Pro Forma - AWS Billing Simulator</title>",
+			title:      "<title>Pro Forma - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/pro-forma">Pro Forma</a>`,
 		},
 		{
 			path:       "/cost-explorer",
-			title:      "<title>Cost Explorer - AWS Billing Simulator</title>",
+			title:      "<title>Cost Explorer - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/cost-explorer">Cost Explorer</a>`,
 		},
 		{
 			path:       "/bills",
-			title:      "<title>Bills - AWS Billing Simulator</title>",
+			title:      "<title>Bills - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/bills">Bills</a>`,
 		},
 		{
 			path:       "/scenarios",
-			title:      "<title>Scenarios - AWS Billing Simulator</title>",
+			title:      "<title>Scenarios - Billing Simulator</title>",
 			activeLink: `<a class="active" aria-current="page" href="/scenarios">Scenarios</a>`,
 		},
 	}

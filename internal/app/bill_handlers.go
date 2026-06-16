@@ -333,7 +333,7 @@ func (h billsHandler) renderBills(w http.ResponseWriter, r *http.Request, status
 	}
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Bills - AWS Billing Simulator",
+		Title:     "Bills - Billing Simulator",
 		ActiveNav: "bills",
 	}, billsPageTemplate, data, "render bills page")
 }
@@ -369,7 +369,7 @@ func (h billsHandler) renderInvoice(w http.ResponseWriter, r *http.Request, stat
 	data.Tables = invoiceTables()
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Invoice " + data.InvoiceID + " - AWS Billing Simulator",
+		Title:     "Invoice " + data.InvoiceID + " - Billing Simulator",
 		ActiveNav: "bills",
 		MainClass: "invoice-page",
 	}, invoicePageTemplate, data, "render invoice page")

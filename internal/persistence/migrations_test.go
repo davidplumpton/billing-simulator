@@ -109,8 +109,8 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 40 {
-		t.Fatalf("schema_migrations count = %d, want 40", count)
+	if count != 41 {
+		t.Fatalf("schema_migrations count = %d, want 41", count)
 	}
 
 	assertMigrationRecorded(t, db, 1, "workspace_metadata")
@@ -153,6 +153,7 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 	assertMigrationRecorded(t, db, 38, "reserved_instances")
 	assertMigrationRecorded(t, db, 39, "savings_plans")
 	assertMigrationRecorded(t, db, 40, "saved_report_run_metric")
+	assertMigrationRecorded(t, db, 41, "branding_display_name")
 
 	var schemaKind string
 	if err := db.QueryRowContext(
@@ -165,12 +166,23 @@ func assertMigrationState(t *testing.T, db *sql.DB) {
 		t.Fatalf("schema_kind = %q, want aws-billing-simulator", schemaKind)
 	}
 
+	var sellerOfRecord string
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT seller_of_record FROM payment_seller_profiles WHERE id = 'seller_aws_billing_simulator'`,
+	).Scan(&sellerOfRecord); err != nil {
+		t.Fatalf("read seller profile: %v", err)
+	}
+	if sellerOfRecord != "Billing Simulator" {
+		t.Fatalf("seller_of_record = %q, want Billing Simulator", sellerOfRecord)
+	}
+
 	var userVersion int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if userVersion != 40 {
-		t.Fatalf("user_version = %d, want 40", userVersion)
+	if userVersion != 41 {
+		t.Fatalf("user_version = %d, want 41", userVersion)
 	}
 }
 

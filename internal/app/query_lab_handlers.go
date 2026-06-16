@@ -55,7 +55,7 @@ func (h queryLabHandler) handleQueryLab(w http.ResponseWriter, r *http.Request) 
 		Examples:      queryLabExamples(csvPath),
 	}
 	renderPage(w, http.StatusOK, pageLayoutOptions{
-		Title:     "Query Lab - AWS Billing Simulator",
+		Title:     "Query Lab - Billing Simulator",
 		ActiveNav: "query-lab",
 	}, queryLabPageTemplate, data, "render query lab page")
 }

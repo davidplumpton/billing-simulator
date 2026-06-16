@@ -1,10 +1,10 @@
-# AWS Billing Simulator: Specification and Proposal
+# Billing Simulator: Specification and Proposal
 
 Research date: 2026-06-02
 
 ## Executive Summary
 
-An AWS billing simulator is practical and valuable if it is positioned as a training and experimentation environment, not as a perfect clone of AWS internal billing. The core gap is real: developers and architects are often expected to design account structures, tagging standards, consolidated billing arrangements, budgets, and chargeback models, but the real AWS billing console is gated by management-account permissions, real payment methods, actual spend, organizational policies, billing delays, and month-end invoice timing.
+A billing simulator for AWS cost and billing concepts is practical and valuable if it is positioned as a training and experimentation environment, not as a perfect clone of AWS internal billing. The core gap is real: developers and architects are often expected to design account structures, tagging standards, consolidated billing arrangements, budgets, and chargeback models, but the real AWS billing console is gated by management-account permissions, real payment methods, actual spend, organizational policies, billing delays, and month-end invoice timing.
 
 The proposed product is a standalone, single-user simulated AWS Billing and Cost Management environment. It should run as one local application and expose a local browser UI where learners can create organizations, OUs, and accounts; configure tags and cost categories; generate realistic usage; inspect Cost Explorer-style outputs; close a billing month; receive invoice-like bills; and practice payment and remediation workflows. It should use synthetic organizations and charges by default, with an optional import path from AWS Price List data for more realistic rates.
 
@@ -93,7 +93,7 @@ Simulator implication: advanced scenarios should include "standard billable cost
 
 ## Proposal
 
-Build a web application called AWS Billing Simulator. It should feel like an AWS-adjacent training console without pretending to be AWS. The application should provide a simulated organization, a billing engine, cost analytics, invoice generation, and payment-state workflows.
+Build a web application called Billing Simulator. It should feel like an AWS-adjacent training console without pretending to be AWS. The application should provide a simulated organization, a billing engine, cost analytics, invoice generation, and payment-state workflows.
 
 The simulator should answer questions like:
 

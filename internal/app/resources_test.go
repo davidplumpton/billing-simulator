@@ -57,7 +57,7 @@ func TestUsagePricingBillingEngineEpicWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /resources status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Resources - AWS Billing Simulator</title>`,
+		`<title>Resources - Billing Simulator</title>`,
 		"Create Resource",
 		"Generate Usage",
 		"Run Daily Metering",
@@ -446,7 +446,7 @@ func TestResourcesUIFiltersAndPartialRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest(/resources fragment) error = %v", err)
 	}
-	req.Header.Set("X-AWS-Billing-Simulator-Fragment", "resources")
+	req.Header.Set("X-Billing-Simulator-Fragment", "resources")
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /resources fragment error = %v", err)

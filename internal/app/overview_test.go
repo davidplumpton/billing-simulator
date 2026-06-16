@@ -50,7 +50,7 @@ func TestOverviewIntroPageRendersWorkflowLinksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /overview final path = %q, want /overview", got)
 	}
 	for _, want := range []string{
-		`<title>Overview - AWS Billing Simulator</title>`,
+		`<title>Overview - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/overview">Overview</a>`,
 		"Simulator Overview",
 		"Core Interaction Flow",

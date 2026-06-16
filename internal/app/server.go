@@ -147,7 +147,7 @@ func (directWorkspaceUnavailableHandler) handleWorkspaces(w http.ResponseWriter,
 		return
 	}
 	renderPage(w, http.StatusOK, pageLayoutOptions{
-		Title:     "Workspaces - AWS Billing Simulator",
+		Title:     "Workspaces - Billing Simulator",
 		ActiveNav: "workspaces",
 	}, directWorkspaceUnavailableTemplate, nil, "render direct workspace unavailable page")
 }

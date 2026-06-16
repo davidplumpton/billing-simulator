@@ -277,7 +277,7 @@ func TestBillsUIFiltersAndPartialRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest(/bills fragment) error = %v", err)
 	}
-	req.Header.Set("X-AWS-Billing-Simulator-Fragment", "bills")
+	req.Header.Set("X-Billing-Simulator-Fragment", "bills")
 	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /bills fragment error = %v", err)

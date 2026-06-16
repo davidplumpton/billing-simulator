@@ -284,7 +284,7 @@ func (h organizationHandler) renderOrganization(w http.ResponseWriter, r *http.R
 	data.Notices = uiNotices(data.Flash, data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Organization - AWS Billing Simulator",
+		Title:     "Organization - Billing Simulator",
 		ActiveNav: "organization",
 	}, organizationPageTemplate, data, "render organization page")
 }

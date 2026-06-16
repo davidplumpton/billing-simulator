@@ -83,7 +83,7 @@ func TestOrganizationHierarchyEditorFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /organization with workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Organization - AWS Billing Simulator</title>`,
+		`<title>Organization - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/organization">Organization</a>`,
 		"AnyCompany Retail",
 		"Root - ou_anycompany_root",

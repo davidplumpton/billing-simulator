@@ -17,7 +17,7 @@ func (h overviewHandler) handleOverview(w http.ResponseWriter, r *http.Request) 
 	}
 
 	renderPage(w, http.StatusOK, pageLayoutOptions{
-		Title:     "Overview - AWS Billing Simulator",
+		Title:     "Overview - Billing Simulator",
 		ActiveNav: "overview",
 		MainClass: "overview-page",
 	}, overviewPageTemplate, nil, "render overview page")

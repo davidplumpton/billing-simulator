@@ -31,7 +31,7 @@ func TestCostCategoriesUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /cost-categories without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Cost Categories - AWS Billing Simulator</title>`,
+		`<title>Cost Categories - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/cost-categories">Cost Categories</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,
@@ -278,7 +278,7 @@ func TestCostCategoryRulesFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /cost-categories fresh workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Cost Categories - AWS Billing Simulator</title>`,
+		`<title>Cost Categories - Billing Simulator</title>`,
 		"Cost Category Preview",
 		"No cost categories",
 		"Line Items",

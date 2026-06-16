@@ -438,7 +438,7 @@ func (h resourceLabHandler) renderResources(w http.ResponseWriter, r *http.Reque
 	}
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Resources - AWS Billing Simulator",
+		Title:     "Resources - Billing Simulator",
 		ActiveNav: "resources",
 	}, resourcePageTemplate, data, "render resource page")
 }

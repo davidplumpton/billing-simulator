@@ -406,7 +406,7 @@ func (h costExplorerHandler) renderCostExplorerLineItems(w http.ResponseWriter, 
 	data.Notices = uiNotices("", data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Cost Explorer Bill Line Items - AWS Billing Simulator",
+		Title:     "Cost Explorer Bill Line Items - Billing Simulator",
 		ActiveNav: "cost-explorer",
 	}, costExplorerLineItemsPageTemplate, data, "render Cost Explorer bill line items page")
 }
@@ -449,7 +449,7 @@ func (h costExplorerHandler) renderCostExplorer(w http.ResponseWriter, r *http.R
 		return
 	}
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Cost Explorer - AWS Billing Simulator",
+		Title:     "Cost Explorer - Billing Simulator",
 		ActiveNav: "cost-explorer",
 	}, costExplorerPageTemplate, data, "render Cost Explorer page")
 }

@@ -203,7 +203,7 @@ func (h paymentsHandler) renderPaymentsForValues(w http.ResponseWriter, r *http.
 	data.Notices = uiNotices(data.Flash, data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Payments - AWS Billing Simulator",
+		Title:     "Payments - Billing Simulator",
 		ActiveNav: "payments",
 	}, paymentsPageTemplate, data, "render payments page")
 }

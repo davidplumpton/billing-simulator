@@ -147,7 +147,7 @@ func (h savingsPlanHandler) renderSavingsPlans(w http.ResponseWriter, r *http.Re
 		return
 	}
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Savings Plans - AWS Billing Simulator",
+		Title:     "Savings Plans - Billing Simulator",
 		ActiveNav: "savings-plans",
 	}, savingsPlanPageTemplate, data, "render savings plans page")
 }

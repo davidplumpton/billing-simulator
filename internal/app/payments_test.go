@@ -117,7 +117,7 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 		t.Fatalf("GET /payments status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Payments - AWS Billing Simulator</title>`,
+		`<title>Payments - Billing Simulator</title>`,
 		`href="/payments">Payments</a>`,
 		"Due Invoices",
 		"Payment History",

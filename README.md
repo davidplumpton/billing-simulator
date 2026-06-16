@@ -1,4 +1,4 @@
-# AWS Billing Simulator
+# Billing Simulator
 
 ## Concept
 
@@ -6,13 +6,13 @@ While doing some AWS Solutions Architecture training I noticed there were some q
 
 Now back to the AI...
 
-AWS Billing Simulator is a local-first training environment for learning AWS billing, cost allocation, consolidated billing, invoice, and FinOps workflows without using real AWS accounts, credentials, payment methods, or spend.
+Billing Simulator is a local-first training environment for learning AWS billing, cost allocation, consolidated billing, invoice, and FinOps workflows without using real AWS accounts, credentials, payment methods, or spend.
 
 AWS and Amazon Web Services are trademarks of Amazon.com, Inc. or its affiliates. This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services.
 
 The project is being created because the most important billing lessons are difficult to practice safely in a real AWS organization. Real billing consoles require sensitive management-account access, real invoices, delayed reporting data, cost allocation tag activation, payment configuration, and live charges. This simulator makes those concepts deterministic, inspectable, and repeatable in a local workspace.
 
-The product direction is described in [aws-billing-simulator-proposal.md](aws-billing-simulator-proposal.md). The implementation is intentionally not an AWS console clone; it preserves AWS billing mental models while using synthetic data and a standalone UI.
+The product direction is described in [billing-simulator-proposal.md](billing-simulator-proposal.md). The implementation is intentionally not an AWS console clone; it preserves AWS billing mental models while using synthetic data and a standalone UI.
 
 ## Who It Is For
 
@@ -145,6 +145,6 @@ The local agent workflow and repository rules are documented in [AGENTS.md](AGEN
 
 ## Safety Boundaries
 
-AWS Billing Simulator is synthetic training software. It does not process real payments, does not produce tax-valid invoices, does not connect to AWS for core use, and should not be treated as authoritative pricing advice. The built-in catalog is synthetic and deterministic so learners can focus on billing behavior and reconciliation.
+Billing Simulator is synthetic training software. It does not process real payments, does not produce tax-valid invoices, does not connect to AWS for core use, and should not be treated as authoritative pricing advice. The built-in catalog is synthetic and deterministic so learners can focus on billing behavior and reconciliation.
 
 AWS and Amazon Web Services are trademarks of Amazon.com, Inc. or its affiliates. This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services.

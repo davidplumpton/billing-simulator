@@ -32,7 +32,7 @@ func TestCostAllocationTagsUIRequiresWorkspace(t *testing.T) {
 		t.Fatalf("GET /tags without workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Tags - AWS Billing Simulator</title>`,
+		`<title>Tags - Billing Simulator</title>`,
 		`<a class="active" aria-current="page" href="/tags">Tags</a>`,
 		"Workspace Required",
 		`href="/workspaces"`,
@@ -764,7 +764,7 @@ func TestCostAllocationTagLifecycleFeatureWorksInFreshWorkspace(t *testing.T) {
 		t.Fatalf("GET /tags fresh workspace status = %d, want %d; body=%s", resp.StatusCode, http.StatusOK, body)
 	}
 	for _, want := range []string{
-		`<title>Tags - AWS Billing Simulator</title>`,
+		`<title>Tags - Billing Simulator</title>`,
 		"Cost Allocation Tag Manager",
 		"Discovered Keys",
 		"No resource tag keys discovered",

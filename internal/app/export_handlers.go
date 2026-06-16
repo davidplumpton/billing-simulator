@@ -427,7 +427,7 @@ func (h exportsHandler) renderExportsForValues(w http.ResponseWriter, r *http.Re
 				data.Error = "list exports: " + err.Error()
 				data.Notices = uiNotices(flashMessage, data.Error)
 				renderPage(w, status, pageLayoutOptions{
-					Title:     "Exports - AWS Billing Simulator",
+					Title:     "Exports - Billing Simulator",
 					ActiveNav: "exports",
 				}, exportsPageTemplate, data, "render exports page")
 				return
@@ -438,7 +438,7 @@ func (h exportsHandler) renderExportsForValues(w http.ResponseWriter, r *http.Re
 				data.Error = "list exports: " + err.Error()
 				data.Notices = uiNotices(flashMessage, data.Error)
 				renderPage(w, status, pageLayoutOptions{
-					Title:     "Exports - AWS Billing Simulator",
+					Title:     "Exports - Billing Simulator",
 					ActiveNav: "exports",
 				}, exportsPageTemplate, data, "render exports page")
 				return
@@ -455,7 +455,7 @@ func (h exportsHandler) renderExportsForValues(w http.ResponseWriter, r *http.Re
 	data.Notices = uiNotices(flashMessage, data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Exports - AWS Billing Simulator",
+		Title:     "Exports - Billing Simulator",
 		ActiveNav: "exports",
 	}, exportsPageTemplate, data, "render exports page")
 }
@@ -580,7 +580,7 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 				data.Error = "reconcile CUR export: " + err.Error()
 				data.Notices = uiNotices("", data.Error)
 				renderPage(w, status, pageLayoutOptions{
-					Title:     "Export Reconciliation - AWS Billing Simulator",
+					Title:     "Export Reconciliation - Billing Simulator",
 					ActiveNav: "exports",
 				}, exportReconciliationPageTemplate, data, "render export reconciliation page")
 				return
@@ -591,7 +591,7 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 				data.Error = "reconcile CUR export: " + err.Error()
 				data.Notices = uiNotices("", data.Error)
 				renderPage(w, status, pageLayoutOptions{
-					Title:     "Export Reconciliation - AWS Billing Simulator",
+					Title:     "Export Reconciliation - Billing Simulator",
 					ActiveNav: "exports",
 				}, exportReconciliationPageTemplate, data, "render export reconciliation page")
 				return
@@ -614,7 +614,7 @@ func (h exportsHandler) handleCURReconciliation(w http.ResponseWriter, r *http.R
 	data.Notices = uiNotices("", data.Error)
 
 	renderPage(w, status, pageLayoutOptions{
-		Title:     "Export Reconciliation - AWS Billing Simulator",
+		Title:     "Export Reconciliation - Billing Simulator",
 		ActiveNav: "exports",
 	}, exportReconciliationPageTemplate, data, "render export reconciliation page")
 }

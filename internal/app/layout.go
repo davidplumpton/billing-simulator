@@ -36,7 +36,7 @@ func renderPage(w http.ResponseWriter, status int, options pageLayoutOptions, co
 
 	title := options.Title
 	if title == "" {
-		title = "AWS Billing Simulator"
+		title = "Billing Simulator"
 	}
 	layoutData := pageLayoutData{
 		Title:     title,
@@ -107,7 +107,7 @@ func serveAppScript(w http.ResponseWriter, r *http.Request) {
 
 // wantsPageFragment matches the named fragment requested by the browser enhancer.
 func wantsPageFragment(r *http.Request, fragmentName string) bool {
-	return r.Header.Get("X-AWS-Billing-Simulator-Fragment") == fragmentName
+	return r.Header.Get("X-Billing-Simulator-Fragment") == fragmentName
 }
 
 // pageNavItems centralizes the shared top navigation and active-page state.

@@ -3,6 +3,7 @@ package scenario
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -185,18 +186,8 @@ func newScenarioEventActionSpecsByAction() map[EventAction]scenarioEventActionSp
 		newPaymentLifecycleScenarioEventActionSpec(EventActionMarkPaymentDue),
 		newPaymentLifecycleScenarioEventActionSpec(EventActionMarkPaymentPastDue),
 		newPaymentLifecycleScenarioEventActionSpec(EventActionCollectPayment),
-		{
-			action:    EventActionCreateBudget,
-			normalize: normalizeCreateBudgetScenarioEvent,
-			validate:  validateCreateBudgetScenarioEvent,
-			apply:     applyCreateBudgetScenarioEvent,
-		},
-		{
-			action:    EventActionRefreshBudgetForecasts,
-			normalize: normalizeRefreshBudgetForecastsScenarioEvent,
-			validate:  validateRefreshBudgetForecastsScenarioEvent,
-			apply:     applyRefreshBudgetForecastsScenarioEvent,
-		},
+		newBudgetScenarioEventActionSpec(EventActionCreateBudget),
+		newBudgetScenarioEventActionSpec(EventActionRefreshBudgetForecasts),
 		{
 			action:            EventActionCreateSavingsPlan,
 			normalize:         normalizeCreateSavingsPlanScenarioEvent,
@@ -379,20 +370,6 @@ func normalizePaymentLifecycleScenarioPayload(payload scenarioPaymentLifecycleEv
 	return payload
 }
 
-func normalizeCreateBudgetScenarioEvent(event Event) Event {
-	trimScenarioEventStrings(&event.BudgetID, &event.BudgetName, &event.Description, &event.BillingPeriodStart, &event.BillingPeriodEnd, &event.ScopeType, &event.ScopeKey, &event.ScopeValue, &event.Status)
-	trimUpperScenarioEventString(&event.CurrencyCode)
-	for i := range event.Thresholds {
-		trimScenarioEventStrings(&event.Thresholds[i].ID, &event.Thresholds[i].Type)
-	}
-	return event
-}
-
-func normalizeRefreshBudgetForecastsScenarioEvent(event Event) Event {
-	trimScenarioEventStrings(&event.BillingPeriodStart, &event.BillingPeriodEnd)
-	return event
-}
-
 func normalizeCreateSavingsPlanScenarioEvent(event Event) Event {
 	event = normalizePayerScenarioEvent(event)
 	trimScenarioEventStrings(&event.OwnerAccount, &event.OwnerAccountID, &event.SavingsPlanID, &event.UsageType, &event.Operation, &event.Region, &event.TermStartAt, &event.TermEndAt, &event.SharingScope, &event.Description, &event.Status)
@@ -442,29 +419,6 @@ func validateBillingPeriodScenarioEvent(path string, event Event, problems *vali
 	validateBillingEvent(path, event, problems)
 }
 
-func validateRefreshBudgetForecastsScenarioEvent(path string, event Event, problems *validationProblems) {
-	validateOptionalDate(path+".billing_period_start", event.BillingPeriodStart, problems)
-	validateOptionalDate(path+".billing_period_end", event.BillingPeriodEnd, problems)
-	if event.BillingPeriodStart != "" && event.BillingPeriodEnd == "" {
-		problems.add("%s.billing_period_end is required when billing_period_start is set", path)
-	}
-	if event.BillingPeriodEnd != "" && event.BillingPeriodStart == "" {
-		problems.add("%s.billing_period_start is required when billing_period_end is set", path)
-	}
-}
-
-func validateCreateBudgetScenarioEvent(path string, event Event, problems *validationProblems) {
-	validateOptionalDate(path+".billing_period_start", event.BillingPeriodStart, problems)
-	validateOptionalDate(path+".billing_period_end", event.BillingPeriodEnd, problems)
-	if event.BillingPeriodStart != "" && event.BillingPeriodEnd == "" {
-		problems.add("%s.billing_period_end is required when billing_period_start is set", path)
-	}
-	if event.BillingPeriodEnd != "" && event.BillingPeriodStart == "" {
-		problems.add("%s.billing_period_start is required when billing_period_end is set", path)
-	}
-	validateCreateBudgetEvent(path, event, problems)
-}
-
 func validateCreateSavingsPlanScenarioEvent(path string, event Event, problems *validationProblems) {
 	validateOptionalTimestamp(path+".term_start_at", event.TermStartAt, problems)
 	validateOptionalTimestamp(path+".term_end_at", event.TermEndAt, problems)
@@ -512,6 +466,161 @@ func validatePaymentLifecyclePayload(path string, payload scenarioPaymentLifecyc
 	}
 	if payload.Action == EventActionCollectPayment && payload.AmountMicros <= 0 {
 		problems.add("%s.amount_micros must be greater than zero for collect_payment", path)
+	}
+}
+
+type scenarioBudgetEventPayload struct {
+	ID                 string
+	Action             EventAction
+	BudgetID           string
+	BudgetName         string
+	Description        string
+	BillingPeriodStart string
+	BillingPeriodEnd   string
+	CurrencyCode       string
+	BudgetAmountMicros int64
+	ScopeType          string
+	ScopeKey           string
+	ScopeValue         string
+	Status             string
+	Thresholds         []BudgetThreshold
+}
+
+// newBudgetScenarioEventActionSpec binds budget actions to a narrow scenario payload.
+func newBudgetScenarioEventActionSpec(action EventAction) scenarioEventActionSpec {
+	return scenarioEventPayloadActionSpec[scenarioBudgetEventPayload]{
+		action:           action,
+		payloadFromEvent: budgetPayloadFromEvent,
+		mergePayload:     mergeBudgetPayload,
+		normalize:        normalizeBudgetScenarioPayload,
+		validate:         validateBudgetScenarioPayload,
+		apply:            applyBudgetScenarioPayload,
+	}.asEventActionSpec()
+}
+
+func budgetPayloadFromEvent(event Event) scenarioBudgetEventPayload {
+	return scenarioBudgetEventPayload{
+		ID:                 event.ID,
+		Action:             event.Action,
+		BudgetID:           event.BudgetID,
+		BudgetName:         event.BudgetName,
+		Description:        event.Description,
+		BillingPeriodStart: event.BillingPeriodStart,
+		BillingPeriodEnd:   event.BillingPeriodEnd,
+		CurrencyCode:       event.CurrencyCode,
+		BudgetAmountMicros: event.BudgetAmountMicros,
+		ScopeType:          event.ScopeType,
+		ScopeKey:           event.ScopeKey,
+		ScopeValue:         event.ScopeValue,
+		Status:             event.Status,
+		Thresholds:         append([]BudgetThreshold(nil), event.Thresholds...),
+	}
+}
+
+func mergeBudgetPayload(event Event, payload scenarioBudgetEventPayload) Event {
+	event.BudgetID = payload.BudgetID
+	event.BudgetName = payload.BudgetName
+	event.Description = payload.Description
+	event.BillingPeriodStart = payload.BillingPeriodStart
+	event.BillingPeriodEnd = payload.BillingPeriodEnd
+	event.CurrencyCode = payload.CurrencyCode
+	event.BudgetAmountMicros = payload.BudgetAmountMicros
+	event.ScopeType = payload.ScopeType
+	event.ScopeKey = payload.ScopeKey
+	event.ScopeValue = payload.ScopeValue
+	event.Status = payload.Status
+	event.Thresholds = append([]BudgetThreshold(nil), payload.Thresholds...)
+	return event
+}
+
+func normalizeBudgetScenarioPayload(payload scenarioBudgetEventPayload) scenarioBudgetEventPayload {
+	switch payload.Action {
+	case EventActionCreateBudget:
+		trimScenarioEventStrings(&payload.BudgetID, &payload.BudgetName, &payload.Description, &payload.BillingPeriodStart, &payload.BillingPeriodEnd, &payload.ScopeType, &payload.ScopeKey, &payload.ScopeValue, &payload.Status)
+		trimUpperScenarioEventString(&payload.CurrencyCode)
+		for i := range payload.Thresholds {
+			trimScenarioEventStrings(&payload.Thresholds[i].ID, &payload.Thresholds[i].Type)
+		}
+	case EventActionRefreshBudgetForecasts:
+		trimScenarioEventStrings(&payload.BillingPeriodStart, &payload.BillingPeriodEnd)
+	}
+	return payload
+}
+
+func validateBudgetScenarioPayload(path string, payload scenarioBudgetEventPayload, problems *validationProblems) {
+	switch payload.Action {
+	case EventActionCreateBudget:
+		validateCreateBudgetScenarioPayload(path, payload, problems)
+	case EventActionRefreshBudgetForecasts:
+		validateRefreshBudgetForecastsScenarioPayload(path, payload, problems)
+	default:
+		problems.add("%s.action %q is not a budget action", path, payload.Action)
+	}
+}
+
+func validateBudgetPeriodPayload(path string, payload scenarioBudgetEventPayload, problems *validationProblems) {
+	validateOptionalDate(path+".billing_period_start", payload.BillingPeriodStart, problems)
+	validateOptionalDate(path+".billing_period_end", payload.BillingPeriodEnd, problems)
+	if payload.BillingPeriodStart != "" && payload.BillingPeriodEnd == "" {
+		problems.add("%s.billing_period_end is required when billing_period_start is set", path)
+	}
+	if payload.BillingPeriodEnd != "" && payload.BillingPeriodStart == "" {
+		problems.add("%s.billing_period_start is required when billing_period_end is set", path)
+	}
+}
+
+func validateRefreshBudgetForecastsScenarioPayload(path string, payload scenarioBudgetEventPayload, problems *validationProblems) {
+	validateBudgetPeriodPayload(path, payload, problems)
+}
+
+func validateCreateBudgetScenarioPayload(path string, payload scenarioBudgetEventPayload, problems *validationProblems) {
+	validateBudgetPeriodPayload(path, payload, problems)
+	if payload.BudgetName == "" {
+		problems.add("%s.budget_name is required for create_budget", path)
+	}
+	if payload.BillingPeriodStart == "" || payload.BillingPeriodEnd == "" {
+		problems.add("%s.billing_period_start and %s.billing_period_end are required for create_budget", path, path)
+	}
+	if payload.BudgetAmountMicros <= 0 {
+		problems.add("%s.budget_amount_micros must be greater than zero for create_budget", path)
+	}
+	switch payload.ScopeType {
+	case persistence.BudgetScopeAccount, persistence.BudgetScopeService:
+		if payload.ScopeKey != "" {
+			problems.add("%s.scope_key is only supported for tag and Cost Category budgets", path)
+		}
+	case persistence.BudgetScopeTag, persistence.BudgetScopeCostCategory:
+		if payload.ScopeKey == "" {
+			problems.add("%s.scope_key is required for %s budgets", path, payload.ScopeType)
+		}
+	default:
+		problems.add("%s.scope_type %q is not supported for create_budget", path, payload.ScopeType)
+	}
+	if payload.ScopeValue == "" {
+		problems.add("%s.scope_value is required for create_budget", path)
+	}
+	if len(payload.Thresholds) == 0 {
+		problems.add("%s.thresholds needs at least one threshold for create_budget", path)
+	}
+	seen := map[string]bool{}
+	for i, threshold := range payload.Thresholds {
+		thresholdPath := fmt.Sprintf("%s.thresholds[%d]", path, i)
+		switch threshold.Type {
+		case persistence.BudgetThresholdTypeActual, persistence.BudgetThresholdTypeForecast:
+		default:
+			problems.add("%s.type %q is not supported", thresholdPath, threshold.Type)
+		}
+		if threshold.BasisPoints <= 0 {
+			problems.add("%s.basis_points must be greater than zero", thresholdPath)
+		}
+		if threshold.BasisPoints > 100000 {
+			problems.add("%s.basis_points must be 100000 or fewer", thresholdPath)
+		}
+		key := threshold.Type + ":" + strconv.Itoa(threshold.BasisPoints)
+		if seen[key] {
+			problems.add("%s duplicates threshold %q", thresholdPath, key)
+		}
+		seen[key] = true
 	}
 }
 
@@ -712,16 +821,18 @@ func applyPaymentLifecycleScenarioPayload(ctx context.Context, r Runner, state *
 	return audit, nil
 }
 
-func applyCreateBudgetScenarioEvent(ctx context.Context, r Runner, state *scenarioExecutionState, event Event, _ time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
-	if _, err := r.createBudget(ctx, state, event); err != nil {
-		return failScenarioRunEvent(audit, err)
-	}
-	return audit, nil
-}
-
-func applyRefreshBudgetForecastsScenarioEvent(ctx context.Context, r Runner, _ *scenarioExecutionState, event Event, _ time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
-	if err := r.refreshBudgetForecasts(ctx, event); err != nil {
-		return failScenarioRunEvent(audit, err)
+func applyBudgetScenarioPayload(ctx context.Context, r Runner, state *scenarioExecutionState, payload scenarioBudgetEventPayload, _ time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
+	switch payload.Action {
+	case EventActionCreateBudget:
+		if _, err := r.createBudget(ctx, state, payload); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	case EventActionRefreshBudgetForecasts:
+		if err := r.refreshBudgetForecasts(ctx, payload); err != nil {
+			return failScenarioRunEvent(audit, err)
+		}
+	default:
+		return failScenarioRunEvent(audit, fmt.Errorf("scenario event action %q is not a budget action", payload.Action))
 	}
 	return audit, nil
 }

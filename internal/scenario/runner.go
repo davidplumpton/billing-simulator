@@ -261,22 +261,22 @@ func (r Runner) createSavingsPlan(ctx context.Context, state *scenarioExecutionS
 }
 
 // createBudget prepares a budget lab guardrail and reuses matching rows so scenario reruns stay executable.
-func (r Runner) createBudget(ctx context.Context, state *scenarioExecutionState, event Event) (persistence.Budget, error) {
-	if existing, ok, err := r.existingScenarioBudget(ctx, event); err != nil {
+func (r Runner) createBudget(ctx context.Context, state *scenarioExecutionState, payload scenarioBudgetEventPayload) (persistence.Budget, error) {
+	if existing, ok, err := r.existingScenarioBudget(ctx, payload); err != nil {
 		return persistence.Budget{}, err
 	} else if ok {
 		return existing, nil
 	}
 
-	scopeValue := event.ScopeValue
-	if event.ScopeType == persistence.BudgetScopeAccount {
-		scopeValue = state.resolveAccountID("", event.ScopeValue)
+	scopeValue := payload.ScopeValue
+	if payload.ScopeType == persistence.BudgetScopeAccount {
+		scopeValue = state.resolveAccountID("", payload.ScopeValue)
 	}
-	thresholds := make([]persistence.BudgetThresholdCreateRequest, 0, len(event.Thresholds))
-	for i, threshold := range event.Thresholds {
+	thresholds := make([]persistence.BudgetThresholdCreateRequest, 0, len(payload.Thresholds))
+	for i, threshold := range payload.Thresholds {
 		thresholdID := threshold.ID
 		if thresholdID == "" {
-			thresholdID = stableScenarioID("budt_scn", state.runID, event.ID, threshold.Type, strconv.Itoa(threshold.BasisPoints), strconv.Itoa(i))
+			thresholdID = stableScenarioID("budt_scn", state.runID, payload.ID, threshold.Type, strconv.Itoa(threshold.BasisPoints), strconv.Itoa(i))
 		}
 		thresholds = append(thresholds, persistence.BudgetThresholdCreateRequest{
 			ID:                   thresholdID,
@@ -284,31 +284,31 @@ func (r Runner) createBudget(ctx context.Context, state *scenarioExecutionState,
 			ThresholdBasisPoints: threshold.BasisPoints,
 		})
 	}
-	budgetID := event.BudgetID
+	budgetID := payload.BudgetID
 	if budgetID == "" {
-		budgetID = stableScenarioID("bud_scn", state.runID, event.ID, event.BudgetName)
+		budgetID = stableScenarioID("bud_scn", state.runID, payload.ID, payload.BudgetName)
 	}
 	return r.budgets.CreateBudget(ctx, persistence.BudgetCreateRequest{
 		ID:                 budgetID,
-		Name:               event.BudgetName,
-		Description:        event.Description,
-		BillingPeriodStart: event.BillingPeriodStart,
-		BillingPeriodEnd:   event.BillingPeriodEnd,
-		BudgetAmountMicros: event.BudgetAmountMicros,
-		CurrencyCode:       event.CurrencyCode,
-		ScopeType:          event.ScopeType,
-		ScopeKey:           event.ScopeKey,
+		Name:               payload.BudgetName,
+		Description:        payload.Description,
+		BillingPeriodStart: payload.BillingPeriodStart,
+		BillingPeriodEnd:   payload.BillingPeriodEnd,
+		BudgetAmountMicros: payload.BudgetAmountMicros,
+		CurrencyCode:       payload.CurrencyCode,
+		ScopeType:          payload.ScopeType,
+		ScopeKey:           payload.ScopeKey,
 		ScopeValue:         scopeValue,
-		Status:             event.Status,
+		Status:             payload.Status,
 		Thresholds:         thresholds,
 	})
 }
 
 // refreshBudgetForecasts mirrors the browser refresh action for packaged budget labs.
-func (r Runner) refreshBudgetForecasts(ctx context.Context, event Event) error {
+func (r Runner) refreshBudgetForecasts(ctx context.Context, payload scenarioBudgetEventPayload) error {
 	forecast, err := r.budgets.RefreshForecastSummaries(ctx, persistence.BudgetForecastRefreshRequest{
-		BillingPeriodStart: event.BillingPeriodStart,
-		BillingPeriodEnd:   event.BillingPeriodEnd,
+		BillingPeriodStart: payload.BillingPeriodStart,
+		BillingPeriodEnd:   payload.BillingPeriodEnd,
 	})
 	if err != nil {
 		return err
@@ -354,27 +354,27 @@ func (r Runner) createSavedReport(ctx context.Context, state *scenarioExecutionS
 	return r.reports.Create(ctx, request)
 }
 
-func (r Runner) existingScenarioBudget(ctx context.Context, event Event) (persistence.Budget, bool, error) {
+func (r Runner) existingScenarioBudget(ctx context.Context, payload scenarioBudgetEventPayload) (persistence.Budget, bool, error) {
 	var id string
 	var err error
-	if event.BudgetID != "" {
-		err = r.db.QueryRowContext(ctx, `SELECT id FROM budgets WHERE id = ?`, event.BudgetID).Scan(&id)
+	if payload.BudgetID != "" {
+		err = r.db.QueryRowContext(ctx, `SELECT id FROM budgets WHERE id = ?`, payload.BudgetID).Scan(&id)
 	} else {
 		err = r.db.QueryRowContext(ctx, `SELECT id
 			FROM budgets
 			WHERE billing_period_start = ?
 			  AND billing_period_end = ?
 			  AND lower(name) = lower(?)`,
-			event.BillingPeriodStart,
-			event.BillingPeriodEnd,
-			event.BudgetName,
+			payload.BillingPeriodStart,
+			payload.BillingPeriodEnd,
+			payload.BudgetName,
 		).Scan(&id)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return persistence.Budget{}, false, nil
 	}
 	if err != nil {
-		return persistence.Budget{}, false, fmt.Errorf("check existing scenario budget %q: %w", event.BudgetName, err)
+		return persistence.Budget{}, false, fmt.Errorf("check existing scenario budget %q: %w", payload.BudgetName, err)
 	}
 	budget, err := r.budgets.GetBudget(ctx, id)
 	if err != nil {

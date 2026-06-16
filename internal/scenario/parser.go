@@ -694,57 +694,6 @@ func validateCreatePaymentMethodEvent(path string, event Event, problems *valida
 	}
 }
 
-// validateCreateBudgetEvent checks the budget fields used by forecast and alert labs.
-func validateCreateBudgetEvent(path string, event Event, problems *validationProblems) {
-	if event.BudgetName == "" {
-		problems.add("%s.budget_name is required for create_budget", path)
-	}
-	if event.BillingPeriodStart == "" || event.BillingPeriodEnd == "" {
-		problems.add("%s.billing_period_start and %s.billing_period_end are required for create_budget", path, path)
-	}
-	if event.BudgetAmountMicros <= 0 {
-		problems.add("%s.budget_amount_micros must be greater than zero for create_budget", path)
-	}
-	switch event.ScopeType {
-	case persistence.BudgetScopeAccount, persistence.BudgetScopeService:
-		if event.ScopeKey != "" {
-			problems.add("%s.scope_key is only supported for tag and Cost Category budgets", path)
-		}
-	case persistence.BudgetScopeTag, persistence.BudgetScopeCostCategory:
-		if event.ScopeKey == "" {
-			problems.add("%s.scope_key is required for %s budgets", path, event.ScopeType)
-		}
-	default:
-		problems.add("%s.scope_type %q is not supported for create_budget", path, event.ScopeType)
-	}
-	if event.ScopeValue == "" {
-		problems.add("%s.scope_value is required for create_budget", path)
-	}
-	if len(event.Thresholds) == 0 {
-		problems.add("%s.thresholds needs at least one threshold for create_budget", path)
-	}
-	seen := map[string]bool{}
-	for i, threshold := range event.Thresholds {
-		thresholdPath := fmt.Sprintf("%s.thresholds[%d]", path, i)
-		switch threshold.Type {
-		case persistence.BudgetThresholdTypeActual, persistence.BudgetThresholdTypeForecast:
-		default:
-			problems.add("%s.type %q is not supported", thresholdPath, threshold.Type)
-		}
-		if threshold.BasisPoints <= 0 {
-			problems.add("%s.basis_points must be greater than zero", thresholdPath)
-		}
-		if threshold.BasisPoints > 100000 {
-			problems.add("%s.basis_points must be 100000 or fewer", thresholdPath)
-		}
-		key := threshold.Type + ":" + strconv.Itoa(threshold.BasisPoints)
-		if seen[key] {
-			problems.add("%s duplicates threshold %q", thresholdPath, key)
-		}
-		seen[key] = true
-	}
-}
-
 // validateCreateSavingsPlanEvent checks the simplified Compute Savings Plan fields used by commitment labs.
 func validateCreateSavingsPlanEvent(path string, event Event, problems *validationProblems) {
 	if event.PayerAccount == "" && event.PayerAccountID == "" {

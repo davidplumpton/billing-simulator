@@ -552,6 +552,30 @@ func TestParseDefinitionValidatesBudgetAndReportEvents(t *testing.T) {
 	assertErrorContains(t, err, `events[2].owner_account "Ghost Account" is not in organization_template "anycompany-retail"`)
 }
 
+func TestParseDefinitionValidatesBudgetRefreshEvent(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken budget refresh fixture",
+		"clock": {
+			"start": "2026-02-01"
+		},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "bad-refresh",
+				"day": 1,
+				"action": "refresh_budget_forecasts",
+				"billing_period_start": "2026-02-01"
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want budget refresh validation errors")
+	}
+	assertErrorContains(t, err, "events[0].billing_period_end is required when billing_period_start is set")
+}
+
 func TestParseDefinitionReportsActionableScenarioErrors(t *testing.T) {
 	raw := []byte(`{
 		"name": "Broken authoring fixture",

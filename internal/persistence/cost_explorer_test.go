@@ -3,7 +3,9 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -813,6 +815,47 @@ func TestCostExplorerRepositoryRefreshesSummaryTablesAfterBillingChanges(t *test
 		)
 	}
 
+	coverageRows, err := tagRepo.ListCoverage(ctx, CostAllocationTagCoverageRequest{
+		BillingPeriodStart: "2026-02-01",
+		BillingPeriodEnd:   "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("ListCoverage() error = %v", err)
+	}
+	coverageByDimension := costAllocationCoverageByDimension(coverageRows)
+	for _, ref := range []struct {
+		name           string
+		key            string
+		dimension      string
+		dimensionValue string
+	}{
+		{
+			name:           "owner key",
+			key:            "owner",
+			dimension:      CostAllocationCoverageDimensionKey,
+			dimensionValue: "owner",
+		},
+		{
+			name:           "owner account",
+			key:            "owner",
+			dimension:      CostAllocationCoverageDimensionAccount,
+			dimensionValue: "444455556666",
+		},
+		{
+			name:           "owner service",
+			key:            "owner",
+			dimension:      CostAllocationCoverageDimensionService,
+			dimensionValue: serviceAmazonS3,
+		},
+	} {
+		expected, ok := coverageByDimension[ref.dimension+"|"+ref.key+"|"+ref.dimensionValue]
+		if !ok {
+			t.Fatalf("ListCoverage rows missing %s entry", ref.name)
+		}
+		summaryRow := tagCoverageSummaryRow(t, ctx, db, "2026-02-01", "2026-03-01", ref.key, ref.dimension, ref.dimensionValue)
+		assertCostAllocationCoverageRowsEqual(t, ref.name, summaryRow, expected)
+	}
+
 	categoryRepo := NewCostCategoryRepository(db)
 	product, err := categoryRepo.CreateCategory(ctx, CostCategoryCreateRequest{
 		Name:         "Product",
@@ -864,6 +907,95 @@ func TestCostExplorerRepositoryRefreshesSummaryTablesAfterBillingChanges(t *test
 	if storefrontLineItems != 2 || storefrontCostMicros != 90_700 || paymentsLineItems != 1 || paymentsCostMicros != 41_600 {
 		t.Fatalf("cost category summary = Storefront %d/%d Payments %d/%d, want category assignment rollups", storefrontLineItems, storefrontCostMicros, paymentsLineItems, paymentsCostMicros)
 	}
+}
+
+func tagCoverageSummaryRow(t *testing.T, ctx context.Context, db *sql.DB, periodStart, periodEnd, key, dimension, dimensionValue string) CostAllocationTagCoverageRow {
+	t.Helper()
+
+	var row CostAllocationTagCoverageRow
+	var costExplorerVisibleAt sql.NullString
+	var caseMismatchKeysJSON string
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT
+			tag_key,
+			dimension,
+			dimension_value,
+			dimension_label,
+			activation_status,
+			cost_explorer_visible_at,
+			currency_code,
+			line_item_count,
+			resource_count,
+			tagged_line_item_count,
+			tagged_resource_count,
+			untagged_line_item_count,
+			untagged_resource_count,
+			case_mismatch_line_item_count,
+			case_mismatch_resource_count,
+			total_cost_micros,
+			tagged_cost_micros,
+			untagged_cost_micros,
+			case_mismatch_cost_micros,
+			case_mismatch_keys_json
+		 FROM tag_coverage_summary
+		 WHERE billing_period_start = ?
+		   AND billing_period_end = ?
+		   AND tag_key = ?
+		   AND dimension = ?
+		   AND dimension_value = ?`,
+		periodStart,
+		periodEnd,
+		key,
+		dimension,
+		dimensionValue,
+	).Scan(
+		&row.Key,
+		&row.Dimension,
+		&row.DimensionValue,
+		&row.DimensionLabel,
+		&row.ActivationStatus,
+		&costExplorerVisibleAt,
+		&row.CurrencyCode,
+		&row.LineItemCount,
+		&row.ResourceCount,
+		&row.TaggedLineItemCount,
+		&row.TaggedResourceCount,
+		&row.UntaggedLineItemCount,
+		&row.UntaggedResourceCount,
+		&row.CaseMismatchLineItemCount,
+		&row.CaseMismatchResourceCount,
+		&row.TotalCostMicros,
+		&row.TaggedCostMicros,
+		&row.UntaggedCostMicros,
+		&row.CaseMismatchCostMicros,
+		&caseMismatchKeysJSON,
+	); err != nil {
+		t.Fatalf("read tag coverage summary row for %s/%s/%s: %v", key, dimension, dimensionValue, err)
+	}
+	row.CostExplorerVisibleAt = nullStringValue(costExplorerVisibleAt)
+	if err := json.Unmarshal([]byte(caseMismatchKeysJSON), &row.CaseMismatchKeys); err != nil {
+		t.Fatalf("decode tag coverage summary case keys for %s/%s/%s: %v", key, dimension, dimensionValue, err)
+	}
+	row.CaseMismatchKeys = normalizeCoverageCaseMismatchKeys(row.CaseMismatchKeys)
+	return row
+}
+
+func assertCostAllocationCoverageRowsEqual(t *testing.T, name string, got, want CostAllocationTagCoverageRow) {
+	t.Helper()
+
+	want.CaseMismatchKeys = normalizeCoverageCaseMismatchKeys(want.CaseMismatchKeys)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s summary row = %+v, want ListCoverage row %+v", name, got, want)
+	}
+}
+
+func normalizeCoverageCaseMismatchKeys(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	normalized := append([]string(nil), keys...)
+	return normalized
 }
 
 func TestCostExplorerRepositoryValidatesQueries(t *testing.T) {

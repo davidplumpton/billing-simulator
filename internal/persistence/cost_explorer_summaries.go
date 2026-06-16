@@ -230,7 +230,7 @@ func refreshTagCoverageSummaryInTx(ctx context.Context, store costExplorerSummar
 	if err != nil {
 		return 0, err
 	}
-	rows := costExplorerSummaryCoverageRows(keys, items)
+	rows := buildCostAllocationTagCoverageRows(keys, items)
 	for _, row := range rows {
 		caseMismatchKeys := row.CaseMismatchKeys
 		if caseMismatchKeys == nil {
@@ -462,49 +462,6 @@ func listCostExplorerSummaryCoverageLineItems(ctx context.Context, store costExp
 		return nil, fmt.Errorf("iterate Cost Explorer summary coverage line items: %w", err)
 	}
 	return items, nil
-}
-
-func costExplorerSummaryCoverageRows(keys []CostAllocationTagKey, items []costAllocationCoverageLineItem) []CostAllocationTagCoverageRow {
-	accumulators := map[string]*costAllocationCoverageAccumulator{}
-	ensureAccumulator := func(key CostAllocationTagKey, dimension, dimensionValue, dimensionLabel string) *costAllocationCoverageAccumulator {
-		accumulatorKey := costAllocationCoverageAccumulatorKey(key.Key, dimension, dimensionValue)
-		accumulator := accumulators[accumulatorKey]
-		if accumulator == nil {
-			accumulator = newCostAllocationCoverageAccumulator(CostAllocationTagCoverageRow{
-				Key:                   key.Key,
-				Dimension:             dimension,
-				DimensionValue:        dimensionValue,
-				DimensionLabel:        dimensionLabel,
-				ActivationStatus:      key.ActivationStatus,
-				CostExplorerVisibleAt: key.CostExplorerVisibleAt,
-			})
-			accumulators[accumulatorKey] = accumulator
-		}
-		return accumulator
-	}
-
-	for _, key := range keys {
-		ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend")
-	}
-	for _, key := range keys {
-		for _, item := range items {
-			exactMatch, caseMismatchKeys := costAllocationTagCoverageMatch(key.Key, item.TagSnapshot)
-			ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend").add(item, exactMatch, caseMismatchKeys)
-			ensureAccumulator(key, CostAllocationCoverageDimensionAccount, item.UsageAccountID, item.UsageAccountID).add(item, exactMatch, caseMismatchKeys)
-			serviceLabel := item.ServiceName
-			if serviceLabel == "" {
-				serviceLabel = item.ServiceCode
-			}
-			ensureAccumulator(key, CostAllocationCoverageDimensionService, item.ServiceCode, serviceLabel).add(item, exactMatch, caseMismatchKeys)
-		}
-	}
-
-	rows := make([]CostAllocationTagCoverageRow, 0, len(accumulators))
-	for _, accumulator := range accumulators {
-		rows = append(rows, accumulator.rowValue())
-	}
-	sortCostAllocationCoverageRows(rows)
-	return rows
 }
 
 func costExplorerSummaryPeriodRefsForLineItems(items []BillLineItem) []costExplorerSummaryPeriodRef {

@@ -415,46 +415,7 @@ func (r CostAllocationTagRepository) ListCoverage(ctx context.Context, request C
 		return nil, err
 	}
 
-	accumulators := map[string]*costAllocationCoverageAccumulator{}
-	ensureAccumulator := func(key CostAllocationTagKey, dimension, dimensionValue, dimensionLabel string) *costAllocationCoverageAccumulator {
-		accumulatorKey := costAllocationCoverageAccumulatorKey(key.Key, dimension, dimensionValue)
-		accumulator := accumulators[accumulatorKey]
-		if accumulator == nil {
-			accumulator = newCostAllocationCoverageAccumulator(CostAllocationTagCoverageRow{
-				Key:                   key.Key,
-				Dimension:             dimension,
-				DimensionValue:        dimensionValue,
-				DimensionLabel:        dimensionLabel,
-				ActivationStatus:      key.ActivationStatus,
-				CostExplorerVisibleAt: key.CostExplorerVisibleAt,
-			})
-			accumulators[accumulatorKey] = accumulator
-		}
-		return accumulator
-	}
-
-	for _, key := range keys {
-		ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend")
-	}
-	for _, key := range keys {
-		for _, item := range items {
-			exactMatch, caseMismatchKeys := costAllocationTagCoverageMatch(key.Key, item.TagSnapshot)
-			ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend").add(item, exactMatch, caseMismatchKeys)
-			ensureAccumulator(key, CostAllocationCoverageDimensionAccount, item.UsageAccountID, item.UsageAccountID).add(item, exactMatch, caseMismatchKeys)
-			serviceLabel := item.ServiceName
-			if serviceLabel == "" {
-				serviceLabel = item.ServiceCode
-			}
-			ensureAccumulator(key, CostAllocationCoverageDimensionService, item.ServiceCode, serviceLabel).add(item, exactMatch, caseMismatchKeys)
-		}
-	}
-
-	rows := make([]CostAllocationTagCoverageRow, 0, len(accumulators))
-	for _, accumulator := range accumulators {
-		rows = append(rows, accumulator.rowValue())
-	}
-	sortCostAllocationCoverageRows(rows)
-	return rows, nil
+	return buildCostAllocationTagCoverageRows(keys, items), nil
 }
 
 // ListActivationEvents returns activation lifecycle events for one tag key, newest first.
@@ -503,6 +464,50 @@ func (r CostAllocationTagRepository) ListActivationEvents(ctx context.Context, k
 		return nil, fmt.Errorf("iterate cost allocation tag activation events for %q: %w", key, err)
 	}
 	return events, nil
+}
+
+// buildCostAllocationTagCoverageRows applies shared tag coverage aggregation for repository reads and summary refreshes.
+func buildCostAllocationTagCoverageRows(keys []CostAllocationTagKey, items []costAllocationCoverageLineItem) []CostAllocationTagCoverageRow {
+	accumulators := map[string]*costAllocationCoverageAccumulator{}
+	ensureAccumulator := func(key CostAllocationTagKey, dimension, dimensionValue, dimensionLabel string) *costAllocationCoverageAccumulator {
+		accumulatorKey := costAllocationCoverageAccumulatorKey(key.Key, dimension, dimensionValue)
+		accumulator := accumulators[accumulatorKey]
+		if accumulator == nil {
+			accumulator = newCostAllocationCoverageAccumulator(CostAllocationTagCoverageRow{
+				Key:                   key.Key,
+				Dimension:             dimension,
+				DimensionValue:        dimensionValue,
+				DimensionLabel:        dimensionLabel,
+				ActivationStatus:      key.ActivationStatus,
+				CostExplorerVisibleAt: key.CostExplorerVisibleAt,
+			})
+			accumulators[accumulatorKey] = accumulator
+		}
+		return accumulator
+	}
+
+	for _, key := range keys {
+		ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend")
+	}
+	for _, key := range keys {
+		for _, item := range items {
+			exactMatch, caseMismatchKeys := costAllocationTagCoverageMatch(key.Key, item.TagSnapshot)
+			ensureAccumulator(key, CostAllocationCoverageDimensionKey, key.Key, "All billed spend").add(item, exactMatch, caseMismatchKeys)
+			ensureAccumulator(key, CostAllocationCoverageDimensionAccount, item.UsageAccountID, item.UsageAccountID).add(item, exactMatch, caseMismatchKeys)
+			serviceLabel := item.ServiceName
+			if serviceLabel == "" {
+				serviceLabel = item.ServiceCode
+			}
+			ensureAccumulator(key, CostAllocationCoverageDimensionService, item.ServiceCode, serviceLabel).add(item, exactMatch, caseMismatchKeys)
+		}
+	}
+
+	rows := make([]CostAllocationTagCoverageRow, 0, len(accumulators))
+	for _, accumulator := range accumulators {
+		rows = append(rows, accumulator.rowValue())
+	}
+	sortCostAllocationCoverageRows(rows)
+	return rows
 }
 
 func (r CostAllocationTagRepository) transitionTag(ctx context.Context, request CostAllocationTagActivationRequest, action string) (CostAllocationTagKey, error) {

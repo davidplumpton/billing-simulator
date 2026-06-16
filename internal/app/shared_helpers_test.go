@@ -130,6 +130,18 @@ func TestDecimalFormParsersRejectNonFiniteAndKeepFiniteValidation(t *testing.T) 
 			overflowErr: "payment amount is too large",
 			finiteErr:   "payment amount must be finite",
 		},
+		{
+			name: "savings plan hourly commitment",
+			parse: func(value string) (int64, error) {
+				return parseSavingsPlanPositiveUSDMicros(value, "hourly commitment")
+			},
+			validInput:  "$0.10",
+			validWant:   100_000,
+			negativeErr: "hourly commitment must be greater than zero",
+			overflow:    "9223372036855",
+			overflowErr: "hourly commitment is too large",
+			finiteErr:   "hourly commitment must be finite",
+		},
 	}
 
 	for _, parser := range parsers {
@@ -168,6 +180,50 @@ func TestDecimalFormParsersRejectNonFiniteAndKeepFiniteValidation(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+func TestSavingsPlanOptionalUSDParserAllowsBlankAndZeroOnly(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		input   string
+		want    int64
+		wantErr string
+	}{
+		{name: "blank", input: "  ", want: 0},
+		{name: "zero", input: "0", want: 0},
+		{name: "currency", input: "$1.234567", want: 1_234_567},
+		{name: "negative", input: "-0.01", wantErr: "upfront fee cannot be negative"},
+		{name: "nan", input: "NaN", wantErr: "upfront fee must be finite"},
+		{name: "positive infinity", input: "+Inf", wantErr: "upfront fee must be finite"},
+		{name: "negative infinity", input: "-Inf", wantErr: "upfront fee must be finite"},
+		{name: "overflow", input: "9223372036855", wantErr: "upfront fee is too large"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseSavingsPlanOptionalUSDMicros(tc.input, "upfront fee")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("parseSavingsPlanOptionalUSDMicros(%q) error = %v, want %q", tc.input, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSavingsPlanOptionalUSDMicros(%q) error = %v, want nil", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseSavingsPlanOptionalUSDMicros(%q) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+
+	_, err := parseSavingsPlanPositiveUSDMicros("0", "hourly commitment")
+	if err == nil || !strings.Contains(err.Error(), "hourly commitment must be greater than zero") {
+		t.Fatalf("parseSavingsPlanPositiveUSDMicros zero error = %v, want greater-than-zero validation", err)
 	}
 }
 

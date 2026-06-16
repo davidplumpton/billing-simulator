@@ -272,25 +272,14 @@ func parseSavingsPlanPositiveUSDMicros(value, label string) (int64, error) {
 }
 
 func parseSavingsPlanOptionalUSDMicros(value, label string) (int64, error) {
-	value = normalizeSavingsPlanUSD(value)
-	if value == "" {
-		return 0, nil
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be numeric: %w", label, err)
-	}
-	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
-		return 0, fmt.Errorf("%s must be finite", label)
-	}
-	if parsed < 0 {
-		return 0, fmt.Errorf("%s cannot be negative", label)
-	}
-	scaled := math.Round(parsed * 1_000_000)
-	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled > float64(math.MaxInt64) {
-		return 0, fmt.Errorf("%s is too large", label)
-	}
-	return int64(scaled), nil
+	return parseOptionalNonNegativeDecimalScaled(normalizeSavingsPlanUSD(value), optionalNonNegativeDecimalScaleOptions{
+		NumericMessage:  label + " must be numeric",
+		FiniteMessage:   label + " must be finite",
+		NegativeMessage: label + " cannot be negative",
+		TooLargeMessage: label + " is too large",
+		Scale:           1_000_000,
+		MaxScaled:       float64(math.MaxInt64),
+	})
 }
 
 func normalizeSavingsPlanUSD(value string) string {

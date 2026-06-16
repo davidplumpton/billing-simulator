@@ -18,6 +18,60 @@ type scenarioEventActionSpec struct {
 	apply             func(context.Context, Runner, *scenarioExecutionState, Event, time.Time, ScenarioRunEvent) (ScenarioRunEvent, error)
 }
 
+type scenarioEventPayloadActionSpec[T any] struct {
+	action            EventAction
+	payloadFromEvent  func(Event) T
+	mergePayload      func(Event, T) Event
+	normalize         func(T) T
+	validate          func(string, T, *validationProblems)
+	validateSemantics func(string, string, T, map[string]string, *validationProblems)
+	preflight         func(context.Context, Runner, *scenarioExecutionState, *scenarioEventPreflight, T, time.Time) (scenarioClosedPeriodConflict, bool, error)
+	apply             func(context.Context, Runner, *scenarioExecutionState, T, time.Time, ScenarioRunEvent) (ScenarioRunEvent, error)
+}
+
+// asEventActionSpec adapts an action-local payload contract to the parser's public Event surface.
+func (payloadSpec scenarioEventPayloadActionSpec[T]) asEventActionSpec() scenarioEventActionSpec {
+	if payloadSpec.payloadFromEvent == nil {
+		panic("scenario event payload spec requires payloadFromEvent")
+	}
+	spec := scenarioEventActionSpec{
+		action: payloadSpec.action,
+	}
+	if payloadSpec.normalize != nil || payloadSpec.mergePayload != nil {
+		spec.normalize = func(event Event) Event {
+			payload := payloadSpec.payloadFromEvent(event)
+			if payloadSpec.normalize != nil {
+				payload = payloadSpec.normalize(payload)
+			}
+			if payloadSpec.mergePayload == nil {
+				return event
+			}
+			return payloadSpec.mergePayload(event, payload)
+		}
+	}
+	if payloadSpec.validate != nil {
+		spec.validate = func(path string, event Event, problems *validationProblems) {
+			payloadSpec.validate(path, payloadSpec.payloadFromEvent(event), problems)
+		}
+	}
+	if payloadSpec.validateSemantics != nil {
+		spec.validateSemantics = func(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
+			payloadSpec.validateSemantics(path, organizationTemplate, payloadSpec.payloadFromEvent(event), createdAccounts, problems)
+		}
+	}
+	if payloadSpec.preflight != nil {
+		spec.preflight = func(ctx context.Context, r Runner, state *scenarioExecutionState, preflight *scenarioEventPreflight, event Event, scheduledAt time.Time) (scenarioClosedPeriodConflict, bool, error) {
+			return payloadSpec.preflight(ctx, r, state, preflight, payloadSpec.payloadFromEvent(event), scheduledAt)
+		}
+	}
+	if payloadSpec.apply != nil {
+		spec.apply = func(ctx context.Context, r Runner, state *scenarioExecutionState, event Event, scheduledAt time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
+			return payloadSpec.apply(ctx, r, state, payloadSpec.payloadFromEvent(event), scheduledAt, audit)
+		}
+	}
+	return spec
+}
+
 // scenarioEventActionSpecFor returns the action-local behavior for a parsed scenario event.
 func scenarioEventActionSpecFor(action EventAction) (scenarioEventActionSpec, bool) {
 	spec, ok := scenarioEventActionSpecsByAction[action]
@@ -125,42 +179,12 @@ func newScenarioEventActionSpecsByAction() map[EventAction]scenarioEventActionSp
 			validateSemantics: validatePaymentMethodScenarioEventSemantics,
 			apply:             applyCreatePaymentMethodScenarioEvent,
 		},
-		{
-			action:    EventActionSchedulePayment,
-			normalize: normalizePaymentLifecycleScenarioEvent,
-			validate:  validatePaymentLifecycleEvent,
-			apply:     applyPaymentLifecycleScenarioEvent,
-		},
-		{
-			action:    EventActionProcessPayment,
-			normalize: normalizePaymentLifecycleScenarioEvent,
-			validate:  validatePaymentLifecycleEvent,
-			apply:     applyPaymentLifecycleScenarioEvent,
-		},
-		{
-			action:    EventActionFailPayment,
-			normalize: normalizePaymentLifecycleScenarioEvent,
-			validate:  validatePaymentLifecycleEvent,
-			apply:     applyPaymentLifecycleScenarioEvent,
-		},
-		{
-			action:    EventActionMarkPaymentDue,
-			normalize: normalizePaymentLifecycleScenarioEvent,
-			validate:  validatePaymentLifecycleEvent,
-			apply:     applyPaymentLifecycleScenarioEvent,
-		},
-		{
-			action:    EventActionMarkPaymentPastDue,
-			normalize: normalizePaymentLifecycleScenarioEvent,
-			validate:  validatePaymentLifecycleEvent,
-			apply:     applyPaymentLifecycleScenarioEvent,
-		},
-		{
-			action:    EventActionCollectPayment,
-			normalize: normalizePaymentLifecycleScenarioEvent,
-			validate:  validatePaymentLifecycleEvent,
-			apply:     applyPaymentLifecycleScenarioEvent,
-		},
+		newPaymentLifecycleScenarioEventActionSpec(EventActionSchedulePayment),
+		newPaymentLifecycleScenarioEventActionSpec(EventActionProcessPayment),
+		newPaymentLifecycleScenarioEventActionSpec(EventActionFailPayment),
+		newPaymentLifecycleScenarioEventActionSpec(EventActionMarkPaymentDue),
+		newPaymentLifecycleScenarioEventActionSpec(EventActionMarkPaymentPastDue),
+		newPaymentLifecycleScenarioEventActionSpec(EventActionCollectPayment),
 		{
 			action:    EventActionCreateBudget,
 			normalize: normalizeCreateBudgetScenarioEvent,
@@ -314,9 +338,45 @@ func normalizeCreatePaymentMethodScenarioEvent(event Event) Event {
 	return event
 }
 
-func normalizePaymentLifecycleScenarioEvent(event Event) Event {
-	trimScenarioEventStrings(&event.InvoiceObligationID, &event.Reason)
+type scenarioPaymentLifecycleEventPayload struct {
+	ID                  string
+	Action              EventAction
+	InvoiceObligationID string
+	Reason              string
+	AmountMicros        int64
+}
+
+func newPaymentLifecycleScenarioEventActionSpec(action EventAction) scenarioEventActionSpec {
+	return scenarioEventPayloadActionSpec[scenarioPaymentLifecycleEventPayload]{
+		action:           action,
+		payloadFromEvent: paymentLifecyclePayloadFromEvent,
+		mergePayload:     mergePaymentLifecyclePayload,
+		normalize:        normalizePaymentLifecycleScenarioPayload,
+		validate:         validatePaymentLifecyclePayload,
+		apply:            applyPaymentLifecycleScenarioPayload,
+	}.asEventActionSpec()
+}
+
+func paymentLifecyclePayloadFromEvent(event Event) scenarioPaymentLifecycleEventPayload {
+	return scenarioPaymentLifecycleEventPayload{
+		ID:                  event.ID,
+		Action:              event.Action,
+		InvoiceObligationID: event.InvoiceObligationID,
+		Reason:              event.Reason,
+		AmountMicros:        event.AmountMicros,
+	}
+}
+
+func mergePaymentLifecyclePayload(event Event, payload scenarioPaymentLifecycleEventPayload) Event {
+	event.InvoiceObligationID = payload.InvoiceObligationID
+	event.Reason = payload.Reason
+	event.AmountMicros = payload.AmountMicros
 	return event
+}
+
+func normalizePaymentLifecycleScenarioPayload(payload scenarioPaymentLifecycleEventPayload) scenarioPaymentLifecycleEventPayload {
+	trimScenarioEventStrings(&payload.InvoiceObligationID, &payload.Reason)
+	return payload
 }
 
 func normalizeCreateBudgetScenarioEvent(event Event) Event {
@@ -444,6 +504,15 @@ func validatePayerScenarioEventSemantics(path, organizationTemplate string, even
 
 func validatePaymentMethodScenarioEventSemantics(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
 	validateScenarioAccountReference(path+".payer_account", organizationTemplate, event.PayerAccountID, event.PayerAccount, createdAccounts, problems)
+}
+
+func validatePaymentLifecyclePayload(path string, payload scenarioPaymentLifecycleEventPayload, problems *validationProblems) {
+	if payload.AmountMicros < 0 {
+		problems.add("%s.amount_micros must be zero or greater", path)
+	}
+	if payload.Action == EventActionCollectPayment && payload.AmountMicros <= 0 {
+		problems.add("%s.amount_micros must be greater than zero for collect_payment", path)
+	}
 }
 
 func validateCreateSavedReportScenarioEventSemantics(path, organizationTemplate string, event Event, createdAccounts map[string]string, problems *validationProblems) {
@@ -636,8 +705,8 @@ func applyCreatePaymentMethodScenarioEvent(ctx context.Context, r Runner, state 
 	return audit, nil
 }
 
-func applyPaymentLifecycleScenarioEvent(ctx context.Context, r Runner, state *scenarioExecutionState, event Event, scheduledAt time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
-	if _, err := r.applyPaymentLifecycleEvent(ctx, state, event, scheduledAt); err != nil {
+func applyPaymentLifecycleScenarioPayload(ctx context.Context, r Runner, state *scenarioExecutionState, payload scenarioPaymentLifecycleEventPayload, scheduledAt time.Time, audit ScenarioRunEvent) (ScenarioRunEvent, error) {
+	if _, err := r.applyPaymentLifecycleEvent(ctx, state, payload, scheduledAt); err != nil {
 		return failScenarioRunEvent(audit, err)
 	}
 	return audit, nil

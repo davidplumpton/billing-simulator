@@ -470,18 +470,18 @@ func (r Runner) createPaymentMethod(ctx context.Context, state *scenarioExecutio
 }
 
 // applyPaymentLifecycleEvent moves the current scenario invoice through the same state machine as the UI.
-func (r Runner) applyPaymentLifecycleEvent(ctx context.Context, state *scenarioExecutionState, event Event, scheduledAt time.Time) (persistence.PaymentLifecycleResult, error) {
-	obligationID := chooseFirst(event.InvoiceObligationID, state.lastInvoiceObligationID)
+func (r Runner) applyPaymentLifecycleEvent(ctx context.Context, state *scenarioExecutionState, payload scenarioPaymentLifecycleEventPayload, scheduledAt time.Time) (persistence.PaymentLifecycleResult, error) {
+	obligationID := chooseFirst(payload.InvoiceObligationID, state.lastInvoiceObligationID)
 	if obligationID == "" {
-		return persistence.PaymentLifecycleResult{}, fmt.Errorf("scenario payment event %q requires invoice_obligation_id or a prior close_billing_period event", event.ID)
+		return persistence.PaymentLifecycleResult{}, fmt.Errorf("scenario payment event %q requires invoice_obligation_id or a prior close_billing_period event", payload.ID)
 	}
 	request := persistence.PaymentLifecycleTransitionRequest{
 		InvoiceObligationID: obligationID,
-		AmountMicros:        event.AmountMicros,
-		Reason:              event.Reason,
+		AmountMicros:        payload.AmountMicros,
+		Reason:              payload.Reason,
 		OccurredAt:          scheduledAt.UTC().Format(time.RFC3339),
 	}
-	switch event.Action {
+	switch payload.Action {
 	case EventActionSchedulePayment:
 		return r.payments.SchedulePayment(ctx, request)
 	case EventActionProcessPayment:
@@ -495,7 +495,7 @@ func (r Runner) applyPaymentLifecycleEvent(ctx context.Context, state *scenarioE
 	case EventActionCollectPayment:
 		return r.payments.ApplyPayment(ctx, request)
 	default:
-		return persistence.PaymentLifecycleResult{}, fmt.Errorf("scenario event action %q is not a payment lifecycle action", event.Action)
+		return persistence.PaymentLifecycleResult{}, fmt.Errorf("scenario event action %q is not a payment lifecycle action", payload.Action)
 	}
 }
 

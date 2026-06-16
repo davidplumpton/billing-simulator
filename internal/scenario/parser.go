@@ -694,16 +694,6 @@ func validateCreatePaymentMethodEvent(path string, event Event, problems *valida
 	}
 }
 
-// validatePaymentLifecycleEvent keeps payment transition fixtures explicit about collected amounts.
-func validatePaymentLifecycleEvent(path string, event Event, problems *validationProblems) {
-	if event.AmountMicros < 0 {
-		problems.add("%s.amount_micros must be zero or greater", path)
-	}
-	if event.Action == EventActionCollectPayment && event.AmountMicros <= 0 {
-		problems.add("%s.amount_micros must be greater than zero for collect_payment", path)
-	}
-}
-
 // validateCreateBudgetEvent checks the budget fields used by forecast and alert labs.
 func validateCreateBudgetEvent(path string, event Event, problems *validationProblems) {
 	if event.BudgetName == "" {

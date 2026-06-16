@@ -446,6 +446,36 @@ func TestParseDefinitionValidatesCostCategoryEvents(t *testing.T) {
 	assertErrorContains(t, err, "events[2].targets fixed_share_micros sum to 900000, want 1000000")
 }
 
+func TestParseDefinitionValidatesPaymentLifecycleEvents(t *testing.T) {
+	raw := []byte(`{
+		"name": "Broken payment lifecycle fixture",
+		"clock": {
+			"start": "2026-03-01"
+		},
+		"organization_template": "anycompany-retail",
+		"events": [
+			{
+				"id": "bad-failure-amount",
+				"day": 1,
+				"action": "fail_payment",
+				"amount_micros": -1
+			},
+			{
+				"id": "missing-collect-amount",
+				"day": 2,
+				"action": "collect_payment"
+			}
+		]
+	}`)
+
+	_, err := ParseDefinitionBytes(raw)
+	if err == nil {
+		t.Fatal("ParseDefinitionBytes succeeded, want payment lifecycle validation errors")
+	}
+	assertErrorContains(t, err, "events[0].amount_micros must be zero or greater")
+	assertErrorContains(t, err, "events[1].amount_micros must be greater than zero for collect_payment")
+}
+
 func TestParseDefinitionValidatesBudgetAndReportEvents(t *testing.T) {
 	raw := []byte(`{
 		"name": "Broken budget fixture",

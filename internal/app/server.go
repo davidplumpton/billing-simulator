@@ -172,12 +172,8 @@ var directWorkspaceUnavailableTemplate = newPageTemplate("direct-workspace-unava
 	<p>The direct handler surface is for focused tests and does not own workspace lifecycle state.</p>
 </section>`)
 
-// handleHealthCheck serves the local readiness probe for safe read methods only.
+// handleHealthCheck serves the local readiness probe after route-level method enforcement.
 func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintln(w, "ok")
 }

@@ -69,11 +69,6 @@ func renderPageFragment(w http.ResponseWriter, status int, content *template.Tem
 
 // serveAppStylesheet serves the embedded no-build stylesheet shared by all pages.
 func serveAppStylesheet(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
-
 	stylesheet, err := appAssets.ReadFile("assets/app.css")
 	if err != nil {
 		http.Error(w, "read stylesheet: "+err.Error(), http.StatusInternalServerError)
@@ -88,11 +83,6 @@ func serveAppStylesheet(w http.ResponseWriter, r *http.Request) {
 
 // serveAppScript serves the embedded vanilla progressive-enhancement script.
 func serveAppScript(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
-
 	script, err := appAssets.ReadFile("assets/app.js")
 	if err != nil {
 		http.Error(w, "read script: "+err.Error(), http.StatusInternalServerError)

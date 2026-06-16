@@ -100,6 +100,42 @@ func TestMethodNotAllowedResponsesIncludeAllowHeader(t *testing.T) {
 	}
 }
 
+func TestAppRouteMethodGuardRejectsBeforeHandler(t *testing.T) {
+	t.Parallel()
+
+	route := appRouteDefinition{
+		pattern: "/guarded-action",
+		allowed: []string{http.MethodPost},
+	}
+	called := false
+	guarded := route.methodGuard(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	guarded(recorder, httptest.NewRequest(http.MethodGet, "/guarded-action", nil))
+	resp := recorder.Result()
+	body := readResponseBody(t, resp)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("disallowed method status = %d, want %d; body=%s", resp.StatusCode, http.StatusMethodNotAllowed, body)
+	}
+	if allow := resp.Header.Get("Allow"); allow != "POST" {
+		t.Fatalf("Allow = %q, want POST", allow)
+	}
+	if body != "method not allowed\n" {
+		t.Fatalf("body = %q, want method not allowed line", body)
+	}
+	if called {
+		t.Fatal("handler was called for disallowed method")
+	}
+
+	guarded(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/guarded-action", nil))
+	if !called {
+		t.Fatal("handler was not called for allowed method")
+	}
+}
+
 func TestSharedAppRoutesRegisteredAcrossMuxSurfaces(t *testing.T) {
 	t.Parallel()
 

@@ -75,19 +75,11 @@ func newAnomalyHandler(db *sql.DB) anomalyHandler {
 
 // handleAnomalies renders persisted cost anomaly alerts for the selected comparison.
 func (h anomalyHandler) handleAnomalies(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderAnomalies(w, r, http.StatusOK, anomalyFormView{}, "", flashFromQuery(r))
 }
 
 // handleRefreshAnomalies recomputes cost anomaly alerts after an explicit learner action.
 func (h anomalyHandler) handleRefreshAnomalies(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderAnomalies(w, r, http.StatusServiceUnavailable, anomalyFormView{}, "Open a workspace before refreshing anomaly alerts.", "")
 		return

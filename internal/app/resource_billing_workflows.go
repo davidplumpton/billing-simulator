@@ -37,10 +37,6 @@ func newResourceBillingWorkflow(db *sql.DB) resourceBillingWorkflow {
 
 // handleRunBillingPipeline converts pending usage into metering records and priced bill line items.
 func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before pricing usage.", "")
 		return
@@ -86,10 +82,6 @@ func (h resourceLabHandler) handleRunBillingPipeline(w http.ResponseWriter, r *h
 
 // handleRunDailyMeteringJob runs clock-bounded metering and refreshes current-period summaries.
 func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before running daily metering.", "")
 		return
@@ -120,10 +112,6 @@ func (h resourceLabHandler) handleRunDailyMeteringJob(w http.ResponseWriter, r *
 
 // handleRunMonthEndClose finalizes the completed billing period before the current simulator clock.
 func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before closing a billing period.", "")
 		return
@@ -154,10 +142,6 @@ func (h resourceLabHandler) handleRunMonthEndClose(w http.ResponseWriter, r *htt
 
 // handleAdvanceClock applies a learner-triggered deterministic time change.
 func (h resourceLabHandler) handleAdvanceClock(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before advancing the clock.", "")
 		return

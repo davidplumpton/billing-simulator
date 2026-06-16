@@ -189,19 +189,11 @@ func newCostExplorerHandler(db *sql.DB) costExplorerHandler {
 
 // handleCostExplorer renders the report builder and runs the current query definition.
 func (h costExplorerHandler) handleCostExplorer(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderCostExplorer(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
 // handleCostExplorerResultsCSV exports the current aggregate report rows as CSV.
 func (h costExplorerHandler) handleCostExplorerResultsCSV(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	if h.db == nil {
 		http.Error(w, "workspace required", http.StatusConflict)
 		return
@@ -235,19 +227,11 @@ func (h costExplorerHandler) handleCostExplorerResultsCSV(w http.ResponseWriter,
 
 // handleCostExplorerLineItems renders the source bill line items for one aggregate row.
 func (h costExplorerHandler) handleCostExplorerLineItems(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderCostExplorerLineItems(w, r, http.StatusOK, "")
 }
 
 // handleSaveCostExplorerReport creates or updates a saved report from the builder fields.
 func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderCostExplorer(w, r, http.StatusServiceUnavailable, "Open a workspace before saving Cost Explorer reports.", "")
 		return
@@ -322,10 +306,6 @@ func (h costExplorerHandler) handleSaveCostExplorerReport(w http.ResponseWriter,
 
 // handleRunCostExplorerReport executes a persisted saved report and records its latest run metadata.
 func (h costExplorerHandler) handleRunCostExplorerReport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderCostExplorer(w, r, http.StatusServiceUnavailable, "Open a workspace before running saved Cost Explorer reports.", "")
 		return

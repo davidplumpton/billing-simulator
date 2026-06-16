@@ -260,26 +260,14 @@ func (h resourceLabHandler) handleRoot(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	http.Redirect(w, r, "/resources", http.StatusSeeOther)
 }
 
 func (h resourceLabHandler) handleResources(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderResources(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
 func (h resourceLabHandler) handleCreateResource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before creating resources.", "")
 		return
@@ -303,10 +291,6 @@ func (h resourceLabHandler) handleCreateResource(w http.ResponseWriter, r *http.
 }
 
 func (h resourceLabHandler) handleAddTag(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before adding tags.", "")
 		return
@@ -328,10 +312,6 @@ func (h resourceLabHandler) handleAddTag(w http.ResponseWriter, r *http.Request)
 }
 
 func (h resourceLabHandler) handleRecordUsage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before recording usage.", "")
 		return
@@ -355,10 +335,6 @@ func (h resourceLabHandler) handleRecordUsage(w http.ResponseWriter, r *http.Req
 }
 
 func (h resourceLabHandler) handleGenerateUsage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderResources(w, r, http.StatusServiceUnavailable, "Open a workspace before generating usage.", "")
 		return

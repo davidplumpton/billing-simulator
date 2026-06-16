@@ -144,19 +144,11 @@ func newProFormaHandler(db *sql.DB) proFormaHandler {
 
 // handleProForma renders pricing plans, billing groups, and generated showback rows.
 func (h proFormaHandler) handleProForma(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderProForma(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
 // handleCreatePricingPlan creates an internal pricing plan.
 func (h proFormaHandler) handleCreatePricingPlan(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before creating pro forma pricing plans.", "")
 		return
@@ -178,10 +170,6 @@ func (h proFormaHandler) handleCreatePricingPlan(w http.ResponseWriter, r *http.
 
 // handleCreatePricingRule adds one service multiplier to an internal pricing plan.
 func (h proFormaHandler) handleCreatePricingRule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before creating pro forma pricing rules.", "")
 		return
@@ -210,10 +198,6 @@ func (h proFormaHandler) handleCreatePricingRule(w http.ResponseWriter, r *http.
 
 // handleCreateBillingGroup creates one pro forma billing group.
 func (h proFormaHandler) handleCreateBillingGroup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before creating pro forma billing groups.", "")
 		return
@@ -237,10 +221,6 @@ func (h proFormaHandler) handleCreateBillingGroup(w http.ResponseWriter, r *http
 
 // handleAssignAccount assigns one usage account to a pro forma billing group.
 func (h proFormaHandler) handleAssignAccount(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before assigning pro forma accounts.", "")
 		return
@@ -262,10 +242,6 @@ func (h proFormaHandler) handleAssignAccount(w http.ResponseWriter, r *http.Requ
 
 // handleRefreshLineItems rebuilds generated pro forma rows for a selected period.
 func (h proFormaHandler) handleRefreshLineItems(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before refreshing pro forma rows.", "")
 		return
@@ -289,10 +265,6 @@ func (h proFormaHandler) handleRefreshLineItems(w http.ResponseWriter, r *http.R
 
 // handleCreateCustomLineItem adds one manual pro forma fee, credit, markup, or annotation.
 func (h proFormaHandler) handleCreateCustomLineItem(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderProForma(w, r, http.StatusServiceUnavailable, "Open a workspace before creating pro forma custom line items.", "")
 		return

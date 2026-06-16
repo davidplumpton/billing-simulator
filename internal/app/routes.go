@@ -562,8 +562,30 @@ var appRouteDefinitions = []appRouteDefinition{
 // registerAppRoutes installs every non-workspace app route from the shared route table.
 func registerAppRoutes(mux *http.ServeMux, handlers appRouteHandlers) {
 	for _, route := range appRouteDefinitions {
-		mux.HandleFunc(route.pattern, route.handler(handlers))
+		mux.HandleFunc(route.pattern, route.methodGuard(route.handler(handlers)))
 	}
+}
+
+// methodGuard enforces the route table's allowed method list before invoking the handler.
+func (route appRouteDefinition) methodGuard(next http.HandlerFunc) http.HandlerFunc {
+	allowedMethods := append([]string(nil), route.allowed...)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !methodAllowed(r.Method, allowedMethods) {
+			methodNotAllowed(w, allowedMethods...)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// methodAllowed reports whether method is explicitly present in a route's allowed list.
+func methodAllowed(method string, allowedMethods []string) bool {
+	for _, allowed := range allowedMethods {
+		if method == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // directAppRouteHandlers builds fixed-DB handlers for focused tests and direct handler checks.

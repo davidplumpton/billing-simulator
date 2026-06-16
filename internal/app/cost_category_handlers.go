@@ -133,19 +133,11 @@ func newCostCategoriesHandler(db *sql.DB) costCategoriesHandler {
 
 // handleCostCategories renders category rules and their current-period preview.
 func (h costCategoriesHandler) handleCostCategories(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderCostCategories(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
 // handleCreateCostCategory creates one previewable business category.
 func (h costCategoriesHandler) handleCreateCostCategory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderCostCategories(w, r, http.StatusServiceUnavailable, "Open a workspace before creating cost categories.", "")
 		return
@@ -168,10 +160,6 @@ func (h costCategoriesHandler) handleCreateCostCategory(w http.ResponseWriter, r
 
 // handleCreateCostCategoryRule creates one ordered rule and immediately refreshes the preview.
 func (h costCategoriesHandler) handleCreateCostCategoryRule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderCostCategories(w, r, http.StatusServiceUnavailable, "Open a workspace before creating cost category rules.", "")
 		return
@@ -191,10 +179,6 @@ func (h costCategoriesHandler) handleCreateCostCategoryRule(w http.ResponseWrite
 
 // handleCreateCostCategorySplitRule creates one split-charge rule for the selected category.
 func (h costCategoriesHandler) handleCreateCostCategorySplitRule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderCostCategories(w, r, http.StatusServiceUnavailable, "Open a workspace before creating split-charge rules.", "")
 		return

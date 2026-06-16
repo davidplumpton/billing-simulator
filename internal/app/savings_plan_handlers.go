@@ -92,19 +92,11 @@ func newSavingsPlanHandler(db *sql.DB) savingsPlanHandler {
 
 // handleSavingsPlans renders Savings Plan purchases and generated coverage rows.
 func (h savingsPlanHandler) handleSavingsPlans(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderSavingsPlans(w, r, http.StatusOK, "", flashFromQuery(r))
 }
 
 // handleCreateSavingsPlan stores one simplified Compute Savings Plan purchase.
 func (h savingsPlanHandler) handleCreateSavingsPlan(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		h.renderSavingsPlans(w, r, http.StatusServiceUnavailable, "Open a workspace before creating Savings Plans.", "")
 		return

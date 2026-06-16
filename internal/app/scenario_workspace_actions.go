@@ -58,10 +58,6 @@ func (h scenarioHandler) currentWorkspacePath() string {
 
 // handleResetScenario reruns a packaged seed as an explicit instructor reset action.
 func (h scenarioHandler) handleResetScenario(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		http.Error(w, "Open a workspace before resetting scenarios.", http.StatusServiceUnavailable)
 		return
@@ -95,10 +91,6 @@ func (h scenarioHandler) handleResetScenario(w http.ResponseWriter, r *http.Requ
 
 // handleCloneWorkspace copies the active workspace and switches the session to the clone.
 func (h scenarioHandler) handleCloneWorkspace(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		http.Error(w, "Open a workspace before cloning scenarios.", http.StatusServiceUnavailable)
 		return
@@ -123,10 +115,6 @@ func (h scenarioHandler) handleCloneWorkspace(w http.ResponseWriter, r *http.Req
 
 // handleArchiveScenario writes a local review bundle for one durable scenario run.
 func (h scenarioHandler) handleArchiveScenario(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
-		return
-	}
 	if h.db == nil {
 		http.Error(w, "Open a workspace before archiving scenarios.", http.StatusServiceUnavailable)
 		return

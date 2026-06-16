@@ -268,19 +268,11 @@ func newBillsHandler(db *sql.DB) billsHandler {
 
 // handleBills serves the read-only bill state view.
 func (h billsHandler) handleBills(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	h.renderBills(w, r, http.StatusOK, "")
 }
 
 // handleInvoice serves one printable synthetic invoice document.
 func (h billsHandler) handleInvoice(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	route, ok := invoiceRouteFromPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
@@ -298,10 +290,6 @@ func (h billsHandler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 
 // handleInvoiceIndex sends collection-level invoice requests to the bill list that exposes invoice links.
 func (h billsHandler) handleInvoiceIndex(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w, http.MethodGet, http.MethodHead)
-		return
-	}
 	target := "/bills"
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery

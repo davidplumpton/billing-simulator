@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,87 @@ func TestScenarioCatalogUsesShortestPlausibleDurations(t *testing.T) {
 			t.Fatalf("scenarioCatalog()[%q].EstimatedDuration = %q, want %q", key, got, want)
 		}
 	}
+}
+
+func TestScenarioCatalogCoversPackagedSeedsWithCuratedLaunchMetadata(t *testing.T) {
+	t.Parallel()
+
+	seedKeys, err := scenario.SeedDefinitionKeys()
+	if err != nil {
+		t.Fatalf("SeedDefinitionKeys() error = %v", err)
+	}
+	catalog := scenarioCatalog()
+	defaultMeta := defaultScenarioMetadata()
+	seedKeySet := make(map[string]bool, len(seedKeys))
+	for _, key := range seedKeys {
+		seedKeySet[key] = true
+		if _, err := scenario.LoadSeedDefinition(key); err != nil {
+			t.Errorf("LoadSeedDefinition(%q) error = %v", key, err)
+		}
+		meta, ok := catalog[key]
+		if !ok {
+			t.Errorf("scenarioCatalog() missing packaged seed key %q", key)
+			continue
+		}
+		assertScenarioCatalogMetadataCurated(t, key, meta, defaultMeta)
+		assertScenarioResumePathLaunchable(t, key, meta.ResumePath)
+	}
+
+	var extraKeys []string
+	for key := range catalog {
+		if !seedKeySet[key] {
+			extraKeys = append(extraKeys, key)
+		}
+	}
+	if len(extraKeys) > 0 {
+		sort.Strings(extraKeys)
+		t.Errorf("scenarioCatalog() has keys without packaged seeds: %v", extraKeys)
+	}
+}
+
+// assertScenarioCatalogMetadataCurated catches missing scenario copy before the UI falls back to generic lab metadata.
+func assertScenarioCatalogMetadataCurated(t *testing.T, key string, meta, defaultMeta scenarioCatalogMetadata) {
+	t.Helper()
+
+	for _, field := range []struct {
+		name         string
+		got          string
+		defaultValue string
+	}{
+		{name: "Phase", got: meta.Phase, defaultValue: defaultMeta.Phase},
+		{name: "Objective", got: meta.Objective, defaultValue: defaultMeta.Objective},
+		{name: "EstimatedDuration", got: meta.EstimatedDuration, defaultValue: defaultMeta.EstimatedDuration},
+		{name: "ResumeLabel", got: meta.ResumeLabel, defaultValue: defaultMeta.ResumeLabel},
+		{name: "ResumePath", got: meta.ResumePath, defaultValue: defaultMeta.ResumePath},
+	} {
+		if strings.TrimSpace(field.got) == "" {
+			t.Errorf("scenarioCatalog()[%q].%s is blank", key, field.name)
+		}
+		if field.got == field.defaultValue {
+			t.Errorf("scenarioCatalog()[%q].%s uses default fallback value %q", key, field.name, field.got)
+		}
+	}
+}
+
+// assertScenarioResumePathLaunchable keeps catalog resume actions pointed at registered in-app GET surfaces.
+func assertScenarioResumePathLaunchable(t *testing.T, key, rawPath string) {
+	t.Helper()
+
+	parsed, err := url.Parse(rawPath)
+	if err != nil {
+		t.Errorf("scenarioCatalog()[%q].ResumePath parse error for %q: %v", key, rawPath, err)
+		return
+	}
+	if parsed.Scheme != "" || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") {
+		t.Errorf("scenarioCatalog()[%q].ResumePath = %q, want app-relative path", key, rawPath)
+		return
+	}
+	for _, route := range appRouteDefinitions {
+		if route.matches(parsed.Path) && methodAllowed(http.MethodGet, route.allowed) {
+			return
+		}
+	}
+	t.Errorf("scenarioCatalog()[%q].ResumePath = %q does not match a registered GET route", key, rawPath)
 }
 
 func TestScenarioEditorValidationPreviewWorksInFreshWorkspace(t *testing.T) {

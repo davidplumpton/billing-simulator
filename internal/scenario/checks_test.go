@@ -9,30 +9,57 @@ import (
 )
 
 func TestEvaluatorEvaluatesPackagedScenarioChecks(t *testing.T) {
-	for _, seedKey := range []string{ForecastBudgetAlertSeedKey, SharedNetworkingAllocationSeedKey} {
-		t.Run(seedKey, func(t *testing.T) {
+	keys, err := SeedDefinitionKeys()
+	if err != nil {
+		t.Fatalf("SeedDefinitionKeys() error = %v", err)
+	}
+	type checkedSeed struct {
+		key        string
+		definition Definition
+	}
+	checkedSeeds := make([]checkedSeed, 0, len(keys))
+	for _, seedKey := range keys {
+		definition, err := LoadSeedDefinition(seedKey)
+		if err != nil {
+			t.Fatalf("LoadSeedDefinition(%q) error = %v", seedKey, err)
+		}
+		if len(definition.Checks) == 0 {
+			continue
+		}
+		checkedSeeds = append(checkedSeeds, checkedSeed{
+			key:        seedKey,
+			definition: definition,
+		})
+	}
+	if len(checkedSeeds) == 0 {
+		t.Fatal("no packaged scenario seeds with assessment checks found")
+	}
+
+	for _, seed := range checkedSeeds {
+		t.Run(seed.key, func(t *testing.T) {
 			ctx := context.Background()
 			db := openScenarioTestWorkspace(t)
-			definition, err := LoadSeedDefinition(seedKey)
-			if err != nil {
-				t.Fatalf("LoadSeedDefinition(%q) error = %v", seedKey, err)
+			definition := seed.definition
+			checkIDs := make([]string, 0, len(definition.Checks))
+			for _, check := range definition.Checks {
+				checkIDs = append(checkIDs, check.ID)
 			}
 			if _, err := NewRunner(db).Run(ctx, definition); err != nil {
-				t.Fatalf("Run(%q) error = %v", seedKey, err)
+				t.Fatalf("Run(%q checks=%v) error = %v", seed.key, checkIDs, err)
 			}
 
 			result, err := NewEvaluator(db).Evaluate(ctx, definition)
 			if err != nil {
-				t.Fatalf("Evaluate(%q) error = %v", seedKey, err)
+				t.Fatalf("Evaluate(%q checks=%v) error = %v", seed.key, checkIDs, err)
 			}
 			if result.ChecksTotal != len(definition.Checks) ||
 				result.ChecksPassed != len(definition.Checks) ||
 				result.ChecksFailed != 0 {
-				t.Fatalf("Evaluate(%q) = %+v, want all packaged checks passed", seedKey, result)
+				t.Fatalf("Evaluate(%q checks=%v) = %+v, want all packaged checks passed", seed.key, checkIDs, result)
 			}
 			for _, check := range result.Results {
 				if !check.Passed || check.Status != CheckStatusPassed || check.Actual == "" || check.Message == "" {
-					t.Fatalf("check evaluation = %+v, want passed evaluation with evidence", check)
+					t.Fatalf("Evaluate(%q check %q) = %+v, want passed evaluation with evidence", seed.key, check.ID, check)
 				}
 			}
 		})

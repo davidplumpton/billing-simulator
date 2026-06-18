@@ -210,6 +210,39 @@ func assertHEADDownloadMatchesGET(t *testing.T, handler http.Handler, target str
 	}
 }
 
+// assertStoredExportHEADMatchesGET verifies stored export HEAD responses keep the download metadata from GET.
+func assertStoredExportHEADMatchesGET(t *testing.T, handler http.Handler, target string) {
+	t.Helper()
+
+	getReq := httptest.NewRequest(http.MethodGet, target, nil)
+	getRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(getRecorder, getReq)
+	getResp := getRecorder.Result()
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(getResp.Body)
+		if err != nil {
+			t.Fatalf("read GET %s body: %v", target, err)
+		}
+		t.Fatalf("GET %s status = %d, want %d; body=%s", target, getResp.StatusCode, http.StatusOK, body)
+	}
+
+	headerNames := []string{
+		"Content-Type",
+		"Content-Disposition",
+		"Content-Length",
+		"X-Simulator-Export-Filename",
+		"X-Simulator-Export-Checksum",
+	}
+	for _, name := range headerNames {
+		if got := getResp.Header.Get(name); got == "" {
+			t.Fatalf("GET %s %s header is empty, want stored export download metadata", target, name)
+		}
+	}
+	assertHEADDownloadMatchesGET(t, handler, target, getResp.Header, headerNames...)
+}
+
 func requireCSVResponseRecord(t *testing.T, records [][]string, column, value string) []string {
 	t.Helper()
 

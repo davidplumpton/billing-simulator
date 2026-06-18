@@ -345,6 +345,10 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 	if got := resp.Header.Get("X-Simulator-Export-Checksum"); got != hex.EncodeToString(metadataChecksum[:]) {
 		t.Fatalf("GET %s checksum header = %q, want metadata checksum", metadataDownloadPath, got)
 	}
+	assertStoredExportHEADMatchesGET(t, newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}), metadataDownloadPath)
 
 	memberQuery := url.Values{
 		"billing_period_start": {"2026-02-01"},
@@ -429,6 +433,10 @@ func TestFOCUSCSVExportDownloadAndStoredGeneration(t *testing.T) {
 		!memberMetadata.Visibility.DocumentIdentifiersHidden {
 		t.Fatalf("member FOCUS metadata JSON = %+v, want usage-scoped sidecar without payer documents", memberMetadata)
 	}
+	assertStoredExportHEADMatchesGET(t, newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}), exportFileDownloadPathWithViewer(memberMetadataFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
 }
 
 func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
@@ -760,6 +768,10 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 	if body != initialCSVBody {
 		t.Fatalf("GET %s body differs from generated CSV:\ndownload=%s\ninitial=%s", downloadPath, body, initialCSVBody)
 	}
+	assertStoredExportHEADMatchesGET(t, newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}), downloadPath)
 
 	filteredDownloadPath := exportFileDownloadPath(filteredExportFilename)
 	resp, err = client.Get(server.URL + filteredDownloadPath)
@@ -1193,6 +1205,10 @@ func TestCURCSVExportDownloadIncludesBillMetadata(t *testing.T) {
 		!strings.Contains(body, "resource-cur-export-ui") {
 		t.Fatalf("GET member export as member body = %s, want own usage row only", body)
 	}
+	assertStoredExportHEADMatchesGET(t, newWorkspaceMux(&workspaceSession{
+		db:   db,
+		path: workspacePath,
+	}), exportFileDownloadPathWithViewer(memberExportFilename, exportViewerFields{Role: "member-account", AccountID: "111122223333"}))
 
 	resp, err = client.PostForm(server.URL+"/exports/regenerate", url.Values{
 		"filename":          {exportFilename},

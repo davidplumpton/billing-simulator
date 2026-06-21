@@ -261,7 +261,7 @@ func (r SavedReportRepository) RecordLastRun(ctx context.Context, request SavedR
 	if err := validateSavedReportRunUpdate(request); err != nil {
 		return SavedReport{}, err
 	}
-	_, runAt, err := normalizedRepositoryTimestamp("saved report run time", request.RunAt)
+	_, runAt, err := requiredRepositoryTimestamp("saved report run time", request.RunAt)
 	if err != nil {
 		return SavedReport{}, err
 	}

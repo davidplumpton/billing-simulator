@@ -356,8 +356,17 @@ func TestCostAllocationTagRepositoryValidatesLifecycleRequests(t *testing.T) {
 	if _, err := tagRepo.RefreshDiscoveredTags(ctx, "not-a-timestamp"); err == nil || !strings.Contains(err.Error(), "must use RFC3339") {
 		t.Fatalf("RefreshDiscoveredTags(invalid time) error = %v, want RFC3339 validation", err)
 	}
+	if _, err := tagRepo.RefreshDiscoveredTags(ctx, " "); err == nil || !strings.Contains(err.Error(), "discovery time is required") {
+		t.Fatalf("RefreshDiscoveredTags(blank time) error = %v, want required timestamp validation", err)
+	}
+	if _, err := tagRepo.ListBillingVisibleKeys(ctx, " "); err == nil || !strings.Contains(err.Error(), "visibility time is required") {
+		t.Fatalf("ListBillingVisibleKeys(blank time) error = %v, want required timestamp validation", err)
+	}
 	if _, err := tagRepo.ActivateTag(ctx, CostAllocationTagActivationRequest{Key: "app", RequestedAt: "2026-02-02T00:00:00Z"}); err == nil || !strings.Contains(err.Error(), "has not been discovered") {
 		t.Fatalf("ActivateTag(undiscovered) error = %v, want undiscovered key validation", err)
+	}
+	if _, err := tagRepo.ActivateTag(ctx, CostAllocationTagActivationRequest{Key: "app"}); err == nil || !strings.Contains(err.Error(), "requested_at is required") {
+		t.Fatalf("ActivateTag(blank requested_at) error = %v, want required timestamp validation", err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO cost_allocation_tag_keys (
 		tag_key,
@@ -374,6 +383,9 @@ func TestCostAllocationTagRepositoryValidatesLifecycleRequests(t *testing.T) {
 	}
 	if _, err := tagRepo.DeactivateTag(ctx, CostAllocationTagActivationRequest{Key: "owner", RequestedAt: "2026-02-02T00:00:00Z"}); err == nil || !strings.Contains(err.Error(), "is not active") {
 		t.Fatalf("DeactivateTag(inactive) error = %v, want active-state validation", err)
+	}
+	if _, err := tagRepo.DeactivateTag(ctx, CostAllocationTagActivationRequest{Key: "owner"}); err == nil || !strings.Contains(err.Error(), "requested_at is required") {
+		t.Fatalf("DeactivateTag(blank requested_at) error = %v, want required timestamp validation", err)
 	}
 	if _, err := tagRepo.ActivateTag(ctx, CostAllocationTagActivationRequest{Key: " "}); err == nil || !strings.Contains(err.Error(), "key is required") {
 		t.Fatalf("ActivateTag(blank key) error = %v, want key validation", err)

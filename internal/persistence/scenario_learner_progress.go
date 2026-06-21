@@ -132,7 +132,7 @@ func (r ScenarioLearnerProgressRepository) StartRun(ctx context.Context, request
 	if request.CurrentObjective == "" {
 		request.CurrentObjective = "Run scenario actions"
 	}
-	_, startedAt, err := normalizedRepositoryTimestamp("scenario learner progress start time", request.StartedAt)
+	_, startedAt, err := requiredRepositoryTimestamp("scenario learner progress start time", request.StartedAt)
 	if err != nil {
 		return ScenarioLearnerProgress{}, err
 	}
@@ -187,7 +187,7 @@ func (r ScenarioLearnerProgressRepository) RecordAction(ctx context.Context, req
 	if err := validateScenarioLearnerActionRecordRequest(request); err != nil {
 		return ScenarioLearnerProgress{}, err
 	}
-	_, completedAt, err := normalizedRepositoryTimestamp("scenario learner action completion time", request.CompletedAt)
+	_, completedAt, err := requiredRepositoryTimestamp("scenario learner action completion time", request.CompletedAt)
 	if err != nil {
 		return ScenarioLearnerProgress{}, err
 	}
@@ -261,7 +261,7 @@ func (r ScenarioLearnerProgressRepository) CompleteRun(ctx context.Context, requ
 	if err := validateScenarioLearnerRunCompleteRequest(request); err != nil {
 		return ScenarioLearnerProgress{}, err
 	}
-	_, completedAt, err := normalizedRepositoryTimestamp("scenario learner progress completion time", request.CompletedAt)
+	_, completedAt, err := requiredRepositoryTimestamp("scenario learner progress completion time", request.CompletedAt)
 	if err != nil {
 		return ScenarioLearnerProgress{}, err
 	}
@@ -307,7 +307,7 @@ func (r ScenarioLearnerProgressRepository) RecordCheckResults(ctx context.Contex
 	if err := validateScenarioLearnerCheckResultRecordRequest(request); err != nil {
 		return ScenarioLearnerProgress{}, err
 	}
-	_, evaluatedAt, err := normalizedRepositoryTimestamp("scenario learner check evaluation time", request.EvaluatedAt)
+	_, evaluatedAt, err := requiredRepositoryTimestamp("scenario learner check evaluation time", request.EvaluatedAt)
 	if err != nil {
 		return ScenarioLearnerProgress{}, err
 	}

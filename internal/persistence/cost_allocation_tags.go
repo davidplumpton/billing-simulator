@@ -137,7 +137,7 @@ func (r CostAllocationTagRepository) RefreshDiscoveredTags(ctx context.Context, 
 	if r.db == nil {
 		return CostAllocationTagRefreshResult{}, fmt.Errorf("database handle is required")
 	}
-	_, discoveredAt, err := normalizedRepositoryTimestamp("cost allocation tag discovery time", discoveredAt)
+	_, discoveredAt, err := requiredRepositoryTimestamp("cost allocation tag discovery time", discoveredAt)
 	if err != nil {
 		return CostAllocationTagRefreshResult{}, err
 	}
@@ -309,7 +309,7 @@ func (r CostAllocationTagRepository) ListBillingVisibleKeys(ctx context.Context,
 	if r.db == nil {
 		return nil, fmt.Errorf("database handle is required")
 	}
-	_, visibleAt, err := normalizedRepositoryTimestamp("cost allocation tag visibility time", visibleAt)
+	_, visibleAt, err := requiredRepositoryTimestamp("cost allocation tag visibility time", visibleAt)
 	if err != nil {
 		return nil, err
 	}
@@ -528,7 +528,7 @@ func (r CostAllocationTagRepository) transitionTag(ctx context.Context, request 
 		}
 		request.ID = id
 	}
-	requestedTime, requestedAt, err := normalizedRepositoryTimestamp("cost allocation tag requested_at", request.RequestedAt)
+	requestedTime, requestedAt, err := requiredRepositoryTimestamp("cost allocation tag requested_at", request.RequestedAt)
 	if err != nil {
 		return CostAllocationTagKey{}, err
 	}
@@ -991,11 +991,11 @@ func validateCostAllocationTagActivationRequest(request CostAllocationTagActivat
 	return validateEventSourceProvenance("cost allocation tag", request.EventSource, request.ScenarioRunID, request.ScenarioEventID, request.ScenarioEventSequence)
 }
 
-func normalizedRepositoryTimestamp(label, value string) (time.Time, string, error) {
+// requiredRepositoryTimestamp normalizes caller-supplied RFC3339 timestamps without wall-clock defaults.
+func requiredRepositoryTimestamp(label, value string) (time.Time, string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		now := time.Now().UTC()
-		return now, now.Format(time.RFC3339), nil
+		return time.Time{}, "", fmt.Errorf("%s is required", label)
 	}
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {

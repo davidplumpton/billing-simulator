@@ -47,6 +47,7 @@ type Evaluator struct {
 	categories persistence.CostCategoryRepository
 	bills      persistence.BillsRepository
 	monthEnd   persistence.MonthEndCloseRepository
+	clock      persistence.SimulatorClockRepository
 	progress   persistence.ScenarioLearnerProgressRepository
 }
 
@@ -58,6 +59,7 @@ func NewEvaluator(db *sql.DB) Evaluator {
 		categories: persistence.NewCostCategoryRepository(db),
 		bills:      persistence.NewBillsRepository(db),
 		monthEnd:   persistence.NewMonthEndCloseRepository(db),
+		clock:      persistence.NewSimulatorClockRepository(db),
 		progress:   persistence.NewScenarioLearnerProgressRepository(db),
 	}
 }
@@ -101,8 +103,13 @@ func (e Evaluator) EvaluateRun(ctx context.Context, scenarioRunID string, defini
 	if err != nil {
 		return CheckEvaluationResult{}, err
 	}
+	clock, err := e.clock.Get(ctx)
+	if err != nil {
+		return CheckEvaluationResult{}, fmt.Errorf("read scenario check evaluation time: %w", err)
+	}
 	if _, err := e.progress.RecordCheckResults(ctx, persistence.ScenarioLearnerCheckResultRecordRequest{
 		ScenarioRunID: scenarioRunID,
+		EvaluatedAt:   clock.CurrentTime,
 		Results:       scenarioLearnerCheckResults(result.Results),
 	}); err != nil {
 		return CheckEvaluationResult{}, err

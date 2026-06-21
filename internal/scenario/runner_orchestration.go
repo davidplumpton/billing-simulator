@@ -45,6 +45,7 @@ func (r Runner) startScenarioRun(ctx context.Context, definition Definition, sta
 		CurrentObjective: initialScenarioProgressObjective(definition),
 		ActionsTotal:     len(definition.Events),
 		ChecksTotal:      len(definition.Checks),
+		StartedAt:        run.ClockStart,
 	}); err != nil {
 		return ScenarioRun{}, err
 	}
@@ -101,7 +102,11 @@ func (r Runner) completeSuccessfulRun(ctx context.Context, result *RunResult, de
 	if err := r.completeScenarioRun(ctx, result.Run); err != nil {
 		return err
 	}
-	if err := r.completeLearnerProgress(ctx, result.Run, definition); err != nil {
+	completedAt, err := r.learnerProgressCompletionAt(ctx, *result)
+	if err != nil {
+		return err
+	}
+	if err := r.completeLearnerProgress(ctx, result.Run, definition, completedAt); err != nil {
 		return err
 	}
 	return nil
@@ -297,7 +302,7 @@ func (r Runner) recordLearnerProgressAction(ctx context.Context, event ScenarioR
 }
 
 // completeLearnerProgress marks scenario setup done or points the learner at assessment checks.
-func (r Runner) completeLearnerProgress(ctx context.Context, run ScenarioRun, definition Definition) error {
+func (r Runner) completeLearnerProgress(ctx context.Context, run ScenarioRun, definition Definition, completedAt string) error {
 	state := persistence.ScenarioProgressStateCompleted
 	currentObjective := "Scenario setup complete"
 	if len(definition.Checks) > 0 {
@@ -309,10 +314,36 @@ func (r Runner) completeLearnerProgress(ctx context.Context, run ScenarioRun, de
 		RunStatus:             run.Status,
 		CurrentObjectiveState: state,
 		CurrentObjective:      currentObjective,
+		CompletedAt:           completedAt,
 	}); err != nil {
 		return fmt.Errorf("complete scenario learner progress %q: %w", run.ID, err)
 	}
 	return nil
+}
+
+// learnerProgressCompletionAt returns a deterministic scenario timestamp for progress completion.
+func (r Runner) learnerProgressCompletionAt(ctx context.Context, result RunResult) (string, error) {
+	if len(result.Events) == 0 {
+		return result.Run.ClockStart, nil
+	}
+	clock, err := r.clock.Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read scenario learner progress completion time: %w", err)
+	}
+	if currentTime := strings.TrimSpace(clock.CurrentTime); currentTime != "" {
+		return currentTime, nil
+	}
+	return result.learnerProgressFallbackCompletionAt(), nil
+}
+
+// learnerProgressFallbackCompletionAt uses audit timestamps when the simulator clock has no value.
+func (result RunResult) learnerProgressFallbackCompletionAt() string {
+	for idx := len(result.Events) - 1; idx >= 0; idx-- {
+		if scheduledAt := strings.TrimSpace(result.Events[idx].ScheduledAt); scheduledAt != "" {
+			return scheduledAt
+		}
+	}
+	return result.Run.ClockStart
 }
 
 // failRun finalizes audit and learner progress rows for a failed scenario attempt.
@@ -324,11 +355,16 @@ func (r Runner) failRun(ctx context.Context, result RunResult, currentEventID st
 	if err := r.completeScenarioRun(ctx, result.Run); err != nil {
 		return result, fmt.Errorf("%w; complete failed scenario run: %v", runErr, err)
 	}
+	completedAt, progressTimeErr := r.learnerProgressCompletionAt(ctx, result)
+	if progressTimeErr != nil {
+		return result, fmt.Errorf("%w; resolve failed learner progress completion time: %v", runErr, progressTimeErr)
+	}
 	if _, err := r.progress.CompleteRun(ctx, persistence.ScenarioLearnerRunCompleteRequest{
 		ScenarioRunID:         result.Run.ID,
 		RunStatus:             result.Run.Status,
 		CurrentObjectiveState: persistence.ScenarioProgressStateFailed,
 		CurrentObjective:      "Resolve scenario setup failure",
+		CompletedAt:           completedAt,
 	}); err != nil {
 		return result, fmt.Errorf("%w; complete failed learner progress: %v", runErr, err)
 	}

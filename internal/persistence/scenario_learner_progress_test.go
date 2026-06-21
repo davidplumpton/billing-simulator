@@ -174,6 +174,12 @@ func TestScenarioLearnerProgressRepositoryValidatesRequests(t *testing.T) {
 	if _, err := repo.StartRun(ctx, ScenarioLearnerProgressStartRequest{}); err == nil || !strings.Contains(err.Error(), "scenario run ID is required") {
 		t.Fatalf("StartRun(blank) error = %v, want scenario run ID validation", err)
 	}
+	if _, err := repo.StartRun(ctx, ScenarioLearnerProgressStartRequest{
+		ScenarioRunID:  "run",
+		DefinitionName: "Scenario",
+	}); err == nil || !strings.Contains(err.Error(), "start time is required") {
+		t.Fatalf("StartRun(blank time) error = %v, want required timestamp validation", err)
+	}
 	if _, err := repo.RecordAction(ctx, ScenarioLearnerActionRecordRequest{
 		ScenarioRunID:  "run",
 		ActionID:       "action",
@@ -182,6 +188,21 @@ func TestScenarioLearnerProgressRepositoryValidatesRequests(t *testing.T) {
 		ActionStatus:   "unknown",
 	}); err == nil || !strings.Contains(err.Error(), "action status") {
 		t.Fatalf("RecordAction(unknown status) error = %v, want status validation", err)
+	}
+	if _, err := repo.RecordAction(ctx, ScenarioLearnerActionRecordRequest{
+		ScenarioRunID:  "run",
+		ActionID:       "action",
+		ActionSequence: 1,
+		ActionType:     "create_resource",
+		ActionStatus:   ScenarioLearnerActionStatusCompleted,
+	}); err == nil || !strings.Contains(err.Error(), "completion time is required") {
+		t.Fatalf("RecordAction(blank time) error = %v, want required timestamp validation", err)
+	}
+	if _, err := repo.CompleteRun(ctx, ScenarioLearnerRunCompleteRequest{
+		ScenarioRunID: "run",
+		RunStatus:     ScenarioProgressStateCompleted,
+	}); err == nil || !strings.Contains(err.Error(), "completion time is required") {
+		t.Fatalf("CompleteRun(blank time) error = %v, want required timestamp validation", err)
 	}
 	if _, err := repo.RecordCheckResults(ctx, ScenarioLearnerCheckResultRecordRequest{
 		ScenarioRunID: "run",
@@ -193,6 +214,17 @@ func TestScenarioLearnerProgressRepositoryValidatesRequests(t *testing.T) {
 		}},
 	}); err == nil || !strings.Contains(err.Error(), "check status") {
 		t.Fatalf("RecordCheckResults(unknown status) error = %v, want status validation", err)
+	}
+	if _, err := repo.RecordCheckResults(ctx, ScenarioLearnerCheckResultRecordRequest{
+		ScenarioRunID: "run",
+		Results: []ScenarioLearnerCheckResult{{
+			CheckID:       "check",
+			CheckSequence: 1,
+			CheckType:     "saved_report_exists",
+			Status:        "passed",
+		}},
+	}); err == nil || !strings.Contains(err.Error(), "evaluation time is required") {
+		t.Fatalf("RecordCheckResults(blank time) error = %v, want required timestamp validation", err)
 	}
 }
 

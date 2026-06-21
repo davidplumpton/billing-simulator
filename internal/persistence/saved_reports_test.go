@@ -461,6 +461,13 @@ func TestSavedReportRepositoryValidatesDefinitionsAndRuns(t *testing.T) {
 	}
 	if _, err := repo.RecordLastRun(ctx, SavedReportRunUpdate{
 		ID:       valid.ID,
+		Status:   savedReportStatusSucceeded,
+		RowCount: 1,
+	}); err == nil || !strings.Contains(err.Error(), "run time is required") {
+		t.Fatalf("RecordLastRun(blank time) error = %v, want required timestamp validation", err)
+	}
+	if _, err := repo.RecordLastRun(ctx, SavedReportRunUpdate{
+		ID:       valid.ID,
 		RunAt:    "2026-02-01T00:00:00Z",
 		Status:   savedReportStatusNeverRun,
 		RowCount: 1,

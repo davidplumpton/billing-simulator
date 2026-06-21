@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -159,11 +158,11 @@ func (h savingsPlanHandler) loadSavingsPlanPageData(ctx context.Context, data *s
 	}
 	data.DefaultPayerAccount = payer
 
-	labels, err := h.accountLabels(ctx)
+	labels, err := anyCompanyRetailActiveMemberAccountLabels(ctx, h.organization)
 	if err != nil {
 		return err
 	}
-	data.AccountOptions = savingsPlanAccountOptions(labels, data.DefaultOwnerAccount)
+	data.AccountOptions = selectOptionsFromLabels(labels, data.DefaultOwnerAccount)
 
 	purchases, err := h.savingsPlans.ListPurchases(ctx)
 	if err != nil {
@@ -201,25 +200,6 @@ func (h savingsPlanHandler) loadSavingsPlanPageData(ctx context.Context, data *s
 		{Label: "Amortized Source Cost", Value: formatUSDMicros(amortizedCost)},
 	}
 	return nil
-}
-
-func (h savingsPlanHandler) accountLabels(ctx context.Context) (map[string]string, error) {
-	organization, err := h.organization.GetOrganizationByTemplate(ctx, persistence.AnyCompanyRetailTemplateKey)
-	if err != nil {
-		return nil, err
-	}
-	accounts, err := h.organization.ListAccounts(ctx, organization.ID)
-	if err != nil {
-		return nil, err
-	}
-	labels := map[string]string{}
-	for _, account := range accounts {
-		if account.Status == persistence.AccountStatusClosed || account.IsManagementAccount {
-			continue
-		}
-		labels[account.ID] = account.Name + " (" + account.ID + ")"
-	}
-	return labels, nil
 }
 
 func savingsPlanCreateRequestFromForm(r *http.Request) (persistence.SavingsPlanPurchaseCreateRequest, error) {
@@ -296,23 +276,6 @@ func defaultSavingsPlanTermWindow(clock persistence.SimulatorClock) (string, str
 		return "2026-02-01T00:00", "2026-03-01T00:00"
 	}
 	return start.UTC().Format("2006-01-02T15:04"), start.UTC().AddDate(0, 1, 0).Format("2006-01-02T15:04")
-}
-
-func savingsPlanAccountOptions(labels map[string]string, selectedAccountID string) []uiSelectOptionView {
-	ids := make([]string, 0, len(labels))
-	for id := range labels {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	options := make([]uiSelectOptionView, 0, len(ids))
-	for _, id := range ids {
-		options = append(options, uiSelectOptionView{
-			Value:    id,
-			Label:    labels[id],
-			Selected: id == selectedAccountID,
-		})
-	}
-	return options
 }
 
 func savingsPlanSharingScopeOptions() []uiSelectOptionView {

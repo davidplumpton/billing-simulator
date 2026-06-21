@@ -1,12 +1,10 @@
 package app
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -376,7 +374,7 @@ func (h proFormaHandler) loadProFormaPageData(r *http.Request, data *proFormaPag
 	if err != nil {
 		return err
 	}
-	accountLabels, err := h.accountLabels(ctx)
+	accountLabels, err := anyCompanyRetailActiveMemberAccountLabels(ctx, h.organization)
 	if err != nil {
 		return err
 	}
@@ -387,7 +385,7 @@ func (h proFormaHandler) loadProFormaPageData(r *http.Request, data *proFormaPag
 			AccountLabel:     accountLabels[assignment.AccountID],
 		})
 	}
-	data.AccountOptions = proFormaAccountOptions(accountLabels)
+	data.AccountOptions = selectOptionsFromLabels(accountLabels, "")
 
 	summaries, err := h.proForma.ListBillingGroupSummaries(ctx, persistence.ProFormaSummaryRequest{
 		BillingPeriodStart: data.BillingPeriodStart,
@@ -440,25 +438,6 @@ func (h proFormaHandler) loadProFormaPageData(r *http.Request, data *proFormaPag
 		{Label: "Rows", Value: strconv.Itoa(sourceRows)},
 	}
 	return nil
-}
-
-func (h proFormaHandler) accountLabels(ctx context.Context) (map[string]string, error) {
-	organization, err := h.organization.GetOrganizationByTemplate(ctx, persistence.AnyCompanyRetailTemplateKey)
-	if err != nil {
-		return nil, err
-	}
-	accounts, err := h.organization.ListAccounts(ctx, organization.ID)
-	if err != nil {
-		return nil, err
-	}
-	labels := map[string]string{}
-	for _, account := range accounts {
-		if account.Status == persistence.AccountStatusClosed || account.IsManagementAccount {
-			continue
-		}
-		labels[account.ID] = account.Name + " (" + account.ID + ")"
-	}
-	return labels, nil
 }
 
 func redirectProForma(w http.ResponseWriter, r *http.Request, flash string) {
@@ -546,22 +525,6 @@ func proFormaCustomLineItemViewFromItem(item persistence.ProFormaCustomLineItem)
 		Amount:           formatUSDMicros(item.AmountMicros),
 		AmountMicros:     item.AmountMicros,
 	}
-}
-
-func proFormaAccountOptions(labels map[string]string) []uiSelectOptionView {
-	ids := make([]string, 0, len(labels))
-	for id := range labels {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	options := make([]uiSelectOptionView, 0, len(ids))
-	for _, id := range ids {
-		options = append(options, uiSelectOptionView{
-			Value: id,
-			Label: labels[id],
-		})
-	}
-	return options
 }
 
 func parseProFormaMultiplierBasisPoints(value string) (int, error) {

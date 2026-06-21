@@ -252,6 +252,69 @@ func TestSharedDisplayHelpers(t *testing.T) {
 	}
 }
 
+func TestSharedSelectOptionHelpers(t *testing.T) {
+	t.Parallel()
+
+	options := selectOptionsWithSelected([]uiSelectOptionView{
+		{Value: "monthly", Label: "Monthly"},
+		{Value: "daily", Label: "Daily"},
+	}, "daily")
+	if len(options) != 2 || !options[1].Selected || options[0].Selected {
+		t.Fatalf("selectOptionsWithSelected existing value = %#v, want daily selected", options)
+	}
+
+	options = selectOptionsWithSelected([]uiSelectOptionView{{Value: "monthly", Label: "Monthly"}}, "hourly")
+	if len(options) != 2 || options[1] != (uiSelectOptionView{Value: "hourly", Label: "hourly", Selected: true}) {
+		t.Fatalf("selectOptionsWithSelected custom value = %#v, want appended selected hourly", options)
+	}
+
+	labelOptions := selectOptionsFromLabels(map[string]string{
+		"222233334444": "Shared Networking (222233334444)",
+		"111122223333": "Storefront Prod (111122223333)",
+	}, "222233334444")
+	want := []uiSelectOptionView{
+		{Value: "111122223333", Label: "Storefront Prod (111122223333)"},
+		{Value: "222233334444", Label: "Shared Networking (222233334444)", Selected: true},
+	}
+	if len(labelOptions) != len(want) {
+		t.Fatalf("selectOptionsFromLabels length = %d, want %d: %#v", len(labelOptions), len(want), labelOptions)
+	}
+	for idx := range want {
+		if labelOptions[idx] != want[idx] {
+			t.Fatalf("selectOptionsFromLabels[%d] = %#v, want %#v; all=%#v", idx, labelOptions[idx], want[idx], labelOptions)
+		}
+	}
+}
+
+func TestAnyCompanyRetailActiveMemberAccountLabels(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := persistence.OpenWorkspace(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenWorkspace() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	labels, err := anyCompanyRetailActiveMemberAccountLabels(ctx, persistence.NewOrganizationRepository(db))
+	if err != nil {
+		t.Fatalf("anyCompanyRetailActiveMemberAccountLabels() error = %v", err)
+	}
+	if got := labels["111122223333"]; got != "Storefront Prod (111122223333)" {
+		t.Fatalf("Storefront Prod label = %q, want Storefront Prod account label", got)
+	}
+	if _, ok := labels[persistence.AnyCompanyRetailManagementAccountID]; ok {
+		t.Fatalf("management account appeared in active member labels: %#v", labels)
+	}
+	if _, ok := labels["666677778888"]; ok {
+		t.Fatalf("suspended account appeared in active member labels: %#v", labels)
+	}
+}
+
 func TestSharedQueryHelpers(t *testing.T) {
 	t.Parallel()
 

@@ -967,18 +967,6 @@ func costExplorerOwnerRoleOptions(selected string) []uiSelectOptionView {
 	return selectOptionsWithSelected(viewerRoleOptions(), selected)
 }
 
-func selectOptionsWithSelected(options []uiSelectOptionView, selected string) []uiSelectOptionView {
-	found := false
-	for idx := range options {
-		options[idx].Selected = options[idx].Value == selected
-		found = found || options[idx].Selected
-	}
-	if selected != "" && !found {
-		options = append(options, uiSelectOptionView{Value: selected, Label: selected, Selected: true})
-	}
-	return options
-}
-
 func costExplorerBaseGroupKeyOptions() []string {
 	return []string{"service", "linked_account", "region", "usage_type", "line_item_type", "app", "owner", "product", "environment"}
 }

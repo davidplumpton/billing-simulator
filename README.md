@@ -37,7 +37,7 @@ The simulator is designed around billing consequences, not infrastructure behavi
 
 The current codebase already includes these working foundations:
 
-- A single Go command, `billing-sim`, that serves a local browser UI.
+- A single Go command, `billing-sim`, that serves a local browser UI and reports its packaged release version.
 - Local-only HTTP binding to `127.0.0.1` or `localhost`.
 - SQLite workspace directories with embedded migrations and WAL-mode persistence.
 - A workspace selector that opens path-based workspaces, starts a generated fresh workspace for a new experience, and remembers the last workspace path.
@@ -116,6 +116,14 @@ Useful flags:
 
 ```bash
 go run ./cmd/billing-sim -help
+go run ./cmd/billing-sim -version
+```
+
+Development builds report `dev` by default. Release builds can override the packaged version with Go ldflags:
+
+```bash
+go build -ldflags "-X aws-billing-simulator/internal/buildinfo.Version=2026.06.21" -o ./tmp/billing-sim ./cmd/billing-sim
+./tmp/billing-sim -version
 ```
 
 ## Development

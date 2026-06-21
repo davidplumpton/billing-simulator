@@ -18,6 +18,28 @@ import (
 	"aws-billing-simulator/internal/persistence"
 )
 
+func TestVersionFlagReportsDefaultDevelopmentVersion(t *testing.T) {
+	t.Parallel()
+
+	binaryPath := buildCommandBinary(t)
+	if got, want := commandVersionOutput(t, binaryPath), "billing-sim dev"; got != want {
+		t.Fatalf("billing-sim -version = %q, want %q", got, want)
+	}
+}
+
+func TestVersionFlagReportsReleaseOverride(t *testing.T) {
+	t.Parallel()
+
+	const releaseVersion = "2026.06.21"
+	binaryPath := buildCommandBinary(
+		t,
+		"-ldflags", "-X aws-billing-simulator/internal/buildinfo.Version="+releaseVersion,
+	)
+	if got, want := commandVersionOutput(t, binaryPath), "billing-sim "+releaseVersion; got != want {
+		t.Fatalf("billing-sim -version = %q, want %q", got, want)
+	}
+}
+
 func TestPackagedCommandBuildsAndRunsFreshWorkspaceSmoke(t *testing.T) {
 	t.Parallel()
 
@@ -152,11 +174,13 @@ func TestPackagedCommandBuildsAndRunsFreshWorkspaceSmoke(t *testing.T) {
 }
 
 // buildCommandBinary builds the CLI from the module root the same way a local user would.
-func buildCommandBinary(t *testing.T) string {
+func buildCommandBinary(t *testing.T, buildArgs ...string) string {
 	t.Helper()
 
 	outputPath := filepath.Join(t.TempDir(), "billing-sim")
-	cmd := exec.Command("go", "build", "-o", outputPath, "./cmd/billing-sim")
+	args := append([]string{"build"}, buildArgs...)
+	args = append(args, "-o", outputPath, "./cmd/billing-sim")
+	cmd := exec.Command("go", args...)
 	cmd.Dir = repoRoot(t)
 	combined, err := cmd.CombinedOutput()
 	if err != nil {
@@ -168,6 +192,18 @@ func buildCommandBinary(t *testing.T) string {
 		t.Fatalf("built command at %s is empty", outputPath)
 	}
 	return outputPath
+}
+
+// commandVersionOutput runs the built command's version path without starting the server.
+func commandVersionOutput(t *testing.T, binaryPath string) string {
+	t.Helper()
+
+	cmd := exec.Command(binaryPath, "-version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s -version error = %v\n%s", binaryPath, err, string(output))
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // repoRoot locates the module root without relying on the current working directory.

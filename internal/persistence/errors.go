@@ -20,6 +20,12 @@ var (
 
 	// ErrSavedReportNotFound marks lookup failures where no saved Cost Explorer report matches the request.
 	ErrSavedReportNotFound = errors.New("saved report not found")
+
+	// ErrInvoicePaymentNotPastDue marks attempts to move an invoice payment past due before its due date has passed.
+	ErrInvoicePaymentNotPastDue = errors.New("invoice payment not past due")
+
+	// ErrInvoicePaymentInvalidTransition marks unsupported invoice payment lifecycle state changes.
+	ErrInvoicePaymentInvalidTransition = errors.New("invalid invoice payment transition")
 )
 
 type domainError struct {

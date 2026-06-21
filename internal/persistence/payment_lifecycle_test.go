@@ -3,7 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
-	"strings"
+	"errors"
 	"testing"
 )
 
@@ -244,8 +244,8 @@ func TestPaymentLifecycleRepositoryRejectsInvalidTransitions(t *testing.T) {
 		InvoiceObligationID: obligation.ID,
 		OccurredAt:          "2026-03-10",
 	})
-	if err == nil || !strings.Contains(err.Error(), "not past due") {
-		t.Fatalf("MarkPastDue(before due date) error = %v, want not-past-due validation", err)
+	if !errors.Is(err, ErrInvoicePaymentNotPastDue) {
+		t.Fatalf("MarkPastDue(before due date) error = %v, want ErrInvoicePaymentNotPastDue", err)
 	}
 
 	if _, err := repo.SchedulePayment(ctx, PaymentLifecycleTransitionRequest{
@@ -259,8 +259,12 @@ func TestPaymentLifecycleRepositoryRejectsInvalidTransitions(t *testing.T) {
 		AmountMicros:        1,
 		OccurredAt:          "2026-03-03",
 	})
-	if err == nil || !strings.Contains(err.Error(), "cannot transition") {
-		t.Fatalf("ApplyPayment(from scheduled) error = %v, want transition validation", err)
+	if !errors.Is(err, ErrInvoicePaymentInvalidTransition) {
+		t.Fatalf("ApplyPayment(from scheduled) error = %v, want ErrInvoicePaymentInvalidTransition", err)
+	}
+
+	if errors.Is(errors.New("cannot transition invoice payment state from scheduled to succeeded"), ErrInvoicePaymentInvalidTransition) {
+		t.Fatal("plain transition text matched ErrInvoicePaymentInvalidTransition")
 	}
 }
 

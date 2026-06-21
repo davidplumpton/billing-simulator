@@ -399,7 +399,7 @@ func validatePastDueDate(obligation InvoiceObligation, occurredAt string) error 
 		return fmt.Errorf("invoice obligation %q has invalid due date %q", obligation.ID, obligation.DueDate)
 	}
 	if !effectiveDate.After(dueDate) {
-		return fmt.Errorf("invoice obligation %q is not past due until after %s", obligation.ID, obligation.DueDate)
+		return domainErrorf(ErrInvoicePaymentNotPastDue, "invoice obligation %q is not past due until after %s", obligation.ID, obligation.DueDate)
 	}
 	return nil
 }
@@ -572,7 +572,7 @@ func insertPaymentLifecycleEvent(ctx context.Context, tx *sql.Tx, event PaymentL
 
 func validateInvoicePaymentTransition(fromStatus, toStatus string) error {
 	if fromStatus == toStatus {
-		return fmt.Errorf("invoice payment state is already %s", toStatus)
+		return domainErrorf(ErrInvoicePaymentInvalidTransition, "invoice payment state is already %s", toStatus)
 	}
 	allowed := map[string]map[string]bool{
 		invoiceObligationStatusDue: {
@@ -630,7 +630,7 @@ func validateInvoicePaymentTransition(fromStatus, toStatus string) error {
 		},
 	}
 	if !allowed[fromStatus][toStatus] {
-		return fmt.Errorf("cannot transition invoice payment state from %s to %s", fromStatus, toStatus)
+		return domainErrorf(ErrInvoicePaymentInvalidTransition, "cannot transition invoice payment state from %s to %s", fromStatus, toStatus)
 	}
 	return nil
 }

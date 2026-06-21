@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -265,6 +266,67 @@ func TestPaymentLifecycleRepositoryRejectsInvalidTransitions(t *testing.T) {
 
 	if errors.Is(errors.New("cannot transition invoice payment state from scheduled to succeeded"), ErrInvoicePaymentInvalidTransition) {
 		t.Fatal("plain transition text matched ErrInvoicePaymentInvalidTransition")
+	}
+}
+
+func TestPaymentLifecycleRepositoryRequiresExplicitOccurredAt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestWorkspace(t)
+	_, obligation := insertIssuedBillForInvoiceTest(t, ctx, db)
+	repo := NewPaymentLifecycleRepository(db)
+
+	_, err := repo.SchedulePayment(ctx, PaymentLifecycleTransitionRequest{
+		InvoiceObligationID: obligation.ID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "payment event timestamp is required") {
+		t.Fatalf("SchedulePayment(blank OccurredAt) error = %v, want required timestamp", err)
+	}
+}
+
+func TestNormalizePaymentLifecycleTimestampPreservesExplicitFormats(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name    string
+		value   string
+		want    string
+		wantErr string
+	}{
+		{
+			name:    "blank",
+			value:   " ",
+			wantErr: "payment event timestamp is required",
+		},
+		{
+			name:  "date",
+			value: "2026-03-02",
+			want:  "2026-03-02",
+		},
+		{
+			name:  "rfc3339",
+			value: "2026-03-02T03:04:05+13:00",
+			want:  "2026-03-01T14:04:05Z",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := normalizePaymentLifecycleTimestamp(tt.value)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("normalizePaymentLifecycleTimestamp(%q) error = %v, want %q", tt.value, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizePaymentLifecycleTimestamp(%q) error = %v", tt.value, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizePaymentLifecycleTimestamp(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
 	}
 }
 

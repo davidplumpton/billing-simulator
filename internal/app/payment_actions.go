@@ -213,9 +213,11 @@ func (r paymentActionRunner) transitionRequestFromValues(ctx context.Context, va
 		OccurredAt:          strings.TrimSpace(values.Get("occurred_at")),
 	}
 	if request.OccurredAt == "" {
-		if clock, err := r.clock.Get(ctx); err == nil {
-			request.OccurredAt = clock.CurrentTime
+		clock, err := r.clock.Get(ctx)
+		if err != nil {
+			return persistence.PaymentLifecycleTransitionRequest{}, fmt.Errorf("read simulator clock for payment lifecycle action: %w", err)
 		}
+		request.OccurredAt = clock.CurrentTime
 	}
 	if includeAmount {
 		amount, err := parsePaymentAmountMicros(values.Get("amount"))

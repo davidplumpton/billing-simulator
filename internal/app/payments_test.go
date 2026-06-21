@@ -234,6 +234,20 @@ func TestPaymentsUIResolvesFailedInvoiceAndProfileMethod(t *testing.T) {
 		!strings.Contains(body, "scheduled") {
 		t.Fatalf("schedule payment response missing scheduled state: %s", body)
 	}
+	var scheduledOccurredAt string
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT occurred_at
+		   FROM invoice_payment_events
+		  WHERE invoice_obligation_id = ?
+		    AND transition_kind = 'scheduled'`,
+		obligationID,
+	).Scan(&scheduledOccurredAt); err != nil {
+		t.Fatalf("read scheduled payment event timestamp: %v", err)
+	}
+	if scheduledOccurredAt != "2026-03-01T00:00:00Z" {
+		t.Fatalf("scheduled payment event occurred_at = %q, want simulator clock time", scheduledOccurredAt)
+	}
 	body = postPaymentAction(url.Values{
 		"invoice_obligation_id": {obligationID},
 		"action":                {"process"},

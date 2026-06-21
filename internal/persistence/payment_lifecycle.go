@@ -377,7 +377,7 @@ func normalizePaymentLifecycleTransitionRequest(request PaymentLifecycleTransiti
 func normalizePaymentLifecycleTimestamp(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return time.Now().UTC().Format(time.RFC3339Nano), nil
+		return "", fmt.Errorf("payment event timestamp is required")
 	}
 	if _, err := time.Parse(time.DateOnly, value); err == nil {
 		return value, nil

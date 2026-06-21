@@ -45,3 +45,14 @@ func TestPaymentActionRunnerRejectsUnsupportedAction(t *testing.T) {
 		t.Fatalf("Apply(unknown) error = %v, want unsupported action", err)
 	}
 }
+
+func TestPaymentActionRunnerRequiresClockForImplicitTransitionTimestamp(t *testing.T) {
+	t.Parallel()
+
+	_, err := (paymentActionRunner{}).transitionRequestFromValues(context.Background(), url.Values{
+		"invoice_obligation_id": {"invobl_missing_clock"},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "read simulator clock for payment lifecycle action") {
+		t.Fatalf("transitionRequestFromValues(blank occurred_at) error = %v, want simulator clock error", err)
+	}
+}

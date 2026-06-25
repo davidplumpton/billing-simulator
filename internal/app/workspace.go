@@ -85,6 +85,12 @@ type workspaceSession struct {
 
 const freshWorkspaceNamePrefix = "fresh-workspace-"
 
+// freshWorkspaceBaseName formats a fresh workspace directory name with real timestamp entropy.
+func freshWorkspaceBaseName(now time.Time) string {
+	utc := now.UTC()
+	return freshWorkspaceNamePrefix + utc.Format("20060102-150405") + fmt.Sprintf("-%09d", utc.Nanosecond())
+}
+
 // newWorkspaceSession loads the remembered workspace and opens the configured workspace when available.
 func newWorkspaceSession(ctx context.Context, cfg Config, logger *slog.Logger) (*workspaceSession, error) {
 	if logger == nil {
@@ -231,7 +237,7 @@ func (s *workspaceSession) NewFreshWorkspacePath() (string, error) {
 		root = filepath.Join(cacheDir, "aws-billing-simulator", "workspaces")
 	}
 
-	baseName := freshWorkspaceNamePrefix + time.Now().UTC().Format("20060102-150405-000000000")
+	baseName := freshWorkspaceBaseName(time.Now())
 	candidate := filepath.Join(root, baseName)
 	for suffix := 0; suffix < 100; suffix++ {
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {

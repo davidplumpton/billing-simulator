@@ -643,6 +643,20 @@ func TestFreshWorkspacePathUsesActiveWorkspaceParent(t *testing.T) {
 	}
 }
 
+func TestFreshWorkspaceBaseNameIncludesSubsecondEntropy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.June, 25, 6, 7, 8, 123456789, time.UTC)
+	got := freshWorkspaceBaseName(now)
+	want := freshWorkspaceNamePrefix + "20260625-060708-123456789"
+	if got != want {
+		t.Fatalf("freshWorkspaceBaseName() = %q, want %q", got, want)
+	}
+	if strings.HasSuffix(got, "-000000000") {
+		t.Fatalf("freshWorkspaceBaseName() used literal zero subsecond suffix: %q", got)
+	}
+}
+
 func TestServerRenderedUIShellFeatureWorksInFreshWorkspace(t *testing.T) {
 	t.Parallel()
 

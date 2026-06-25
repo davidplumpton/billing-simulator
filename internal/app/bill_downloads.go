@@ -210,10 +210,11 @@ func invoiceRouteFromPath(path string) (invoiceRoute, bool) {
 		return invoiceRoute{}, false
 	}
 	invoiceID, err := url.PathUnescape(rawID)
-	if err != nil || strings.TrimSpace(invoiceID) == "" {
+	invoiceID = strings.TrimSpace(invoiceID)
+	if err != nil || invoiceID == "" || decodedPathSegmentHasSeparator(invoiceID) {
 		return invoiceRoute{}, false
 	}
-	return invoiceRoute{InvoiceID: strings.TrimSpace(invoiceID), Export: export}, true
+	return invoiceRoute{InvoiceID: invoiceID, Export: export}, true
 }
 
 // invoiceIDFromPath extracts and unescapes the invoice ID from /invoices/{id}.

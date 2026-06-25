@@ -8,6 +8,11 @@ import (
 	"aws-billing-simulator/internal/persistence"
 )
 
+// decodedPathSegmentHasSeparator reports whether an unescaped route value would span path segments.
+func decodedPathSegmentHasSeparator(segment string) bool {
+	return strings.ContainsAny(segment, `/\`)
+}
+
 func exportFileDownloadPath(filename string) string {
 	return "/exports/files/" + url.PathEscape(filename)
 }
@@ -32,7 +37,7 @@ func exportFileDownloadFilenameFromPath(path string) (string, bool) {
 		return "", false
 	}
 	filename, err := url.PathUnescape(raw)
-	if err != nil {
+	if err != nil || decodedPathSegmentHasSeparator(filename) {
 		return "", false
 	}
 	return filename, true

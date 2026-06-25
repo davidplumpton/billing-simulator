@@ -594,6 +594,43 @@ func TestExportPathHelpersPreserveRequestAndViewerScope(t *testing.T) {
 	})
 }
 
+func TestExportFileDownloadFilenameFromPathRejectsDecodedSeparators(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/exports/files/cur%2Fexport.csv",
+		"/exports/files/cur%5Cexport.csv",
+	} {
+		if filename, ok := exportFileDownloadFilenameFromPath(path); ok {
+			t.Fatalf("exportFileDownloadFilenameFromPath(%q) = %q, true; want false", path, filename)
+		}
+	}
+
+	if filename, ok := exportFileDownloadFilenameFromPath("/exports/files/cur%20export.csv"); !ok || filename != "cur export.csv" {
+		t.Fatalf("exportFileDownloadFilenameFromPath escaped space = %q, %v; want cur export.csv, true", filename, ok)
+	}
+}
+
+func TestInvoiceRouteFromPathRejectsDecodedSeparators(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/invoices/SIM%2FINV",
+		"/invoices/SIM%5CINV",
+		"/invoices/SIM%2FINV/line-items.csv",
+		"/invoices/SIM%5CINV/document.pdf",
+	} {
+		if route, ok := invoiceRouteFromPath(path); ok {
+			t.Fatalf("invoiceRouteFromPath(%q) = %+v, true; want false", path, route)
+		}
+	}
+
+	route, ok := invoiceRouteFromPath("/invoices/SIM%20INV/line-items.csv")
+	if !ok || route.InvoiceID != "SIM INV" || route.Export != invoiceExportCSV {
+		t.Fatalf("invoiceRouteFromPath escaped space CSV = %+v, %v; want SIM INV CSV, true", route, ok)
+	}
+}
+
 func selectHasSelectedValue(field uiSelectFieldView, value string) bool {
 	for _, option := range field.Options {
 		if option.Value == value && option.Selected {

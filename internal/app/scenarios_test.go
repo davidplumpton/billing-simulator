@@ -131,13 +131,14 @@ func TestScenarioCatalogUsesShortestPlausibleDurations(t *testing.T) {
 
 	catalog := scenarioCatalog()
 	wantDurations := map[string]string{
-		scenario.FirstConsolidatedBillSeedKey:      "5 min",
-		scenario.MissingTagsSeedKey:                "5 min",
-		scenario.SharedNetworkingAllocationSeedKey: "10 min",
-		scenario.PaymentFailureSeedKey:             "5 min",
-		scenario.ForecastBudgetAlertSeedKey:        "10 min",
-		scenario.SavingsPlanCoverageSeedKey:        "5 min",
-		scenario.UntaggedDataTransferSpikeSeedKey:  "5 min",
+		scenario.FirstConsolidatedBillSeedKey:             "5 min",
+		scenario.MissingTagsSeedKey:                       "5 min",
+		scenario.SharedNetworkingAllocationSeedKey:        "10 min",
+		scenario.PaymentFailureSeedKey:                    "5 min",
+		scenario.ForecastBudgetAlertSeedKey:               "10 min",
+		scenario.CostExplorerVarianceInvestigationSeedKey: "10 min",
+		scenario.SavingsPlanCoverageSeedKey:               "5 min",
+		scenario.UntaggedDataTransferSpikeSeedKey:         "5 min",
 	}
 	for key, want := range wantDurations {
 		if got := catalog[key].EstimatedDuration; got != want {
@@ -742,6 +743,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		"Payment Failure",
 		"Shared Networking allocation",
 		"Forecast and Budget Alert",
+		"Cost Explorer variance investigation",
 		"Savings Plan coverage",
 		"Find the untagged data-transfer spike",
 		"Objective",
@@ -755,6 +757,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		`name="scenario_key" value="payment-failure"`,
 		`name="scenario_key" value="shared-networking-allocation"`,
 		`name="scenario_key" value="forecast-budget-alert"`,
+		`name="scenario_key" value="cost-explorer-variance-investigation"`,
 		`name="scenario_key" value="savings-plan-coverage"`,
 		`name="scenario_key" value="untagged-data-transfer-spike"`,
 		"Start Lab",

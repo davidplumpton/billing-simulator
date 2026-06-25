@@ -1,0 +1,240 @@
+{
+  "name": "Cost Explorer variance investigation",
+  "clock": {
+    "start": "2026-01-01"
+  },
+  "organization_template": "anycompany-retail",
+  "random_seed": 118,
+  "events": [
+    {
+      "id": "baseline-storefront-ec2",
+      "at": "2026-01-01",
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-checkout-fleet",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "usage_start_at": "2026-01-01T00:00:00Z",
+      "usage_end_at": "2026-02-01T00:00:00Z",
+      "amount_hours": 2200,
+      "tags": {
+        "app": "storefront",
+        "env": "prod",
+        "owner": "storefront-team",
+        "product": "storefront"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "baseline-storefront-assets",
+      "at": "2026-01-01",
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon S3",
+      "resource": "s3://storefront-product-assets",
+      "resource_type": "s3_bucket",
+      "region": "us-east-1",
+      "usage_start_at": "2026-01-01T00:00:00Z",
+      "usage_end_at": "2026-02-01T00:00:00Z",
+      "amount_gb": 12400,
+      "tags": {
+        "app": "storefront",
+        "env": "prod",
+        "owner": "storefront-team",
+        "product": "storefront"
+      },
+      "attributes": {
+        "storage_class": "standard"
+      }
+    },
+    {
+      "id": "baseline-payments-worker",
+      "at": "2026-01-01",
+      "action": "add_usage",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-settlement-worker",
+      "resource_type": "ec2_instance",
+      "region": "us-east-1",
+      "usage_start_at": "2026-01-01T00:00:00Z",
+      "usage_end_at": "2026-02-01T00:00:00Z",
+      "amount_hours": 800,
+      "tags": {
+        "app": "payments",
+        "env": "prod",
+        "owner": "payments-team",
+        "product": "payments"
+      },
+      "attributes": {
+        "instance_type": "t3.medium"
+      }
+    },
+    {
+      "id": "baseline-analytics-rds",
+      "at": "2026-01-01",
+      "action": "add_usage",
+      "account": "Analytics Prod",
+      "service": "Amazon RDS",
+      "resource": "analytics-warehouse-control-db",
+      "resource_type": "rds_instance",
+      "region": "us-east-1",
+      "usage_start_at": "2026-01-01T00:00:00Z",
+      "usage_end_at": "2026-02-01T00:00:00Z",
+      "amount_hours": 360,
+      "tags": {
+        "app": "analytics",
+        "env": "prod",
+        "owner": "data-platform",
+        "product": "analytics"
+      },
+      "attributes": {
+        "instance_class": "db.t3.medium",
+        "engine": "postgres"
+      }
+    },
+    {
+      "id": "baseline-shared-egress",
+      "at": "2026-01-01",
+      "action": "add_usage",
+      "account": "Shared Networking",
+      "service": "AWS Data Transfer",
+      "resource": "shared-internet-egress",
+      "resource_type": "data_transfer_path",
+      "region": "global",
+      "usage_start_at": "2026-01-01T00:00:00Z",
+      "usage_end_at": "2026-02-01T00:00:00Z",
+      "amount_gb": 300,
+      "tags": {
+        "env": "prod",
+        "owner": "network-platform",
+        "product": "shared-networking"
+      }
+    },
+    {
+      "id": "close-january-baseline",
+      "at": "2026-02-01",
+      "action": "close_billing_period",
+      "payer_account": "Management",
+      "billing_period_start": "2026-01-01",
+      "billing_period_end": "2026-02-01"
+    },
+    {
+      "id": "current-storefront-ec2-scaleout",
+      "at": "2026-02-01",
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon EC2",
+      "resource": "storefront-checkout-fleet",
+      "region": "us-east-1",
+      "usage_start_at": "2026-02-01T00:00:00Z",
+      "usage_end_at": "2026-03-01T00:00:00Z",
+      "amount_hours": 3600
+    },
+    {
+      "id": "current-storefront-assets-growth",
+      "at": "2026-02-01",
+      "action": "add_usage",
+      "account": "Storefront Prod",
+      "service": "Amazon S3",
+      "resource": "s3://storefront-product-assets",
+      "region": "us-east-1",
+      "usage_start_at": "2026-02-01T00:00:00Z",
+      "usage_end_at": "2026-03-01T00:00:00Z",
+      "amount_gb": 16800
+    },
+    {
+      "id": "current-payments-worker-steady",
+      "at": "2026-02-01",
+      "action": "add_usage",
+      "account": "Payments Prod",
+      "service": "Amazon EC2",
+      "resource": "payments-settlement-worker",
+      "region": "us-east-1",
+      "usage_start_at": "2026-02-01T00:00:00Z",
+      "usage_end_at": "2026-03-01T00:00:00Z",
+      "amount_hours": 820
+    },
+    {
+      "id": "current-analytics-rds-steady",
+      "at": "2026-02-01",
+      "action": "add_usage",
+      "account": "Analytics Prod",
+      "service": "Amazon RDS",
+      "resource": "analytics-warehouse-control-db",
+      "region": "us-east-1",
+      "usage_start_at": "2026-02-01T00:00:00Z",
+      "usage_end_at": "2026-03-01T00:00:00Z",
+      "amount_hours": 380
+    },
+    {
+      "id": "current-shared-egress-growth",
+      "at": "2026-02-01",
+      "action": "add_usage",
+      "account": "Shared Networking",
+      "service": "AWS Data Transfer",
+      "resource": "shared-internet-egress",
+      "region": "global",
+      "usage_start_at": "2026-02-01T00:00:00Z",
+      "usage_end_at": "2026-03-01T00:00:00Z",
+      "amount_gb": 360
+    },
+    {
+      "id": "close-february-current",
+      "at": "2026-03-01",
+      "action": "close_billing_period",
+      "payer_account": "Management",
+      "billing_period_start": "2026-02-01",
+      "billing_period_end": "2026-03-01"
+    },
+    {
+      "id": "create-variance-report",
+      "at": "2026-03-01T01:00:00Z",
+      "action": "create_saved_report",
+      "report_id": "saved-report-scn-cost-explorer-variance",
+      "report_name": "Cost Explorer variance investigation",
+      "description": "Starter report for comparing January and February spend by service and linked account before drilling into owner tags.",
+      "owner_account": "Management",
+      "owner_role": "finance",
+      "date_range_start": "2026-01-01",
+      "date_range_end": "2026-03-01",
+      "granularity": "monthly",
+      "groupings": [
+        {
+          "type": "dimension",
+          "key": "service"
+        },
+        {
+          "type": "dimension",
+          "key": "linked_account"
+        }
+      ],
+      "metrics": [
+        "unblended_cost"
+      ],
+      "chart_type": "stacked_bar"
+    }
+  ],
+  "checks": [
+    {
+      "id": "check-variance-report-saved",
+      "type": "saved_report_exists",
+      "report_name": "Cost Explorer variance investigation",
+      "account": "Management",
+      "owner_role": "finance"
+    },
+    {
+      "id": "check-storefront-ec2-current-driver",
+      "type": "identifies_top_driver",
+      "expected_service": "Amazon EC2",
+      "account": "Storefront Prod",
+      "billing_period_start": "2026-02-01",
+      "billing_period_end": "2026-03-01",
+      "tags": {
+        "owner": "storefront-team"
+      }
+    }
+  ]
+}

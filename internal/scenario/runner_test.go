@@ -70,6 +70,9 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 	if !containsScenarioSeedKey(keys, ForecastBudgetAlertSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, ForecastBudgetAlertSeedKey)
 	}
+	if !containsScenarioSeedKey(keys, CostExplorerVarianceInvestigationSeedKey) {
+		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, CostExplorerVarianceInvestigationSeedKey)
+	}
 	if !containsScenarioSeedKey(keys, SavingsPlanCoverageSeedKey) {
 		t.Fatalf("SeedDefinitionKeys() = %v, want %q present", keys, SavingsPlanCoverageSeedKey)
 	}
@@ -135,6 +138,18 @@ func TestPackagedScenarioSeedsParse(t *testing.T) {
 		definition.Events[6].Action != EventActionCreateSavedReport {
 		t.Fatalf("forecast budget alert definition = %+v, want budget forecast lab fixture", definition)
 	}
+	definition, err = LoadSeedDefinition(CostExplorerVarianceInvestigationSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", CostExplorerVarianceInvestigationSeedKey, err)
+	}
+	if definition.Name != "Cost Explorer variance investigation" ||
+		len(definition.Events) != 13 ||
+		len(definition.Checks) != 2 ||
+		definition.Events[5].Action != EventActionCloseBillingPeriod ||
+		definition.Events[11].Action != EventActionCloseBillingPeriod ||
+		definition.Events[12].Action != EventActionCreateSavedReport {
+		t.Fatalf("cost explorer variance definition = %+v, want two-period variance lab fixture", definition)
+	}
 	definition, err = LoadSeedDefinition(SavingsPlanCoverageSeedKey)
 	if err != nil {
 		t.Fatalf("LoadSeedDefinition(%q) error = %v", SavingsPlanCoverageSeedKey, err)
@@ -155,6 +170,89 @@ func containsScenarioSeedKey(keys []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestCostExplorerVarianceScenarioCreatesInvestigableMonthlySpend(t *testing.T) {
+	ctx := context.Background()
+	db := openScenarioTestWorkspace(t)
+	definition, err := LoadSeedDefinition(CostExplorerVarianceInvestigationSeedKey)
+	if err != nil {
+		t.Fatalf("LoadSeedDefinition(%q) error = %v", CostExplorerVarianceInvestigationSeedKey, err)
+	}
+	run, err := NewRunner(db).Run(ctx, definition)
+	if err != nil {
+		t.Fatalf("Run(%q) error = %v", CostExplorerVarianceInvestigationSeedKey, err)
+	}
+	if run.Run.Status != scenarioRunStatusSucceeded || run.BillsIssued != 2 {
+		t.Fatalf("Run(%q) = %+v, want succeeded with two closed bills", CostExplorerVarianceInvestigationSeedKey, run)
+	}
+
+	request := persistence.CostExplorerQueryRequest{
+		DateRangeStart: "2026-01-01",
+		DateRangeEnd:   "2026-03-01",
+		Granularity:    "monthly",
+		Groupings: []persistence.CostExplorerGrouping{
+			{Type: "dimension", Key: "service"},
+			{Type: "dimension", Key: "linked_account"},
+		},
+	}
+	repo := persistence.NewCostExplorerRepository(db)
+	result, err := repo.Query(ctx, request)
+	if err != nil {
+		t.Fatalf("Query(variance starter report) error = %v", err)
+	}
+	periodTotals := scenarioCostExplorerTotalsByPeriod(result.Rows)
+	baselineTotal := periodTotals["2026-01-01"]
+	currentTotal := periodTotals["2026-02-01"]
+	if baselineTotal == 0 || currentTotal == 0 {
+		t.Fatalf("variance period totals = %+v, want January and February spend", periodTotals)
+	}
+	if currentTotal*100 < baselineTotal*130 || currentTotal*100 > baselineTotal*150 {
+		t.Fatalf("variance totals baseline=%d current=%d, want current 30-50 percent higher", baselineTotal, currentTotal)
+	}
+
+	baselineEC2 := scenarioCostExplorerRow(result.Rows, "2026-01-01", "AmazonEC2", "111122223333")
+	currentEC2 := scenarioCostExplorerRow(result.Rows, "2026-02-01", "AmazonEC2", "111122223333")
+	if baselineEC2.LineItemCount == 0 || currentEC2.LineItemCount == 0 {
+		t.Fatalf("Storefront EC2 rows baseline=%+v current=%+v, want both months present", baselineEC2, currentEC2)
+	}
+	if currentEC2.UnblendedCostMicros-baselineEC2.UnblendedCostMicros < 50_000_000 {
+		t.Fatalf("Storefront EC2 delta = %d, want material primary variance", currentEC2.UnblendedCostMicros-baselineEC2.UnblendedCostMicros)
+	}
+
+	lineItems, err := repo.ListLineItems(ctx, persistence.CostExplorerLineItemRequest{
+		Query:           request,
+		TimePeriodStart: currentEC2.TimePeriodStart,
+		TimePeriodEnd:   currentEC2.TimePeriodEnd,
+		GroupValues:     currentEC2.GroupValues,
+	})
+	if err != nil {
+		t.Fatalf("ListLineItems(current Storefront EC2) error = %v", err)
+	}
+	if lineItems.TotalLineItemCount != 1 || lineItems.TotalUnblendedCostMicros != currentEC2.UnblendedCostMicros {
+		t.Fatalf("Storefront EC2 drilldown = %+v, want one source line matching aggregate", lineItems)
+	}
+}
+
+func scenarioCostExplorerTotalsByPeriod(rows []persistence.CostExplorerQueryRow) map[string]int64 {
+	totals := map[string]int64{}
+	for _, row := range rows {
+		totals[row.TimePeriodStart] += row.UnblendedCostMicros
+	}
+	return totals
+}
+
+func scenarioCostExplorerRow(rows []persistence.CostExplorerQueryRow, periodStart, serviceCode, linkedAccountID string) persistence.CostExplorerQueryRow {
+	for _, row := range rows {
+		if row.TimePeriodStart != periodStart || len(row.GroupValues) != 2 {
+			continue
+		}
+		if row.GroupValues[0] == (persistence.CostExplorerGroupValue{Type: "dimension", Key: "service", Value: serviceCode}) &&
+			row.GroupValues[1] == (persistence.CostExplorerGroupValue{Type: "dimension", Key: "linked_account", Value: linkedAccountID}) {
+			return row
+		}
+	}
+	return persistence.CostExplorerQueryRow{}
 }
 
 func TestRunnerAllowsSameDefinitionRerunInOneWorkspace(t *testing.T) {

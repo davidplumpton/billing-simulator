@@ -28,6 +28,9 @@ const (
 	// SavingsPlanCoverageSeedKey identifies the packaged Savings Plan coverage lab.
 	SavingsPlanCoverageSeedKey = "savings-plan-coverage"
 
+	// CostExplorerVarianceInvestigationSeedKey identifies the packaged month-over-month variance lab.
+	CostExplorerVarianceInvestigationSeedKey = "cost-explorer-variance-investigation"
+
 	// UntaggedDataTransferSpikeSeedKey identifies the packaged MVP scenario fixture.
 	UntaggedDataTransferSpikeSeedKey = "untagged-data-transfer-spike"
 )

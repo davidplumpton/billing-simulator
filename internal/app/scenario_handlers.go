@@ -543,6 +543,13 @@ func scenarioCatalog() map[string]scenarioCatalogMetadata {
 			ResumeLabel:       "Resume in Cost Explorer",
 			ResumePath:        "/cost-explorer?saved_report_id=saved-report-scn-storefront-forecast-drilldown",
 		},
+		scenario.CostExplorerVarianceInvestigationSeedKey: {
+			Phase:             "Phase 2",
+			Objective:         "Compare monthly spend, isolate the Storefront EC2 variance, and save Cost Explorer evidence for the owner review.",
+			EstimatedDuration: "10 min",
+			ResumeLabel:       "Resume in Cost Explorer",
+			ResumePath:        "/cost-explorer?saved_report_id=saved-report-scn-cost-explorer-variance",
+		},
 		scenario.SavingsPlanCoverageSeedKey: {
 			Phase:             "Phase 3",
 			Objective:         "Review a Compute Savings Plan commitment, its fees, negation rows, covered source usage, and amortized source allocation.",

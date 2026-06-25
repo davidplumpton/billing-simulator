@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -846,6 +847,17 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		}
 	}
 
+	archiveTime := time.Date(2026, 4, 5, 6, 7, 8, 0, time.UTC)
+	archiveClockCalls := 0
+	originalArchiveNow := scenarioArchiveNow
+	scenarioArchiveNow = func() time.Time {
+		archiveClockCalls++
+		return archiveTime.Add(time.Duration(archiveClockCalls-1) * time.Second)
+	}
+	t.Cleanup(func() {
+		scenarioArchiveNow = originalArchiveNow
+	})
+
 	resp, err = client.PostForm(server.URL()+"/scenarios/archive", url.Values{
 		"scenario_run_id": {runID},
 	})
@@ -859,6 +871,9 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	if !strings.Contains(body, "Archived review bundle to") || !strings.Contains(body, "with 2 export files") {
 		t.Fatalf("POST /scenarios/archive body missing archive confirmation: %s", body)
 	}
+	if archiveClockCalls != 1 {
+		t.Fatalf("scenario archive timestamp source was called %d times, want 1", archiveClockCalls)
+	}
 	archiveDir := filepath.Join(cfg.WorkspacePath, "review-archives")
 	archiveEntries, err := os.ReadDir(archiveDir)
 	if err != nil {
@@ -867,7 +882,17 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	if len(archiveEntries) != 1 {
 		t.Fatalf("archive entries = %d, want 1", len(archiveEntries))
 	}
-	archivePath := filepath.Join(archiveDir, archiveEntries[0].Name())
+	archiveName := fmt.Sprintf("scenario-%s-%s.zip", safeCSVFilenamePart(runID, "run"), archiveTime.Format("20060102T150405Z"))
+	var archivePath string
+	for _, entry := range archiveEntries {
+		if entry.Name() == archiveName {
+			archivePath = filepath.Join(archiveDir, entry.Name())
+			break
+		}
+	}
+	if archivePath == "" {
+		t.Fatalf("archive entries = %v, missing fixed timestamp archive %q", archiveEntries, archiveName)
+	}
 	archiveReader, err := zip.OpenReader(archivePath)
 	if err != nil {
 		t.Fatalf("open review archive: %v", err)
@@ -875,6 +900,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	defer archiveReader.Close()
 	archiveNames := map[string]bool{}
 	var manifestJSON []byte
+	var curCSVPath string
 	curExportCount := 0
 	reconciliationCount := 0
 	for _, file := range archiveReader.File {
@@ -894,6 +920,7 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 		}
 		if strings.HasSuffix(file.Name, "-cur.csv") {
 			curExportCount++
+			curCSVPath = file.Name
 		}
 		if strings.HasSuffix(file.Name, "-reconciliation.json") {
 			reconciliationCount++
@@ -924,6 +951,32 @@ func TestScenariosListingAndLaunchUIWorksInFreshWorkspace(t *testing.T) {
 	}
 	if manifest["database_path"] != "workspace/simulator.db" || manifest["feedback_report_path"] != "feedback-report.json" {
 		t.Fatalf("archive manifest paths = database:%#v feedback:%#v, want stable archive-relative paths", manifest["database_path"], manifest["feedback_report_path"])
+	}
+	archivedAt, ok := manifest["archived_at"].(string)
+	if !ok || archivedAt == "" {
+		t.Fatalf("archive manifest archived_at = %#v, want non-empty RFC3339 string", manifest["archived_at"])
+	}
+	if _, err := time.Parse(time.RFC3339, archivedAt); err != nil {
+		t.Fatalf("archive manifest archived_at = %q, want RFC3339: %v", archivedAt, err)
+	}
+	if archivedAt != archiveTime.Format(time.RFC3339) {
+		t.Fatalf("archive manifest archived_at = %q, want fixed archive time %q", archivedAt, archiveTime.Format(time.RFC3339))
+	}
+	if curCSVPath == "" {
+		t.Fatal("archive missing CUR CSV path")
+	}
+	curRecords, err := csv.NewReader(strings.NewReader(string(readArchiveEntry(t, archivePath, curCSVPath)))).ReadAll()
+	if err != nil {
+		t.Fatalf("read archived CUR CSV: %v", err)
+	}
+	if len(curRecords) < 2 {
+		t.Fatalf("archived CUR CSV records = %+v, want header plus data rows", curRecords)
+	}
+	generatedAtIndex := csvResponseColumnIndex(t, curRecords[0], "export_generated_at")
+	for rowIndex, record := range curRecords[1:] {
+		if record[generatedAtIndex] != archivedAt {
+			t.Fatalf("archived CUR CSV row %d export_generated_at = %q, want manifest archived_at %q", rowIndex+1, record[generatedAtIndex], archivedAt)
+		}
 	}
 
 	resp, err = client.PostForm(server.URL()+"/scenarios/reset", url.Values{

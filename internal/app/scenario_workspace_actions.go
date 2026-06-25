@@ -21,6 +21,8 @@ import (
 var (
 	openWorkspaceForReset          = persistence.OpenWorkspace
 	stageWorkspaceDatabaseForReset = stageWorkspaceDatabaseReset
+	// scenarioArchiveNow supplies one evidence timestamp for archive filenames and contents.
+	scenarioArchiveNow = func() time.Time { return time.Now().UTC() }
 )
 
 type scenarioArchiveResult struct {
@@ -460,14 +462,15 @@ func archiveScenarioRunWithSnapshot(ctx context.Context, db *sql.DB, workspacePa
 		return scenarioArchiveResult{}, fmt.Errorf("build feedback report: %w", err)
 	}
 
-	archivedAt := time.Now().UTC().Format(time.RFC3339)
+	archivedTime := scenarioArchiveNow().UTC()
+	archivedAt := archivedTime.Format(time.RFC3339)
 	archiveDir := filepath.Join(workspacePath, "review-archives")
 	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
 		return scenarioArchiveResult{}, fmt.Errorf("create review archive directory: %w", err)
 	}
 	archivePath := filepath.Join(
 		archiveDir,
-		fmt.Sprintf("scenario-%s-%s.zip", safeCSVFilenamePart(runID, "run"), time.Now().UTC().Format("20060102T150405Z")),
+		fmt.Sprintf("scenario-%s-%s.zip", safeCSVFilenamePart(runID, "run"), archivedTime.Format("20060102T150405Z")),
 	)
 	archiveFile, err := os.OpenFile(archivePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
